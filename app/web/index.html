@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LectureLens — 课堂实时字幕</title>
+<style>
+  :root { --bg:#101418; --en:#EAF2F8; --zh:#FFD97A; --muted:#6B7A88; --ok:#5FD08A; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--en);
+         font-family:'Microsoft YaHei','PingFang SC',sans-serif;
+         height:100vh; display:flex; flex-direction:column; }
+  header { padding:10px 16px; display:flex; justify-content:space-between; align-items:center;
+           border-bottom:1px solid #232B33; flex:none; }
+  header .title { font-size:14px; color:var(--muted); letter-spacing:.12em; }
+  header .dot { display:inline-block; width:9px; height:9px; border-radius:50%;
+                background:#888; margin-right:7px; }
+  header .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  #log { flex:1; overflow-y:auto; padding:18px 22px; scroll-behavior:smooth; }
+  .entry { margin-bottom:22px; max-width:900px; }
+  .ts { font-size:12px; color:var(--muted); font-family:Consolas,monospace; }
+  .en { font-size:24px; line-height:1.45; margin:3px 0; }
+  .zh { font-size:30px; line-height:1.5; color:var(--zh); font-weight:600; margin-bottom:4px; }
+  .placeholder { color:var(--muted); font-size:16px; padding:40px 0; text-align:center; }
+  footer { flex:none; padding:10px 16px; font-size:12px; color:var(--muted);
+           border-top:1px solid #232B33; display:flex; justify-content:space-between; }
+</style>
+</head>
+<body>
+<header>
+  <span><span class="dot" id="dot"></span>LectureLens · 课堂实时字幕</span>
+  <span class="title" id="count">SEGMENTS 0</span>
+</header>
+<div id="log"><div class="placeholder" id="ph">等待语音…… 对着麦克风说英语试试</div></div>
+<footer>
+  <span>EN 上 · 中 下 ｜ 翻译 DeepSeek · 识别 faster-whisper</span>
+  <span id="translate-status">translate: init</span>
+</footer>
+<script>
+const log = document.getElementById('log');
+const dot = document.getElementById('dot');
+const count = document.getElementById('count');
+const tstat = document.getElementById('translate-status');
+let last = null;
+
+function addEntry(en, zh, ts) {
+  const ph = document.getElementById('ph');
+  if (ph) ph.remove();
+  const div = document.createElement('div');
+  div.className = 'entry';
+  div.innerHTML = `<div class="ts">${ts}</div><div class="en"></div>` +
+                  (zh ? `<div class="zh"></div>` : '');
+  div.querySelector('.en').textContent = en;
+  if (zh) div.querySelector('.zh').textContent = zh;
+  log.appendChild(div);
+  // 保留最近 200 条防卡顿
+  while (log.children.length > 200) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => { dot.classList.add('on'); };
+  ws.onclose = () => {
+    dot.classList.remove('on');
+    setTimeout(connect, 2000);   // 断线自动重连
+  };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.en && m.en !== last) {
+      last = m.en;
+      addEntry(m.en, m.zh, m.ts);
+      count.textContent = 'SEGMENTS ' + m.segments;
+    } else if (m.zh && m.zh !== last) {
+      // 翻译后补：更新最后一条的中文
+      const entries = log.querySelectorAll('.entry');
+      const e = entries[entries.length - 1];
+      if (e && !e.querySelector('.zh')) {
+        const zhDiv = document.createElement('div');
+        zhDiv.className = 'zh';
+        zhDiv.textContent = m.zh;
+        e.appendChild(zhDiv);
+      }
+      count.textContent = 'SEGMENTS ' + m.segments;
+    }
+  };
+}
+connect();
+</script>
+</body>
+</html>
