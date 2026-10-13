@@ -1,0 +1,10 @@
+# 开发/测试依赖（运行依赖见 requirements.txt）
+# 安装: .venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+# 对应升级计划条目 2（pytest 测试骨架）：pytest 跑 tests/ 离线秒级单测，
+# 需要真模型/真服务/真音频的检验仍走 scripts/smoke_test.py
+pytest>=8
+pytest-asyncio>=1.0
+
+# 条目20（PyInstaller onedir 打包）：构建工具，仅开发机需要——运行依赖仍见 requirements.txt
+# 用 scripts/build_exe.py 出 dist/LectureLens/（onedir + console）
+pyinstaller>=6.10
