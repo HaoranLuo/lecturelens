@@ -318,6 +318,30 @@
   .mRow button:disabled { opacity:.45; cursor:not-allowed; }
   .mRow button.danger { color:var(--err);
     border-color:color-mix(in srgb, var(--err) 45%, transparent); }
+  /* —— 模型档位化（2026-10-13）：四档人话卡 ——
+     普通用户只看到「流畅/标准/高/极致」；模型原名与全量列表收进 .tierAdv。 */
+  .tierList { margin-top:12px; border-top:1px solid var(--border); }
+  .tierRow { display:flex; align-items:center; gap:10px; padding:10px 0;
+             border-bottom:1px solid var(--border); }
+  .tierRow:last-child { border-bottom:none; }
+  .tierRow.rec .tierName { color:var(--gold); }
+  .tierRow.active { background:color-mix(in srgb, var(--ok) 6%, transparent); }
+  .tierMain { flex:1; min-width:0; }
+  .tierName { color:var(--text-1); font-weight:600; font-size:var(--ui-body); }
+  .tierBadge { margin-left:8px; font-size:11px; font-weight:600; color:#1A1408;
+               background:var(--gold); border-radius:999px; padding:1px 8px; }
+  .tierDesc { color:var(--text-2); font-size:var(--ui-small); margin-top:2px; }
+  .tierTech { color:var(--text-3); font-size:11px; margin-top:2px;
+              font-family:Consolas,monospace; }
+  .tierAct { flex:none; }
+  .tierAct button { background:var(--surface-2); color:var(--text-1);
+    border:1px solid var(--border); border-radius:8px; height:28px;
+    padding:0 14px; font-size:var(--ui-small); cursor:pointer; }
+  .tierAct button:hover:not(:disabled) { border-color:var(--border-strong); }
+  .tierAct button:disabled { opacity:.45; cursor:not-allowed; }
+  .tierAdv { margin-top:12px; border-top:1px solid var(--border); padding-top:10px; }
+  .tierAdv summary { cursor:pointer; color:var(--text-2); font-size:var(--ui-small); }
+  .tierAdv summary:hover { color:var(--text-1); }
   .mRow button.danger:hover:not(:disabled) { border-color:var(--err); }
 
   /* —— p2-5（B4）分句调优（§七-3）：数值输入网格 ——
@@ -578,13 +602,11 @@ footer span { white-space:nowrap; }
 
 <div id="toolbar">
   <button id="btnPause">⏸ 暂停</button>
-  <select id="selModel" title="识别模型（热切换）">
-    <option value="tiny">tiny（最快）</option>
-    <option value="base">base</option>
-    <option value="small">small</option>
-    <option value="medium">medium</option>
-    <option value="large-v3">large-v3（最强）</option>
-    <option value="large-v3-turbo">large-v3-turbo（推荐）</option>
+  <select id="selModel" title="识别档位（热切换；档位说明见设置页）">
+    <option value="base">流畅 · 最快</option>
+    <option value="small">标准 · 均衡</option>
+    <option value="large-v3-turbo">高 · 更准（推荐）</option>
+    <option value="large-v3">极致 · 最强</option>
   </select>
   <select id="selLang" title="识别语言（条目13：热切换即生效，无需重建模型；自动检测在长段才采纳结果，短段沿用上一段）">
     <option value="auto">语言：自动检测</option>
@@ -730,21 +752,28 @@ footer span { white-space:nowrap; }
     <div class="card">
       <h2>识别模型</h2>
       <p class="desc">当前态：<span id="setModelCur" class="stateline" style="display:inline">…</span><br>
-        切换模型会立即重建识别器（首次使用某模型需下载，可能分钟级；期间字幕暂停）。</p>
-      <div class="row">
-        <select id="setModelSel" title="识别模型（热切换，同一白名单键 model）">
-          <option value="tiny">tiny（最快）</option>
-          <option value="base">base</option>
-          <option value="small">small</option>
-          <option value="medium">medium</option>
-          <option value="large-v3">large-v3（最强）</option>
-          <option value="large-v3-turbo">large-v3-turbo（推荐）</option>
-        </select>
-        <span class="stateline" id="setAsrState"></span>
-      </div>
-      <!-- p2-4 模型管理器（§七-3 分区卡片）：真实缓存状态 + 下载/删除。
-           数据来自 GET /api/models；下载进度复用上方 status.load 进度条 -->
-      <div class="mList" id="modelRows"></div>
+        切换会立即重建识别器（首次使用某档需下载，可能分钟级；期间字幕暂停）。</p>
+      <!-- 档位化（2026-10-13）：普通用户只看四档人话（流畅/标准/高/极致）＋
+           本机硬件检测与推荐；模型原名与全量列表收进下方「高级」。 -->
+      <p class="desc" id="tierHw">正在检测本机硬件…</p>
+      <div class="tierList" id="tierRows"></div>
+      <details class="tierAdv">
+        <summary>高级：全部模型（原名直管）</summary>
+        <div class="row">
+          <select id="setModelSel" title="识别模型（原名，热切换，同一白名单键 model）">
+            <option value="tiny">tiny（最快）</option>
+            <option value="base">base</option>
+            <option value="small">small</option>
+            <option value="medium">medium</option>
+            <option value="large-v3">large-v3（最强）</option>
+            <option value="large-v3-turbo">large-v3-turbo（推荐）</option>
+          </select>
+          <span class="stateline" id="setAsrState"></span>
+        </div>
+        <!-- p2-4 模型管理器（§七-3 分区卡片）：真实缓存状态 + 下载/删除。
+             数据来自 GET /api/models；下载进度复用上方 status.load 进度条 -->
+        <div class="mList" id="modelRows"></div>
+      </details>
       <!-- p2-4：下载/删除的终态要**持久可见**——toast 4s 就没了、刷新页面更看不见，
            否则失败后只剩一个无解释的「不完整」。（评审2） -->
       <p class="stateline" id="modelDlNote" hidden></p>
@@ -953,17 +982,14 @@ footer span { white-space:nowrap; }
     <button id="aboutClose" title="关闭">✕</button>
     <h2>LectureLens <span class="ver" id="aboutVer"></span></h2>
     <p class="ver">课堂实时字幕翻译 · 本地优先 · faster-whisper + DeepSeek</p>
-    <!-- 评审员2 修复：原文写成「不公开分发」并挂在「永久」之下——两处都跟仓库权威
-         口径对不上。README.md:3 的原话是「不收费、不注册公司、**不分发**，商业化
-         决策**推迟至毕业后**」；而「不分发」到底含不含朋友装机是 docs/upgrade-plan.md
-         §3.3-1 明确列出的**待用户裁决点**（裁决结果决定打包/分发条目是否挂起）。
-         页面不该替用户选定一支、更不该用「永久」把「推迟裁决」写成既成事实。 -->
+    <!-- 2026-10-13 用户拍板：原「待裁决」已决——朋友装机 OK（「不分发」仅指不公开
+         分发）；未来可能商业化（含出售），决策推迟至毕业后按签证与法律要求评估。 -->
     <h3>合规红线</h3>
     <ul>
-      <li><b>免费自用 + 朋友</b>：不收费、不注册公司、<b>不分发</b>——Student visa
-        禁 self-employment；<b>商业化决策推迟至毕业后</b>（README.md:3 原文口径）</li>
-      <li><b>「不分发」的边界待裁决</b>：若含「朋友装机」则打包/分发相关条目挂起，
-        若仅指不公开分发则按计划执行（docs/upgrade-plan.md §3.3-1，<b>须本人裁决</b>）</li>
+      <li><b>当前阶段</b>：免费自用 + 免费分享给朋友（含朋友装机）；不收费、
+        不注册公司、不公开分发——Student visa 禁 self-employment</li>
+      <li><b>未来计划</b>：可能商业化（含对外发布或出售），决策<b>推迟至毕业后</b>，
+        届时按签证与法律要求评估</li>
       <li>课堂音频仅限本人学习用途，笔记不外传</li>
     </ul>
     <h3>数据去向</h3>
@@ -1353,10 +1379,11 @@ function connect() {
       renderCourseSidebar(); renderCourseCard();
       return;
     }
-    // p2-4：模型缓存变化（另一窗口下载/删除）→ 刷新模型列表
+    // p2-4：模型缓存变化（另一窗口下载/删除）→ 刷新模型列表（档位视图同源刷新）
     if (m.type === 'models') {
       MODELS = { ...MODELS, ...m };
       renderModelRows();
+      refreshTiers();
       return;
     }
     if (m.en && m.seg !== lastSeg) {
@@ -1501,7 +1528,7 @@ selModel.onchange = async () => {
   }
 };
 
-function syncModel() { selModel.value = status_.model || selModel.value; }
+function syncModel() { if (status_.model) setSelectValue(selModel, status_.model); }
 
 // —— 条目13④：识别语言热切换下拉 —— POST lang 即生效（服务端改 asr.language，无需
 // 重建模型）并持久化 config.json；失败 toast + 回滚下拉到服务端当前值（syncLang）。
@@ -1580,8 +1607,12 @@ async function pollStatus() {
     if ((status_.glossary_rev || '') !== GLOSS.rev) refreshGlossaryTerms();
 
     const devTxt = status_.device === 'cuda' ? 'GPU' : 'CPU';
+    const tier = tierOfModel(status_.model);   // 档位化：徽章显示档位名，原名进 tooltip
     $('chipDevice').textContent = status_.model
-      ? `${devTxt}·${status_.model}${status_.asr === 'ready' ? '' : ' · ' + status_.asr}` : '…';
+      ? `${devTxt}·${tier ? tier.name : status_.model}${status_.asr === 'ready' ? '' : ' · ' + status_.asr}` : '…';
+    $('chipDevice').title = status_.model
+      ? `识别模型：${status_.model}${tier ? `（「${tier.name}」档）` : '（自定义）'}`
+      : '';
     $('chipDevice').classList.toggle('warn', status_.asr !== 'ready');
     $('chipTranslate').textContent = 'translate: ' + (status_.translate || 'init');
     $('chipSeg').textContent = 'SEGMENTS ' + (status_.segments || 0);
@@ -1623,7 +1654,7 @@ async function pollStatus() {
     $('loadwrap').classList.toggle('on', !!ld);
     if (ld) {
       $('loadfill').style.width = (ld.pct || 0) + '%';
-      $('loadstage').textContent = `${ld.pct}% · ${ld.stage}`;
+      $('loadstage').textContent = `${ld.pct}% · ${friendlyStage(ld.stage)}`;
     }
 
     if (!modelBusy) syncModel();
@@ -1642,6 +1673,7 @@ async function pollStatus() {
 }
 setInterval(pollStatus, 2000);
 pollStatus();
+refreshTiers();   // 档位化：启动即拉一次（徽章显示档位名 + 设置页档位卡预填）
 
 // —— p3-5 评审修复（F5）：模态框键盘可达 ——
 // 修前实测（真 Chrome，打开关于弹窗后逐项读）：焦点**不进入弹窗**（activeElement 仍是
@@ -1834,7 +1866,7 @@ function wizardPoll() {  // 500ms 轻轮询：①电平/『能听到你』判定
     }
     if (wiz.step === 3) {
       const ld = s.load;
-      $('wizLoad').textContent = ld ? `模型加载中 ${ld.pct}% · ${ld.stage}`
+      $('wizLoad').textContent = ld ? `模型加载中 ${ld.pct}% · ${friendlyStage(ld.stage)}`
         : (String(s.asr || '').startsWith('ready') ? '' : `模型状态：${s.asr}`);
       // p1-review 修复④：通过判定改由 WS（audio_ts 口径，见 ws.onmessage）——
       // 此处只做故障提示：实时通道未连接时明确说清，否则用户对着麦干等
@@ -2419,7 +2451,8 @@ function renderModelRows() {
     note.innerHTML = '';
     const s = document.createElement('span');
     s.className = 'err';
-    s.textContent = `模型下载失败（${dl.name || '—'}）：${dl.error}`;
+    const tn = (tierOfModel(dl.name) || {}).name;   // 档位化：优先显示档位名
+    s.textContent = `模型下载失败（${tn ? `「${tn}」档` : (dl.name || '—')}）：${dl.error}`;
     note.appendChild(s);
     note.hidden = false;
   } else {
@@ -2517,15 +2550,190 @@ async function deleteModel(m, btn) {
 
 // 下载是后台任务：只在 running→终态**跃迁**时刷新并提示（否则每 2s 重拉纯浪费）
 function trackModelDownload() {
-  if (!document.body.classList.contains('view-settings')) return;
   const dl = (status_ || {}).model_dl || {};
   const st = dl.state || 'idle';
   if (modelDlState === 'running' && st !== 'running') {
-    refreshModels();
-    if (st === 'done') showToast(`模型下载完成：${dl.name}`, 'ok');
-    else if (st === 'error') showToast(`模型下载失败：${dl.error || '原因未知'}`, 'err');
+    if (document.body.classList.contains('view-settings')) {
+      refreshModels();
+      refreshTiers();   // 档位化：下载终态 → 档位行状态同步
+      if (st === 'done') showToast(`模型下载完成：${dl.name}`, 'ok');
+      else if (st === 'error') showToast(`模型下载失败：${dl.error || '原因未知'}`, 'err');
+    }
+    // 档位「下载并使用」：完成即自动切换（与设置页是否打开无关——用户可能已切回字幕页）
+    if (pendingAutoSwitch && pendingAutoSwitch === dl.name) {
+      const m = pendingAutoSwitch;
+      pendingAutoSwitch = null;
+      if (st === 'done') requestModelChange(m);
+    }
   }
   modelDlState = st;
+}
+
+// —— 模型档位化（2026-10-13）——
+// 四档人话（流畅/标准/高/极致）＋ 本机硬件检测与推荐；当前模型不在档位表时
+// 工具条/设置页仍显示原名（「自定义」）。数据源 GET /api/tiers；切换/下载复用
+// 既有 /api/config 与 /api/models/download 通道（档位只是展示层，不新增写接口）。
+let TIERS = null;             // {tiers:[...], hardware:{}, reason, recommended_model}
+let pendingAutoSwitch = null; // 「下载并使用」：下载完成后待切换的模型名
+
+// 档位行共用：POST 切模型 + 高频轮询进度 + 收尾刷新（与 selModel.onchange 同纪律：
+// modelBusy 单飞、失败 toast、任何失败路径必复位，不卡暂停键）
+async function requestModelChange(model) {
+  if (modelBusy) return;
+  modelBusy = true;
+  let accepted = false;
+  try {
+    $('chipDevice').textContent = '切换中…';
+    let r = null;
+    try {
+      r = await jfetch('/api/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }) });
+    } catch (e) {}
+    if (!r || r.ok === false) {
+      const msg = friendlyError((r && r.error) || '切换失败（服务无响应）');
+      $('chipDevice').textContent = msg;
+      showToast(msg, 'err');
+      refreshTiers();
+      return;
+    }
+    accepted = true;
+    const t0 = Date.now();
+    const iv = setInterval(async () => {
+      await pollStatus();
+      if (!status_.load || Date.now() - t0 > 180000) {
+        clearInterval(iv);
+        modelBusy = false;
+        refreshTiers();
+        refreshModels();
+      }
+    }, 500);
+  } finally {
+    if (!accepted) modelBusy = false;
+  }
+}
+
+async function refreshTiers() {
+  const r = await jfetch('/api/tiers');
+  if (r && r.ok) { TIERS = r; renderTierRows(); }
+}
+
+function tierOfModel(name) {
+  if (!TIERS || !name) return null;
+  return TIERS.tiers.find((t) => t.model === name) || null;
+}
+
+// 把后端进度/错误文案里的模型原名替换成档位名（展示层；找不到就原样放行）
+function friendlyStage(s) {
+  if (!s || !TIERS) return s;
+  for (const t of TIERS.tiers) {
+    if (s.includes(t.model)) s = s.split(t.model).join(`「${t.name}」档`);
+  }
+  return s;
+}
+
+// 下拉值兜底：当前模型不在选项里（tiny/medium 等历史值）→ 动态补选项，避免空白
+function setSelectValue(sel, val) {
+  if (!sel || !val) return;
+  if (!Array.from(sel.options).some((o) => o.value === val)) {
+    const o = document.createElement('option');
+    o.value = val;
+    o.textContent = val + '（自定义）';
+    sel.appendChild(o);
+  }
+  sel.value = val;
+}
+
+function renderTierRows() {
+  const box = $('tierRows');
+  if (!box) return;
+  const hwEl = $('tierHw');
+  if (!TIERS) {
+    if (hwEl) hwEl.textContent = '正在检测本机硬件…';
+    return;
+  }
+  if (hwEl) {
+    const hw = TIERS.hardware || {};
+    const bits = [];
+    if (hw.gpu) bits.push(`显卡 ${hw.gpu}${hw.vram_gb ? `（${hw.vram_gb} GB 显存）` : ''}`);
+    else if (hw.apple) bits.push(`Apple 芯片（${Math.round(hw.ram_gb || 0)} GB 内存）`);
+    else bits.push(`未检测到可加速显卡（内存 ${Math.round(hw.ram_gb || 0)} GB · ${hw.cpu || '?'} 核）`);
+    const rec = TIERS.tiers.find((t) => t.recommended);
+    hwEl.textContent = `本机：${bits.join(' · ')}——推荐「${rec ? rec.name : '—'}」档（随时可换）`;
+  }
+  box.innerHTML = '';
+  for (const t of TIERS.tiers) box.appendChild(tierRow(t));
+}
+
+function tierRow(t) {
+  const row = document.createElement('div');
+  row.className = 'tierRow' + (t.recommended ? ' rec' : '') + (t.active ? ' active' : '');
+  const main = document.createElement('div');
+  main.className = 'tierMain';
+  const nm = document.createElement('div');
+  nm.className = 'tierName';
+  nm.textContent = t.name;
+  if (t.recommended) {
+    const b = document.createElement('span');
+    b.className = 'tierBadge';
+    b.textContent = '推荐';
+    nm.appendChild(b);
+  }
+  const dsc = document.createElement('div');
+  dsc.className = 'tierDesc';
+  dsc.textContent = t.desc;
+  const tech = document.createElement('div');
+  tech.className = 'tierTech';
+  tech.textContent = `${t.model} · ` + (t.cached
+    ? `已下载 ${t.size_h || ''}`.trim()
+    : `需下载 ≈ ${t.est_h}${t.partial ? '（未下完，可续传）' : ''}`);
+  main.append(nm, dsc, tech);
+  const act = document.createElement('div');
+  act.className = 'tierAct';
+  if (t.active) {
+    const s = document.createElement('span');
+    s.className = 'mState ok';
+    s.textContent = '使用中';
+    act.appendChild(s);
+  } else if (t.downloading) {
+    const s = document.createElement('span');
+    s.className = 'mBusy';
+    s.textContent = '下载中…';
+    act.appendChild(s);
+  } else if (t.cached) {
+    const b = document.createElement('button');
+    b.textContent = '使用';
+    b.title = `切换到「${t.name}」档（${t.model}）`;
+    b.onclick = () => requestModelChange(t.model);
+    act.appendChild(b);
+  } else {
+    const b = document.createElement('button');
+    b.textContent = '下载并使用';
+    b.title = `下载 ${t.model}（约 ${t.est_h}）完成后自动切换`;
+    b.onclick = () => tierDownloadUse(t, b);
+    act.appendChild(b);
+  }
+  row.append(main, act);
+  return row;
+}
+
+async function tierDownloadUse(t, btn) {
+  if (btn) btn.disabled = true;
+  const r = await jfetch('/api/models/download', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: t.model }) });
+  if (!r || !r.ok) {
+    showToast((r && r.error) || '下载失败', 'err');
+    if (btn) btn.disabled = false;
+    return;
+  }
+  if (r.already) {                 // 缓存已有 → 直接切换（不白等一次轮询）
+    await requestModelChange(t.model);
+    return;
+  }
+  pendingAutoSwitch = t.model;
+  showToast(`开始下载「${t.name}」档（约 ${t.est_h}），完成后自动切换（进度见顶部进度条）`, 'ok');
+  refreshTiers();
 }
 
 // —— p2-5（B4）分句调优 ——
@@ -2723,11 +2931,12 @@ async function refreshSettings() {
   updateSettingsLive();
   await refreshCourses();   // p2-1：课程卡与侧栏列表同源快照
   await refreshModels();    // p2-4：模型管理器真实缓存状态
+  await refreshTiers();     // 档位化：硬件检测 + 推荐（每次进设置页现算，硬件变化能跟上）
   renderSeg();              // p2-5：分句调优控件回填（同一份 SETCFG 快照）
   await refreshAutostart();  // p3-3：开机自启（每次进设置页现读注册表真实状态）
 }
 function renderSettings() {
-  if (SETCFG.model) $('setModelSel').value = SETCFG.model;
+  if (SETCFG.model) setSelectValue($('setModelSel'), SETCFG.model);
   if (SETCFG.source) $('setSourceSel').value = SETCFG.source;
   if (SETCFG.lang) $('setLangSel').value = SETCFG.lang;
   // p2-7：0 是合法取值，不能用 `if (SETCFG.fade_lines)` 判（0 会被当没设）

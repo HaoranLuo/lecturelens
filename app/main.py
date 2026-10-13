@@ -45,6 +45,7 @@ import courses as courses_mod       # noqa: E402  p2-1：课程管理（courses.
 import notes as notes_mod           # noqa: E402  p2-2：笔记库（transcripts 解析/索引/检索）
 import exporters                    # noqa: E402  p2-3：导出中心（md/SRT/PDF/Word）
 import models as models_mod         # noqa: E402  p2-4：模型管理器（缓存/下载/删除）
+import tiers as tiers_mod           # noqa: E402  档位化：硬件检测与模型档位推荐
 import glossary as glossary_mod     # noqa: E402  p2-6：术语库（glossary/*.md 增删改）
 import hotkeys as hotkeys_mod       # noqa: E402  p3-1：全局快捷键（键名白名单/注册/降级）
 from capture import SR, MicSegmenter  # noqa: E402
@@ -211,6 +212,22 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def user_picked_model() -> bool:
+    """用户是否显式选过识别模型（档位化「自动推荐」的前提）。
+
+    判据 = config.json 存在且含**非空 model 键**。首启 provision_token 只写
+    auth_token 键，不会造成误判；用户一旦在设置页/字幕页选过模型（写盘），
+    此后永远以用户的选择为准，不再自动推荐。文件损坏/读不到一律按「选过」处理
+    （保守：宁可不动用户的配置，也不覆盖一个读不懂的文件）。"""
+    try:
+        if not CONFIG_PATH.is_file():
+            return False
+        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return bool(isinstance(raw, dict) and raw.get("model"))
+    except Exception:
+        return True
 
 
 def _input_device_problem(idx: int) -> str | None:
@@ -1872,6 +1889,37 @@ async def api_models():
     return data
 
 
+@app.get("/api/tiers")
+async def api_tiers():
+    """模型档位视图（档位化）：四档人话 + 本机硬件检测与推荐。
+
+    检测（nvidia-smi 子进程）与缓存扫描（dir_size）都是同步 IO，统一放线程——
+    与 /api/models 同款纪律：设置页打开绝不能堵住字幕主链路。"""
+    hw = await asyncio.to_thread(tiers_mod.detect_hardware)
+    rec = tiers_mod.recommend(hw)
+    snap = await asyncio.to_thread(models_snapshot)
+    by_name = {m["name"]: m for m in snap.get("models", [])}
+    active = runtime["config"].get("model")
+    tiers_out = []
+    for t in tiers_mod.TIERS:
+        m = by_name.get(t["model"], {})
+        tiers_out.append({
+            "id": t["id"], "name": t["name"], "model": t["model"],
+            "desc": t["desc"],
+            "est_h": models_mod.human_size(t["size_mb"] * 1024 * 1024),
+            "size_h": m.get("size_h", ""),
+            "cached": bool(m.get("cached")),
+            "partial": bool(m.get("partial")),
+            "active": active == t["model"],
+            "downloading": runtime.get("downloading") == t["model"],
+            "recommended": rec["tier"]["id"] == t["id"],
+        })
+    return JSONResponse({
+        "ok": True, "tiers": tiers_out, "hardware": hw,
+        "reason": rec["reason"], "recommended_model": rec["tier"]["model"],
+    })
+
+
 @app.post("/api/models/download")
 async def api_models_download(req: Request):
     """下载某模型到 HF 缓存。受理即返回，进度看 /api/status 的 load 字段。
@@ -2302,6 +2350,16 @@ async def asr_loop(args) -> None:
         dev: int | str = (int(args.device) if str(args.device).isdigit()
                           else args.device)
         cfg["input_device"] = dev
+    # 模型档位化（2026-10-13）：命令行没指定、且用户从没显式选过模型时（config.json
+    # 无 model 键——首启 provision_token 只写 auth_token），按本机硬件自动选一档。
+    # 弱电脑首装不会硬吃 1.6GB 的 turbo；用户一旦选过（写盘）就永远以用户为准。
+    # 打包版（frozen）不参与：随包内置固定模型、且离线，改选会下载失败。
+    if (not args.model and not getattr(sys, "frozen", False)
+            and not user_picked_model()):
+        rec = tiers_mod.recommend(await asyncio.to_thread(tiers_mod.detect_hardware))
+        cfg["model"] = rec["tier"]["model"]
+        log.info(f"[main] 未选过模型：按硬件自动选定「{rec['tier']['name']}」档"
+                 f"（{rec['tier']['model']}）——{rec['reason']}；设置页可随时更换")
     runtime["config"] = cfg
     # p2-7：呈现类开关从持久化配置回填到 status——字幕页靠 2s 轮询 status 拿它，
     # 不回填的话重启后会被模块级默认值顶掉（用户在设置页选的值“重启就丢”）。

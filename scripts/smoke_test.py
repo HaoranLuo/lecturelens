@@ -445,6 +445,20 @@ def test_server(port: int = 8799) -> None:
         p2 = httpx.get(f"{base}/api/status", timeout=3, headers=H).json().get("paused")
         record("暂停/恢复", (p1 is True) and (p2 is False), f"pause={p1} → resume={p2}")
 
+        # 档位化（2026-10-13）：/api/tiers 四档 + 单一推荐 + 硬件画像（真机检测）
+        r = httpx.get(f"{base}/api/tiers", timeout=10, headers=H)
+        tj = r.json() if r.status_code == 200 else {}
+        tiers_list = tj.get("tiers", [])
+        rec_model = tj.get("recommended_model")
+        tier_ok = (r.status_code == 200 and len(tiers_list) == 4
+                   and rec_model in [t.get("model") for t in tiers_list]
+                   and all(t.get("name") and t.get("est_h") for t in tiers_list))
+        rec_name = next((t["name"] for t in tiers_list if t.get("recommended")), "—")
+        hw = tj.get("hardware", {})
+        record("档位视图 /api/tiers", tier_ok,
+               f"推荐「{rec_name}」({rec_model}) · gpu={hw.get('gpu')} "
+               f"vram={hw.get('vram_gb')} ram={hw.get('ram_gb')}")
+
         # 笔记导出
         r = httpx.get(f"{base}/api/notes", timeout=5, headers=H)
         record("笔记导出 /api/notes",

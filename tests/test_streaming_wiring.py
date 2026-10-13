@@ -78,6 +78,9 @@ def stubbed(monkeypatch):
 
     monkeypatch.setattr(main, "status_loop", _noop_status_loop)
     monkeypatch.setattr(main, "load_api_key", lambda *a, **k: "")
+    # 档位化（2026-10-13）：本文件只测流式装配，不关心自动选档——按「用户已选过」
+    # 处理，跳过硬件检测子进程（否则 nvidia-smi 的耗时会把下面的取消时序拖出窗口）。
+    monkeypatch.setattr(main, "user_picked_model", lambda: True)
     return SimpleNamespace(segments=FakeSegmenter.instances, schedulers=FakeScheduler.instances)
 
 
