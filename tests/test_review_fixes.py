@@ -307,29 +307,22 @@ def test_r2_privacy_discloses_lan_plaintext_path():
 
 
 def test_r2_redline_copy_matches_readme_authority():
-    """R2（红线声明）回归：不得把「不分发」自行收窄成「不公开分发」，不得用「永久」
-    定格，且必须带上 README 的「商业化决策推迟至毕业后」与待裁决出处。
-
-    权威口径 = README.md:3；待裁决点 = docs/upgrade-plan.md §3.3-1。"""
-    readme = (PROJ / "README.md").read_text(encoding="utf-8")
-    assert "不收费、不注册公司、不分发" in readme          # README 原文
-    assert "商业化决策推迟至毕业后" in readme
-    plan = (PROJ / "docs" / "upgrade-plan.md").read_text(encoding="utf-8")
-    assert "待用户裁决点" in plan
+    """R2（红线声明）回归——2026-10-13 用户拍板后**重钉**：权威口径 = README.md:3
+    新版（当前免费自用+朋友含装机、不收费不注册公司不公开分发；商业化含出售，
+    推迟至毕业后）。三处文案必须一致；不得再用「永久」把推迟裁决写成既成事实。
+    旧口径的「待裁决」断言已随拍板作废——历史出处见 docs/upgrade-plan.md §3.3-1。"""
+    readme = "".join((PROJ / "README.md").read_text(encoding="utf-8").split())
+    assert "不收费、不注册公司、不公开分发" in readme      # README 2026-10-13 原文
+    assert "含朋友装机" in readme
+    assert "推迟至毕业后" in readme
 
     for name in ("index.html", "privacy.html"):
-        s = (WEB / name).read_text(encoding="utf-8")
-        # 红线本体必须是 README 的「不分发」写法（页面用 <b> 包了关键词）
-        assert "不收费、不注册公司、<b>不分发</b>" in s, \
-            f"{name}: 红线本体不是 README 的「不分发」写法"
-        # 不得把它自行收窄成「不公开分发」当成结论（作为「另一种解读」提及是可以的，
-        # 那正是待裁决的一支——故只禁「不收费、不注册公司、不公开分发」这种连写）
-        assert "不收费、不注册公司、不公开分发" not in s, \
-            f"{name}: 红线口径被自行收窄为「不公开分发」"
-        assert "合规红线（永久）" not in s, \
-            f"{name}: 「永久」与 README 的「推迟至毕业后」冲突"
-        assert "商业化决策推迟至毕业后" in s, f"{name}: 漏了 README 的毕业后条款"
-        assert "裁决" in s, f"{name}: 待裁决边界未标注为待裁决"
+        flat = "".join((WEB / name).read_text(encoding="utf-8").split())
+        assert "不收费、不注册公司、不公开分发" in flat, \
+            f"{name}: 红线本体与 README 新口径不一致"
+        assert "含朋友装机" in flat, f"{name}: 未写明「含朋友装机」的边界"
+        assert "推迟至毕业后" in flat, f"{name}: 漏了「推迟至毕业后」"
+        assert "合规红线（永久）" not in flat, f"{name}: 不得用「永久」定格"
 
 
 def test_r2_modals_are_keyboard_reachable():
