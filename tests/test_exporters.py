@@ -640,8 +640,12 @@ async def test_asr_loop_records_absolute_times_to_sidecar(monkeypatch):
     # 喂进去的发射时刻是 5000.0，音频 2s → 窗口起点 4998.0（评审1 修后的口径）
     assert hub.t0_audio == 4998.0
     assert hub.times[0] == {"seg": 1, "start": 0.25, "end": 1.75}
-    got = exporters.read_times(p)
+    # 主循环启动时**自己**开一篇笔记（本用例预建的同分钟笔记会被让路成 -2，见
+    # Hub.start_transcript 的重名避让），sidecar 落盘在它自己那篇旁边——故断言读
+    # hub.transcript_path，而不是用例开头预建的 p。
+    got = exporters.read_times(hub.transcript_path)
     assert got and got["segments"] == hub.times, "sidecar 未落盘"
+    assert hub.transcript_path != p, "同分钟重名未让路（会把预建笔记整篇截掉）"
 
 
 async def test_export_srt_prefers_sidecar_when_present():

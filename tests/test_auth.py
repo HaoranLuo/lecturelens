@@ -225,6 +225,13 @@ INVALID_VALUE_BY_KEY = {
     "window_y": "0",             # 类型错（字符串）
     "float_x": True,             # bool 是 int 子类，必须显式排除
     "float_y": -999999,          # 低于负向下界
+    # §3：export_dir 用**相对路径**（比类型错更有信息量——「须为绝对路径」才是
+    # 新增的那层规则；类型错另有专项用例覆盖）
+    "export_dir": "exports/notes",
+    "class_end_confirm": "yes",  # §5：类型非法（须布尔）
+    # §7：手机同屏开关——用**字符串 "true"** 而非数字：JSON 里 1 也是"像布尔"的值，
+    # 而这里要钉的是「只有真布尔 false/True 才收」（枚举表 (False, True) 的等价类）。
+    "lan_enabled": "true",
 }
 
 
@@ -366,7 +373,11 @@ def test_uvicorn_run_disables_proxy_headers(app_state, monkeypatch):
     （FORWARDED_ALLOW_IPS，缺省 "127.0.0.1,::1"，config.py:363）的
     X-Forwarded-For 改写进 scope['client']——环回带 XFF 被误拒（403）、
     FORWARDED_ALLOW_IPS=* 下 LAN 对端伪造 XFF:127.0.0.1 绕过豁免（均实测复现）。
-    真实 uvicorn 链路由本机裸 socket harness 四场景验证（见 change 记录）。"""
+    真实 uvicorn 链路由本机裸 socket harness 四场景验证（见 change 记录）。
+
+    §7 追加：绑定地址由 config.lan_enabled 在**启动时**决定（false → 127.0.0.1，
+    true → 0.0.0.0，8787 被占才换端口）——这里锁住两个分支与 set_bind 的事实登记
+    （/api/lan-qr 的 URL/端口都取自 runtime['bind']）。"""
     from types import SimpleNamespace
     captured: dict = {}
     saved_ctx = main.app.router.lifespan_context
@@ -384,5 +395,22 @@ def test_uvicorn_run_disables_proxy_headers(app_state, monkeypatch):
         # main() 会把真 lifespan 挂到 app——还原，防影响后续测试
         main.app.router.lifespan_context = saved_ctx
     assert captured.get("proxy_headers") is False
-    assert captured.get("host") == "0.0.0.0"
+    # §7 默认（lan_enabled=false，tmp config.json 里没有这个键）：只听本机
+    assert captured.get("host") == "127.0.0.1"
     assert captured.get("port") == 8799
+    assert main.runtime["bind"] == {"host": "127.0.0.1", "port": 8799}
+
+    # §7 开启手机同屏：监听 0.0.0.0（端口只保证是「能用的那个」——8787/8799 被占时
+    # 会换，故不断言具体值；defaults 下 args.port=8799 空闲则原样沿用）
+    captured.clear()
+    monkeypatch.setattr(main, "load_config",
+                        lambda: dict(DEFAULT_CONFIG, lan_enabled=True))
+    try:
+        main.main()
+    finally:
+        main.app.router.lifespan_context = saved_ctx
+    assert captured.get("proxy_headers") is False
+    assert captured.get("host") == "0.0.0.0"
+    assert isinstance(captured.get("port"), int) and captured["port"] > 0
+    assert main.runtime["bind"]["host"] == "0.0.0.0"
+    assert main.runtime["bind"]["port"] == captured["port"]

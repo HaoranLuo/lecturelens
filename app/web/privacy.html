@@ -48,17 +48,27 @@
   </div>
 
   <!-- 评审员2 修复（F4）：原页面只列三条去向，漏了 LAN 模式这条真实的出网路径。
-       事实来源：main.py:2631 `uvicorn.run(app, host="0.0.0.0", ...)`（--server-only），
-       desktop.py:218 `uvicorn.Config(..., host="127.0.0.1", ...)`（桌面模式）；README.md
-       的 LAN 用法与 token 说明。 -->
+       §7 更新（2026-10-13）：LAN 监听改为**开关驱动**（config.lan_enabled，默认
+       false）——不再是「--server-only 就一定对外」；并补「扫码配对」这条新入口。
+       事实来源：app/lan.py 的 `LAN_ALL_HOST = "0.0.0.0"` / `LAN_LOOPBACK_HOST =
+       "127.0.0.1"` / `lan_url()`（`#t=<token>` 走 hash 段），main.py 启动时
+       `uvicorn.run(app, host=bind_host, ...)`、/api/lan-qr（仅本机可读）、
+       desktop.py 的 `lan_mod.lan_bind(...)`；README.md 的 LAN 用法与 token 说明。 -->
   <div class="card">
-    <h2>📶 局域网<span class="tag">仅 --server-only 模式</span></h2>
-    <p>默认的<b>桌面模式只监听 127.0.0.1</b>，字幕不出本机。用 <b>--server-only</b>
-       开 LAN 模式时服务监听 <b>0.0.0.0</b>：同一 WiFi 内<b>持 token 的设备</b>可以
-       读到字幕文本（识别原文 + 中文译文），供手机当第二块屏。<br>
+    <h2>📶 局域网<span class="tag">默认关闭 · 扫码配对</span></h2>
+    <p>默认（桌面模式与 --server-only 一样）<b>只监听 127.0.0.1</b>，字幕不出本机。
+       在字幕页 / 设置页打开 <b>📱 手机同屏</b>（config <code>lan_enabled</code>）并
+       <b>重启 LectureLens</b> 后，服务才监听 <b>0.0.0.0</b>：同一 WiFi 内
+       <b>持 token 的设备</b>可以读到字幕文本（识别原文 + 中文译文），供手机当第二块屏。<br>
+       <b>扫码配对</b>：手机同屏面板里的二维码就是访问地址
+       （<code>http://&lt;电脑IP&gt;:8787/#t=&lt;token&gt;</code>，token 放在地址的
+       <b># 片段</b>里——浏览器不会把片段发给服务端，手机页面读到后存本地、随即把地址栏
+       里的片段抹掉，此后免输）。二维码/地址<b>等于凭据，别外传截图</b>；手机丢了或截图
+       泄了，在设置页「安全」卡重新生成 token：已在线的旧设备会被<b>立即断开</b>，
+       此后必须用新 token 才能重连（刷新页面也过不去）。<br>
        两点须知：① 传输是<b>明文 HTTP（无 TLS）</b>——同一网段的被动监听者理论上能看到
        内容，故只在可信网络里开；② token 是唯一门禁，首启已打印、设置页「安全」卡可重新
-       生成；<b>关掉 LAN 鉴权则同 WiFi 任何人都能看字幕</b>。嫌风险就别开 LAN 模式。</p>
+       生成；<b>关掉 LAN 鉴权则同 WiFi 任何人都能看字幕</b>。嫌风险就别开手机同屏。</p>
   </div>
 
   <div class="card">

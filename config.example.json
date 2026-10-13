@@ -25,5 +25,8 @@
   "window_x": null,
   "window_y": null,
   "float_x": null,
-  "float_y": null
+  "float_y": null,
+  "export_dir": null,
+  "class_end_confirm": true,
+  "lan_enabled": false
 }

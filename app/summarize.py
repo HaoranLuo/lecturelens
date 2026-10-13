@@ -12,15 +12,70 @@ lecture_*.summary.md。进度经 on_progress 回调上报，main.py 接到 /api/
 ① 单块 map 重试耗尽 → 该块记入 failed，其余照常，reduce 时作为缺口标注；
 ② reduce LLM 调用失败 → 降级为本地拼接块摘要（未经合并去重，标明降级）；
 ③ 全部块失败 → 跳过 reduce，直接写失败清单文件。
-任何路径下 summary 文件都写得出来；文件末尾固定附失败块清单（不依赖 LLM 遵嘱）。"""
+任何路径下 summary 文件都写得出来；文件末尾固定附失败块清单（不依赖 LLM 遵嘱）。
+
+§6（可编辑摘要）：摘要在预览页可**人工编辑**（main 的 /api/notes/summary 读写），
+故每次生成前若已有同名摘要，先把它另存为 `*.summary.bak.md` 再覆盖——
+「人工修订版不被静默冲掉」是这一层唯一的职责（备份本身写坏=没备份，故走原子替换）。
+"""
 import asyncio
+import contextlib
 import logging
+import os
+import secrets
 from pathlib import Path
 
 log = logging.getLogger("summarize")
 
 MAX_CHUNK_CHARS = 4000  # 计划口径：按约 4000 字符分块
 CONCURRENCY = 4         # 计划口径：semaphore=4 并行逐块摘要
+#: §6 覆盖前备份的后缀：`.summary.md` 的文件备份成 `.summary.bak.md`。与
+#: notes.SUMMARY_BACKUP_SUFFIX 同口径（那边管「派生物跟着笔记走」的名字规则），
+#: 本模块管「怎么给一个 .md 造备份名」，故保持自包含、不反向依赖 notes。
+BACKUP_SUFFIX = ".bak.md"
+
+
+def backup_path(out_path: Path) -> Path:
+    """摘要的备份落点：`lecture_X.summary.md` → `lecture_X.summary.bak.md`。"""
+    n = Path(out_path).name
+    if n.lower().endswith(".md"):
+        n = n[:-3]
+    return Path(out_path).with_name(n + BACKUP_SUFFIX)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """整篇原子落盘（同目录 .tmp → os.replace）。行尾按平台默认（与旧实现
+    `Path.write_text` 逐字节行为一致，Windows 上仍是 CRLF）。
+
+    临时名带 pid + 随机段：同一份摘要也被 main.note_atomic_write（人工保存）写，
+    两边若都叫「<名>.tmp」就共用一个临时文件（评审④低）——名字不唯一 = 迟早踩。"""
+    p = Path(path)
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(p)
+    except Exception:
+        with contextlib.suppress(Exception):
+            tmp.unlink()
+        raise
+
+
+def backup_existing(out_path: Path) -> Path | None:
+    """§6：覆盖前把已有摘要另存为 `*.summary.bak.md` → 备份路径；没有旧文件 → None。
+
+    备份内容 = **即将被覆盖的那一份**（每次生成都刷新），所以用户手上永远有一份
+    「上一版」可回退；每次覆盖都留旧版会无限堆积，而人工修订的价值在最近一版。
+    写失败直接抛（调用方 summarize 走的是「摘要整体失败」路径）——宁可不覆盖，
+    也不要出现「备份没写成、原文件已被冲掉」的静默丢数据。"""
+    src = Path(out_path)
+    if not src.is_file():
+        return None
+    dst = backup_path(src)
+    data = src.read_text(encoding="utf-8")
+    atomic_write_text(dst, data)
+    log.info(f"[summarize] 覆盖前已备份: {src.name} → {dst.name}"
+             f"（{len(data)} 字符）")
+    return dst
 
 MAP_SYSTEM = (
     "You are a lecture-notes assistant. Below is one excerpt of a live-transcribed "
@@ -133,9 +188,12 @@ class TranscriptSummarizer:
     async def summarize(self, transcript_path: Path, out_path: Path,
                         on_progress=None) -> dict:
         """全流程：分块 → 并行 map → reduce/降级 → 落盘。返回
-        {"total", "failed", "reduce_ok", "path", "text"}。
+        {"total", "failed", "reduce_ok", "path", "text", "backup"}。
         on_progress(done, total)：分块后先报 (0, n)，之后每完成一块报一次；
-        在事件循环内同步调用（main.py 里只改 status + 派广播任务，零阻塞）。"""
+        在事件循环内同步调用（main.py 里只改 status + 派广播任务，零阻塞）。
+
+        §6：落盘前若已有摘要 → 先备份为 `*.summary.bak.md`（backup 字段回传备份
+        文件名或 None），保证人工修订版不被静默冲掉。"""
         text = transcript_path.read_text(encoding="utf-8")
         chunks = chunk_transcript(text, self.max_chunk_chars)
         if not chunks:
@@ -177,11 +235,14 @@ class TranscriptSummarizer:
         if failed:
             # 失败标记固定落进文件正文，不依赖 LLM 在「存疑处」遵嘱
             final += "\n---\n\n> ⚠ " + self._failed_note(failed, n) + "\n"
-        out_path.write_text(final, encoding="utf-8")
+        backup = backup_existing(out_path)   # §6：覆盖前备份（无旧文件 → None）
+        atomic_write_text(out_path, final)
         log.info(f"[summarize] 摘要落盘: {out_path.name}"
-                 f"（{n} 块，失败 {len(failed)}，reduce_ok={reduce_ok}）")
+                 f"（{n} 块，失败 {len(failed)}，reduce_ok={reduce_ok}"
+                 f"{'，已备份 ' + backup.name if backup else ''}）")
         return {"total": n, "failed": sorted(failed), "reduce_ok": reduce_ok,
-                "path": Path(out_path), "text": final}
+                "path": Path(out_path), "text": final,
+                "backup": str(backup) if backup else None}
 
     @staticmethod
     def _failed_note(failed: dict[int, str], n: int) -> str:

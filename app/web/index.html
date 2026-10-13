@@ -13,6 +13,10 @@
           --gold:#FFD97A; --gold-dim:rgba(255,217,122,.14);
           --ok:#5FD08A; --warn:#E8B44A; --err:#FF6B6B; --partial:#7C8B99;
           --radius:12px;
+          /* §7 扫码用功能性令牌：二维码必须**高对比**才扫得动（深色底上的黑码手机
+             扫不出来）。白底黑码是扫码这个功能的物理要求，不属于 §二 主题色阶——
+             按 §一-4「颜色一律走变量」单列一个变量，改主题只改这里，不动组件。 */
+          --qr-bg:#FFFFFF;
           /* 字阶 §3（字号档；A-/A+ 运行时覆盖 --cap-*） */
           --cap-en:24px; --cap-zh:34px; --ui-title:16px; --ui-body:14px; --ui-small:12px; }
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -57,13 +61,25 @@
   /* p1-review 修复①：collapsed 只藏按钮行，header 必须常显——否则 ▾ 自身随
      header 一起不可见/不可点，「收起」变不可逆死锁（验收：收起后仍能点 ▾ 展开） */
   body.collapsed header { opacity:1; transform:none; pointer-events:auto; }
-  #toolbar button, #toolbar select {
+  #toolbar button, #toolbar select, #toolbar input[type=text] {
     background:var(--surface-2); color:var(--text-1); border:1px solid var(--border);
     border-radius:8px; padding:4px 12px; font-size:var(--ui-body); height:28px; cursor:pointer; }
-  #toolbar button:hover, #toolbar select:hover { border-color:var(--border-strong); }
-  #toolbar select:focus { border-color:color-mix(in srgb, var(--gold) 50%, transparent);
+  #toolbar button:hover, #toolbar select:hover, #toolbar input[type=text]:hover { border-color:var(--border-strong); }
+  #toolbar select:focus, #toolbar input[type=text]:focus { border-color:color-mix(in srgb, var(--gold) 50%, transparent);
                           outline:none; }  /* §6 输入聚焦 gold 50% */
   #toolbar button:disabled { opacity:.45; cursor:not-allowed; }
+  #toolbar input[type=text] { cursor:text; }  /* 输入框用文本光标，不跟按钮/下拉 */
+
+  /* §1 录制页选课程：工具条「课程」下拉 + 内联新建（选中「＋ 新建课程…」才展开）。
+     · 内联行沿用 §6 输入规范（surface-2 底 + 1px border + 聚焦 gold 50%），不新造样式；
+     · 展开期间工具条**不自动隐藏**——否则键盘打字（无鼠标移动）3s 后界面消失，
+       输入框还在收字符却看不见（同 #errBanner 的 body:has 保活口径，见上 §7.1）；
+     · 不加动效：§5 的三个动效只给工具条本身的浮现。 */
+  #courseNewWrap { display:none; align-items:center; gap:8px; }
+  #courseNewWrap.on { display:flex; }
+  #courseNewInline { width:190px; }
+  body:has(#courseNewWrap.on) header, body:has(#courseNewWrap.on) #toolbar {
+    opacity:1; transform:none; pointer-events:auto; }
 
   /* —— p3-5（B12）键盘可达：统一焦点环 ——
      §六 的聚焦口径是「border 变 gold 50% 透明度」（输入框/下拉已在各处 :focus
@@ -86,6 +102,20 @@
   .mRow:focus-visible, .glRow:focus-visible { outline-offset:-2px; }
   #btnPause.warn { color:var(--warn);
                    border-color:color-mix(in srgb, var(--warn) 45%, transparent); }
+  /* §5 下课按钮：工具条里唯一的**主要按钮**（§六：gold 底 + 深字，每视图一个）。
+     它是一段终结性流程（暂停 + 花钱的摘要 + 归档）的入口，必须一眼可见；
+     不加大面积金色铺底以外的任何装饰，也不加动效（§5 只有三个动效）。
+     选择器写成 `#toolbar button#btnEndClass`：`#toolbar button`（id+元素）比单个
+     id 更具体，只写 `#btnEndClass` 会被它盖掉——实测背景色仍是 surface-2。 */
+  #toolbar button#btnEndClass { background:var(--gold); color:#1A1408;
+                                border-color:var(--gold); font-weight:600; }
+  #toolbar button#btnEndClass:hover { border-color:var(--gold); }
+  #toolbar button#btnEndClass:disabled { opacity:.45; cursor:not-allowed; }
+  /* §5 汇总面板的步骤行：状态色一律走语义令牌（§二），不新造颜色 */
+  #endSteps .tMeta.ok { color:var(--ok); }
+  #endSteps .tMeta.warn { color:var(--warn); }
+  #endSteps .tMeta.err { color:var(--err); }
+  #endSteps .tMeta.run { color:var(--text-2); }
   .spacer { flex:1; }
   .lvl { position:relative; width:150px; height:12px; background:var(--surface-2);
          border:1px solid var(--border); border-radius:8px; overflow:hidden; }
@@ -130,11 +160,21 @@
   #errClose { flex:none; background:none; border:none; color:var(--err); cursor:pointer; font-size:14px; }
 
   /* 轻提示 toast（条目8①③）：瞬态反馈（配置拒绝等），chip 2s 内会被轮询覆盖 */
-  #toast { position:fixed; top:48px; left:50%; transform:translateX(-50%); z-index:99;
+  /* z-index 300：本批新增的弹窗遮罩（关于 100 / 移动到与 dlgMask 150 / 向导 200）
+     都低于它——弹窗内报错（移动失败、保存被拒、恢复冲突…）走的正是 toast，
+     压在 55% 黑幕下等于看不见（评审2）。 */
+  #toast { position:fixed; top:48px; left:50%; transform:translateX(-50%); z-index:300;
            max-width:80vw; padding:8px 16px; border-radius:8px; font-size:var(--ui-small);
            background:color-mix(in srgb, var(--err) 14%, transparent); color:var(--err);
            border:1px solid color-mix(in srgb, var(--err) 45%, transparent);
            box-shadow:0 1px 2px rgba(0,0,0,.4); display:none; }  /* §4 投影上限 */
+  /* §3 toast 里的动作按钮（「打开文件夹」）：幽灵按钮（§6）——无边框、继承 toast
+     的文字色，悬停才显 surface-2，绝不与 toast 的颜色语义打架 */
+  #toast .toastAct { margin-left:12px; padding:2px 10px; border-radius:8px;
+                     background:none; border:none; color:inherit; cursor:pointer;
+                     font-size:var(--ui-small); font-family:inherit;
+                     text-decoration:underline; }
+  #toast .toastAct:hover { background:var(--surface-2); text-decoration:none; }
 
   /* 「回到最新」悬浮按钮（条目9②）：上滑回看时出现，点击回底并恢复吸底
      （§5-3 浮现动效；.on 由回看 JS 切换，display 语义不变） */
@@ -171,10 +211,10 @@
   #aboutBox .credits b { color:var(--text-1); }
   #aboutBox .lic { font-family:Consolas,monospace; font-size:11px;
                    color:var(--text-3); }
-  #aboutClose { float:right; background:none; border:1px solid var(--border);
+  #aboutClose, #moveClose { float:right; background:none; border:1px solid var(--border);
                 color:var(--text-2); border-radius:8px; width:24px; height:24px;
                 cursor:pointer; font-size:12px; }
-  #aboutClose:hover { color:var(--text-1); border-color:var(--border-strong); }
+  #aboutClose:hover, #moveClose:hover { color:var(--text-1); border-color:var(--border-strong); }
 
   /* 首启向导（p1-5）：全屏 3 步——①麦克风测试 ②DeepSeek key（可跳过）③试说一句 */
   #wizardMask { position:fixed; inset:0; z-index:200; display:none;
@@ -404,16 +444,20 @@
   body.view-glossary #viewGlossary { display:block; }
   body.view-settings #viewSettings { display:block; }
   .nbBar { display:flex; align-items:center; gap:8px; margin-bottom:16px; max-width:1180px; }
-  .nbBar input[type=search], .nbBar select {
+  .nbBar input[type=search], .nbBar select, .nbBar button {
     background:var(--surface-2); color:var(--text-1); border:1px solid var(--border);
-    border-radius:8px; padding:4px 12px; font-size:var(--ui-body); height:32px; }
+    border-radius:8px; padding:4px 12px; font-size:var(--ui-body); height:32px;
+    cursor:pointer; flex:none; }
+  .nbBar button:hover { border-color:var(--border-strong); }
   .nbBar input[type=search] { flex:1; min-width:180px; }
   .nbBar input:focus, .nbBar select:focus {
     border-color:color-mix(in srgb, var(--gold) 50%, transparent); outline:none; }
   .nbCount { font-size:var(--ui-small); color:var(--text-3);
              font-family:Consolas,monospace; flex:none; }
   .nbSplit { display:flex; gap:16px; align-items:flex-start; max-width:1180px; }
-  .nbList { flex:none; width:340px; display:flex; flex-direction:column; gap:4px;
+  /* §2 起每行多了行首勾选 +「移动到…」入口，列表相应加宽（340→380px），
+     否则日期/课程徽章/首句会被挤成省略号 */
+  .nbList { flex:none; width:380px; display:flex; flex-direction:column; gap:4px;
             max-height:calc(100vh - 230px); overflow-y:auto; }
   .nbRow { display:block; width:100%; text-align:left; cursor:pointer;
            background:var(--surface); border:1px solid var(--border);
@@ -422,6 +466,168 @@
   .nbRow:hover { border-color:var(--border-strong); }
   .nbRow.cur { border-color:color-mix(in srgb, var(--gold) 50%, transparent);
                background:var(--gold-dim); }
+  /* —— §2 课后改归属：行首多选 + 「移动到…」入口 + 批量条 + 弹窗 ——
+     令牌全部走 §二/§三/§四（surface(-2)/border/text 系 + gold 选中态 + radius），
+     不新造色值、不加动效（§5 只有三个动效，此处无一是）；勾选高亮用 gold 50%
+     描边（= §六「选中态」口径），可点行仍保留各自 :focus-visible 焦点环。 */
+  .nbRowWrap { display:flex; align-items:stretch; gap:6px; }
+  .nbRowWrap .nbRow { flex:1; min-width:0; }
+  .nbRowWrap.sel .nbRow { border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .nbPick { flex:none; display:flex; align-items:center; padding:0 2px; }
+  .nbPick input { width:16px; height:16px; accent-color:var(--gold); cursor:pointer; }
+  .nbMove { flex:none; align-self:center; background:var(--surface-2); color:var(--text-2);
+            border:1px solid var(--border); border-radius:8px; height:28px; padding:0 8px;
+            font-size:var(--ui-small); cursor:pointer; white-space:nowrap; }
+  .nbMove:hover { color:var(--text-1); border-color:var(--border-strong); }
+  .nbMove.danger:hover { color:var(--err);
+                         border-color:color-mix(in srgb, var(--err) 45%, transparent); }
+  .nbBatch { display:none; align-items:center; gap:8px; margin-bottom:8px; padding:8px 12px;
+             background:var(--surface-2); border:1px solid var(--border);
+             border-radius:8px; max-width:1180px; }
+  .nbBatch.on { display:flex; }
+  .nbBatch span { font-size:var(--ui-small); color:var(--text-2); }
+  .nbBatch .sp { flex:1; }
+  .nbBatch button { background:var(--surface); color:var(--text-1); border:1px solid var(--border);
+                    border-radius:8px; height:28px; padding:0 12px;
+                    font-size:var(--ui-small); cursor:pointer; }
+  .nbBatch button:hover:not(:disabled) { border-color:var(--border-strong); }
+  .nbBatch button:disabled { opacity:.45; cursor:not-allowed; }
+  /* —— §8 标签：chips（选中态走 §六 金色语义）、行内徽章、预览行、工具条快捷面板 ——
+     只加状态与布局，不新增色值（全部语义令牌）、不加动效（§5 三个动效之外一律瞬时）。 */
+  .tagChip { display:inline-flex; align-items:center; gap:4px; height:24px; padding:0 10px;
+             background:var(--surface-2); color:var(--text-2); border:1px solid var(--border);
+             border-radius:999px; font-size:var(--ui-small); cursor:pointer; }
+  .tagChip:hover { color:var(--text-1); border-color:var(--border-strong); }
+  .tagChip.on { background:var(--gold-dim); color:var(--gold);
+                border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .tagRow { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:10px; }
+  #toolbar button.tagChip { height:24px; font-size:var(--ui-small); }
+  #tagQuickWrap { display:none; align-items:center; gap:6px; flex-wrap:wrap; }
+  #tagQuickWrap.on { display:flex; }
+  #tagQuickNew { width:130px; }
+  .nbTagBadge { font-size:var(--ui-small); border-radius:999px; padding:1px 6px;
+                background:var(--surface-2); color:var(--text-2); flex:none; }
+  .nbTagLine { flex-basis:100%; display:flex; flex-wrap:wrap; gap:6px; padding-top:8px; }
+  body:has(#tagQuickWrap.on) header, body:has(#tagQuickWrap.on) #toolbar {
+    opacity:1; transform:none; pointer-events:auto; }   /* 面板开着就别自动隐藏工具条 */
+  #moveMask { position:fixed; inset:0; z-index:150; display:none;
+              align-items:center; justify-content:center; background:rgba(0,0,0,.55); }
+  #moveMask.on { display:flex; }
+  #moveBox { width:min(420px,92vw); max-height:82vh; overflow-y:auto;
+             background:var(--surface-2); border:1px solid var(--border);
+             border-radius:var(--radius); padding:16px 20px;
+             box-shadow:0 1px 2px rgba(0,0,0,.4); }
+  #moveBox h2 { font-size:var(--ui-title); color:var(--gold); margin-bottom:2px; }
+  #moveBox .sub { font-size:var(--ui-small); color:var(--text-2); line-height:1.6;
+                  margin-bottom:12px; }
+  #moveList { display:flex; flex-direction:column; gap:6px; margin-bottom:12px; }
+  #moveList button { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+                     background:var(--surface); color:var(--text-1);
+                     border:1px solid var(--border); border-radius:8px;
+                     padding:8px 12px; font-size:var(--ui-body); cursor:pointer; }
+  #moveList button:hover:not(:disabled) { border-color:var(--border-strong); }
+  #moveList button:disabled { opacity:.45; cursor:not-allowed; }
+  #moveList button.cur { border-color:color-mix(in srgb, var(--gold) 50%, transparent);
+                         background:var(--gold-dim); }
+  #moveList .cdot { width:8px; height:8px; border-radius:50%; flex:none; }
+  #moveList .mnum { margin-left:auto; font-size:var(--ui-small); color:var(--text-3);
+                    font-family:Consolas,monospace; }
+  .moveNew { display:flex; gap:8px; margin-bottom:12px; }
+  .moveNew input { flex:1; min-width:0; background:var(--surface); color:var(--text-1);
+                   border:1px solid var(--border); border-radius:8px; padding:4px 12px;
+                   height:32px; font-size:var(--ui-body); }
+  .moveNew input:focus { outline:none;
+    border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .moveNew button, .moveFoot button { background:var(--surface); color:var(--text-1);
+                    border:1px solid var(--border); border-radius:8px; height:32px;
+                    padding:0 12px; font-size:var(--ui-body); cursor:pointer; }
+  .moveNew button:hover, .moveFoot button:hover { border-color:var(--border-strong); }
+  .moveFoot { display:flex; justify-content:flex-end; }
+
+  /* —— §4 笔记管理：编辑 / 重命名 / 回收站 三个弹窗 + 回收站列表 ——
+     与「移动到…」同族（surface-2 悬浮层 + 1px 描边 + radius 12 + 0 1px 2px 投影），
+     令牌全部走 §二/§三/§四，不新造色值、不加动效（§5 只有三个动效）。 */
+  .dlgMask { position:fixed; inset:0; z-index:150; display:none; align-items:center;
+             justify-content:center; background:rgba(0,0,0,.55); }
+  .dlgMask.on { display:flex; }
+  .dlgBox { width:min(560px,92vw); max-height:86vh; overflow-y:auto;
+            background:var(--surface-2); border:1px solid var(--border);
+            border-radius:var(--radius); padding:16px 20px;
+            box-shadow:0 1px 2px rgba(0,0,0,.4); }
+  .dlgBox h2 { font-size:var(--ui-title); color:var(--gold); margin-bottom:2px; }
+  .dlgBox .sub { font-size:var(--ui-small); color:var(--text-2); line-height:1.6;
+                 margin-bottom:12px; }
+  .dlgBox .dlgClose { float:right; background:none; border:1px solid var(--border);
+                      color:var(--text-2); border-radius:8px; width:24px; height:24px;
+                      cursor:pointer; font-size:12px; }
+  .dlgBox .dlgClose:hover { color:var(--text-1); border-color:var(--border-strong); }
+  .dlgBox textarea { width:100%; height:46vh; min-height:240px; resize:vertical;
+                     background:var(--surface); color:var(--text-1);
+                     border:1px solid var(--border); border-radius:8px; padding:12px;
+                     font-family:Consolas,"Microsoft YaHei",monospace;
+                     font-size:var(--ui-small); line-height:1.6; margin-bottom:12px; }
+  .dlgBox textarea:focus { outline:none;
+    border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .dlgRow { display:flex; gap:8px; margin-bottom:12px; }
+  .dlgRow input { flex:1; min-width:0; background:var(--surface); color:var(--text-1);
+                  border:1px solid var(--border); border-radius:8px; padding:4px 12px;
+                  height:32px; font-size:var(--ui-body); }
+  .dlgRow input:focus { outline:none;
+    border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .dlgList { display:flex; flex-direction:column; gap:6px; margin-bottom:12px; }
+  .dlgList .tRow { display:flex; align-items:center; gap:8px; background:var(--surface);
+                   border:1px solid var(--border); border-radius:8px; padding:8px 12px; }
+  .dlgList .tName { flex:1; min-width:0; font-size:var(--ui-body); overflow:hidden;
+                    text-overflow:ellipsis; white-space:nowrap; }
+  .dlgList .tMeta { flex:none; font-size:var(--ui-small); color:var(--text-3);
+                    font-family:Consolas,monospace; }
+  .dlgList button { flex:none; background:var(--surface-2); color:var(--text-1);
+                    border:1px solid var(--border); border-radius:8px; height:28px;
+                    padding:0 10px; font-size:var(--ui-small); cursor:pointer; }
+  .dlgList button:hover { border-color:var(--border-strong); }
+  .dlgList button.danger:hover { color:var(--err);
+                                 border-color:color-mix(in srgb, var(--err) 45%, transparent); }
+  .dlgFoot { display:flex; gap:8px; justify-content:flex-end; }
+  .dlgFoot .sp { flex:1; }
+  .dlgFoot button { background:var(--surface); color:var(--text-1);
+                    border:1px solid var(--border); border-radius:8px; height:32px;
+                    padding:0 12px; font-size:var(--ui-body); cursor:pointer; }
+  .dlgFoot button:hover:not(:disabled) { border-color:var(--border-strong); }
+  .dlgFoot button:disabled { opacity:.45; cursor:not-allowed; }
+  .dlgFoot button.primary { background:var(--gold); color:#1A1408;
+                            border-color:var(--gold); font-weight:600; }
+  .dlgFoot button.danger:hover { color:var(--err);
+                                 border-color:color-mix(in srgb, var(--err) 45%, transparent); }
+
+  /* §7 手机同屏面板：二维码必须**高对比**才扫得动（§一-1 沉浸优先服务的是字幕，
+     这里是功能性例外）——故给码面固定白底 + 白边距（白是扫码的物理要求，走
+     --qr-bg 这个功能性令牌，见 :root 注释；240px 为 8px 网格整数倍，
+     面板居中，20~30cm 内可扫）。 */
+  #lanQr { display:flex; justify-content:center; margin:4px 0 12px; }
+  #lanQr svg { width:240px; height:240px; background:var(--qr-bg); padding:12px;
+               border-radius:var(--radius); }
+  #lanQr .noqr { width:240px; min-height:132px; display:flex; align-items:center;
+                 justify-content:center; text-align:center; padding:12px;
+                 background:var(--surface-2); border:1px dashed var(--border);
+                 border-radius:var(--radius); color:var(--text-2);
+                 font-size:var(--ui-small); line-height:1.6; }
+  #lanUrlRow { display:flex; gap:8px; margin-bottom:12px; }
+  #lanUrlRow input { flex:1; min-width:0; background:var(--surface); color:var(--text-1);
+                     border:1px solid var(--border); border-radius:8px; padding:6px 10px;
+                     font-family:Consolas,monospace; font-size:var(--ui-small); }
+  #lanUrlRow input:focus { outline:none;
+                           border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  #lanUrlRow button { flex:none; background:var(--surface-2); color:var(--text-1);
+                      border:1px solid var(--border); border-radius:8px; height:32px;
+                      padding:0 12px; font-size:var(--ui-body); cursor:pointer; }
+  #lanUrlRow button:hover { border-color:var(--border-strong); }
+  .lanSteps { margin:0 0 10px; padding-left:20px; font-size:var(--ui-small);
+              color:var(--text-2); line-height:1.75; }
+  .lanSteps b { color:var(--text-1); }
+  .lanSteps code { color:var(--text-1); background:var(--surface-2); border-radius:4px;
+                   padding:0 4px; font-size:var(--ui-small); }
+  .lanNote { font-size:var(--ui-small); color:var(--text-3); line-height:1.6;
+             margin:0 0 12px; }
   .nbRowTop { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
   .nbDate { font-size:var(--ui-small); color:var(--text-2); flex:none;
             font-family:Consolas,monospace; }
@@ -467,6 +673,18 @@
   .nbPair { display:flex; gap:16px; padding:8px 0;
             border-bottom:1px solid color-mix(in srgb, var(--border) 50%, transparent); }
   .nbPair:last-child { border-bottom:none; }
+  /* §6 可编辑摘要：预览页顶部的摘要块。全部走既有令牌（surface-2 底 + 1px border
+     + 8px 圆角，§六「输入/次级面板」）；摘要正文原样展示（pre-wrap，不做 md 渲染
+     ——渲染器是另一个功能面），上限 240px 高、超出滚动，不把逐句对照挤下去。 */
+  .nbSum { margin-bottom:12px; }
+  .nbSum.none { font-size:var(--ui-small); color:var(--text-3); line-height:1.7; }
+  .nbSumHead { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+               margin-bottom:6px; font-size:var(--ui-small); color:var(--text-2); }
+  .nbSumBody { background:var(--surface-2); border:1px solid var(--border);
+               border-radius:8px; padding:8px 12px; margin:0; max-height:240px;
+               overflow-y:auto; white-space:pre-wrap; word-break:break-word;
+               font-family:inherit; font-size:var(--ui-small); color:var(--text-1);
+               line-height:1.7; }
   .nbTs { flex:none; width:64px; font-size:var(--ui-small); color:var(--text-3);
           font-family:Consolas,monospace; padding-top:2px; }
   .nbCell { flex:1; min-width:0; font-size:var(--ui-body); line-height:1.5;
@@ -519,6 +737,9 @@
   .stateline .warn { color:var(--warn); }
   .stateline .ok { color:var(--ok); }
   .stateline .err { color:var(--err); }
+  /* §7：整行警示态（手机同屏「配置关了但仍在监听 LAN」这类风险提示整句变色，
+     而不是只在句子里挑几个字——风险提示要看整体） */
+  .stateline.warn { color:var(--warn); }
   #tokOut { flex:1; min-width:200px; font-family:Consolas,monospace; }
   .privacyList { list-style:none; margin:4px 0 12px; }
   .privacyList li { font-size:var(--ui-small); color:var(--text-2); line-height:1.9; }
@@ -602,6 +823,12 @@ footer span { white-space:nowrap; }
 
 <div id="toolbar">
   <button id="btnPause">⏸ 暂停</button>
+  <!-- §5 下课一键归档：暂停收音 → 生成摘要（已有则跳过）→ 导出笔记（§3 落盘/下载），
+       逐步结果进汇总面板（单步失败不中断后续）。位置紧跟暂停 = 会话级动作放一起，
+       金色主按钮（§六 主要按钮，每视图一个）——「下课」是这一段流程里唯一的
+       终结性动作，值得醒目；二次确认可在设置页关掉（config.class_end_confirm）。 -->
+  <button id="btnEndClass" class="primary"
+          title="下课归档：暂停收音 → 生成摘要 → 导出笔记（逐步结果在面板里逐条列示）">🎓 下课</button>
   <select id="selModel" title="识别档位（热切换；档位说明见设置页）">
     <option value="base">流畅 · 最快</option>
     <option value="small">标准 · 均衡</option>
@@ -622,6 +849,19 @@ footer span { white-space:nowrap; }
   <select id="selDevice" title="麦克风设备（条目15：切换即重建采集器并写入 config；loopback 音源下不参与采集）">
     <option value="">麦克风：跟随系统默认</option>
   </select>
+  <!-- §1 录制页选课程：与侧栏/设置页同源（courses.json 的 active）。选项 = 未分类 +
+       全部课程 +「＋ 新建课程…」；选中即 POST /api/courses/active，笔记归属走服务端既有
+       retag_course 语义（空笔记改头 / 记录中追加切换标记）。选项文本由
+       renderToolbarCourse() 用 textContent 填充（课程名是用户输入）。 -->
+  <select id="selCourse" title="当前课程：写入笔记归属；课上切换会在笔记里追加一行切换标记">
+    <option value="">课程：未分类</option>
+  </select>
+  <span id="courseNewWrap">
+    <input type="text" id="courseNewInline" maxlength="60" autocomplete="off" spellcheck="false"
+           placeholder="新课程名称（回车创建）" title="填新课程名后回车：创建并设为当前课程">
+    <button id="btnCourseNewGo" title="创建并设为当前课程">创建</button>
+    <button id="btnCourseNewCancel" title="取消（不建课程）">✕</button>
+  </span>
   <span class="lvl" title="VAD 语音概率（黄线为触发门限）">
     <div id="lvlBar"></div><div id="lvlThr"></div>
   </span>
@@ -630,6 +870,20 @@ footer span { white-space:nowrap; }
   <span class="spacer"></span>
   <button id="btnFontMinus" title="缩小字幕">A−</button>
   <button id="btnFontPlus" title="放大字幕">A＋</button>
+  <!-- §8 上课场景：一键给**当前笔记**打预设标签（"没听懂"当场标记）。
+       面板里的 chips 与预设由服务端给（GET /api/notes/tags 缺省 = 当前笔记）。 -->
+  <button id="btnTag" title="给当前笔记打标签（预设：重点/考试/没听懂/待复习）">🏷 标签</button>
+  <span id="tagQuickWrap">
+    <input type="text" id="tagQuickNew" maxlength="16" autocomplete="off" spellcheck="false"
+           placeholder="自定义标签" title="≤16 字符；禁空格 / 全角空格 / # / 换行">
+    <button id="tagQuickAdd" title="加这个标签">＋</button>
+    <button id="tagQuickClose" title="收起">✕</button>
+  </span>
+  <!-- §7 手机同屏（手机扫码看字幕）：面板 = 二维码 + URL + 已连接设备数 + 开关 +
+       防火墙三步排查。开关与设置页同键（config.lan_enabled）；改键只写配置，
+       **换绑监听地址要重启**——面板文案照 /api/lan-qr 的 restart_required 如实说，
+       绝不写「立即生效」。 -->
+  <button id="btnLan" title="手机同屏：同一 WiFi 的手机扫码看字幕（面板内有开关与防火墙排查）">📱 手机同屏</button>
   <button id="btnExport" title="下载当前双语笔记 md">导出笔记</button>
   <button id="btnClear" title="清空屏幕（不影响笔记文件）">清屏</button>
   <button id="btnFull" title="全屏">⛶</button>
@@ -689,7 +943,20 @@ footer span { white-space:nowrap; }
         <input type="search" id="nbSearch" placeholder="全文检索（支持中文，如「神经网络」）"
                autocomplete="off" spellcheck="false">
         <select id="nbCourseFilter" title="按课程筛选"><option value="">全部课程</option></select>
+        <select id="nbTagFilter" title="按标签筛选（与课程筛选、检索叠加）">
+          <option value="">全部标签</option>
+        </select>
         <span class="nbCount" id="nbCount"></span>
+        <button id="nbTrashBtn" title="回收站：软删除的笔记在这里，可恢复 / 彻底删除 / 清空">🗑 回收站</button>
+      </div>
+      <!-- §2 批量条：行首勾选 ≥1 篇才出现（多选只作用于**当前列表可见项**，
+           筛选/检索变化时选择集自动收敛）。批量操作走 /api/notes/course/batch。 -->
+      <div class="nbBatch" id="nbBatch">
+        <span id="nbBatchText">已选 0 篇</span>
+        <span class="sp"></span>
+        <button id="nbBatchMove" title="把选中的笔记一起改到同一课程（改写笔记头课程行）">移动到…</button>
+        <button id="nbBatchDelete" title="把选中的笔记一起移入回收站（可恢复）">删除</button>
+        <button id="nbBatchClear" title="取消所有勾选">清空选择</button>
       </div>
       <div class="nbSplit">
         <div class="nbList" id="nbList"></div>
@@ -927,6 +1194,23 @@ footer span { white-space:nowrap; }
       <p class="stateline" id="setAutostartState">…</p>
     </div>
 
+    <!-- §7 手机同屏：与字幕页「📱 手机同屏」面板**同一个开关**（config.lan_enabled）。
+         改键只写配置；换绑监听地址要重启——文案与状态行都按 /api/lan-qr 的事实说，
+         绝不写「立即生效」（服务端 restart_required 是唯一判据）。 -->
+    <div class="card">
+      <h2>手机同屏 <span class="stateline" style="display:inline">§7 · 同一 WiFi</span></h2>
+      <p class="desc">打开后同一 WiFi 的<b>手机扫码即可当第二块屏</b>（字幕以<b>明文
+        HTTP</b> 提供给持 token 的设备——只在可信网络里开）。<br>
+        <b>改完要重启 LectureLens 才换绑</b>：开启 = 服务开始监听 <b>0.0.0.0</b>
+        （8787 被占用时自动换端口，以字幕页面板/日志里的实际值为准）；关闭 = 回到
+        仅本机 <b>127.0.0.1</b>。二维码与排查步骤在字幕页工具条「📱 手机同屏」里。</p>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="setLanChk">
+          开启手机同屏（同 WiFi 可扫码看字幕）</label>
+      </div>
+      <p class="stateline" id="setLanState">…</p>
+    </div>
+
     <div class="card">
       <h2>安全</h2>
       <p class="desc">LAN 访问 token：手机等非本机设备首次访问需粘贴一次（页面会记住）。
@@ -956,6 +1240,51 @@ footer span { white-space:nowrap; }
       </div>
       <div class="row">
         <button id="btnKeyChange" title="更换 key（写入 .env 并热重建翻译器）">更换 key</button>
+      </div>
+    </div>
+
+    <!-- §3 导出位置（notes-batch）：设置后「导出」直接落盘到该目录（服务端返回
+         JSON {ok, path}），不再走浏览器下载；未设置 = 现状（浏览器下载，零变化）。
+        桌面版走 pywebview js_api 的系统原生文件夹选择框；浏览器/手机版自动退化为
+        手动输入绝对路径 + 「打开文件夹」（/api/export/open 仅本机 127.0.0.1 可用）。 -->
+    <!-- §5 下课归档：工具条「下课」按钮的三步流程与二次确认开关。
+         开关写 config.class_end_confirm（白名单布尔键）；关掉后点「下课」立即开始。 -->
+    <div class="card">
+      <h2>下课归档 <span class="stateline" style="display:inline">§5</span></h2>
+      <p class="desc">字幕页工具条「🎓 下课」一键收尾，依次做三件事，<b>单步失败不
+        中断后续</b>，结果逐条列在面板里：<br>
+        ① <b>暂停收音</b>（不再接收新内容，字幕停在最后一句）<br>
+        ② <b>生成课后 AI 摘要</b>（已有摘要则跳过；没有 DeepSeek key 则跳过并说明；
+        正在生成则等它完成；重新生成前会把旧版备份为 <b>*.summary.bak.md</b>）<br>
+        ③ <b>导出这篇笔记</b>（Markdown；设了导出位置就落盘到那里，否则走浏览器下载）</p>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="setEndConfirmChk">
+          点「下课」时先弹二次确认</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>导出 <span class="stateline" style="display:inline">§3 · 导出位置</span></h2>
+      <p class="desc">选一个文件夹后，<b>导出</b>（笔记库行 / 预览页的「导出」按钮）
+        会把产物<b>直接写到那里</b>，不再弹浏览器下载。<br>
+        文件名统一为 <b>课程_日期.扩展名</b>（如 <b>数学_20261013.pdf</b>；没有课程
+        归属的笔记维持原名），同名文件不会被覆盖（自动加 <b>-2</b>）。<br>
+        不设置 / 点「改回浏览器下载」= 维持现在的浏览器下载行为。</p>
+      <p class="stateline" id="setExportState">…</p>
+      <div class="row" id="setExportRow" hidden>
+        <input type="text" id="setExportInput" spellcheck="false"
+               style="flex:1;min-width:240px" placeholder="D:\LectureLens-导出（绝对路径）"
+               title="导出目录（config 白名单键 export_dir；须为绝对路径）">
+        <button id="btnExportPick" class="primary" hidden
+                title="打开系统原生文件夹选择框（仅桌面版可用）">选择文件夹…</button>
+        <button id="btnExportSave">保存</button>
+        <button id="btnExportCancel">取消</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnExportChange" title="选择/更换导出文件夹">设置导出位置</button>
+        <button id="btnExportOpen" title="在文件管理器里打开导出目录（仅本机可用）">打开文件夹</button>
+        <span class="spacer"></span>
+        <button id="btnExportClear" title="取消自选位置，恢复浏览器下载">改回浏览器下载</button>
       </div>
     </div>
 
@@ -997,9 +1326,10 @@ footer span { white-space:nowrap; }
       <li>音频不出电脑：采集 / 识别 / 分句全在本机（faster-whisper 本地推理）</li>
       <li>文字出网：仅识别后的文本经 HTTPS 发 DeepSeek（翻译 / 摘要 / 卡组）</li>
       <li>笔记在本地：transcripts/ 目录，不进 git、不上传</li>
-      <li><b>LAN 模式会对外提供明文 HTTP</b>：桌面模式只监听 127.0.0.1；用
-        <b>--server-only</b> 时服务监听 0.0.0.0，同一 WiFi 内持 token 的设备可用
-        <b>明文 HTTP</b> 读到字幕文本——仅在可信网络启用，详见隐私透明页</li>
+      <li><b>手机同屏会对外提供明文 HTTP</b>：默认（桌面模式与 --server-only 一样）
+        只监听 127.0.0.1；在字幕页/设置页打开「📱 手机同屏」（config
+        <code>lan_enabled</code>）并重启后，服务才监听 <b>0.0.0.0</b>，同一 WiFi 内
+        持 token 的设备可用<b>明文 HTTP</b> 读到字幕文本——仅在可信网络启用，详见隐私透明页</li>
     </ul>
     <p>详见 <a href="/privacy" target="_blank">隐私透明页</a>（B9 最小版）；
       <a href="#" id="aboutRewizard" title="清 first_run_done 标记并刷新">重开首启向导</a>。</p>
@@ -1031,6 +1361,157 @@ footer span { white-space:nowrap; }
       ctranslate2 <span class="lic">MIT</span> · onnxruntime <span class="lic">MIT</span> ·
       fpdf2 <span class="lic">LGPL-3.0</span> · python-docx <span class="lic">MIT</span> ·
       genanki <span class="lic">MIT</span> · keyboard <span class="lic">MIT</span></p>
+  </div>
+</div>
+
+<!-- §2 课后改归属：「移动到…」弹窗（单篇/批量共用）。列出全部课程 + 「未分类」+
+     内联新建课程；点哪门就把选中的笔记**整篇**改到那门——改写笔记头的课程行，
+     与课中切课的「追加切换标记」是两套语义（那条保留"当时切过"的事实）。
+     弹窗关闭/焦点/inert 走统一入口 openModal/closeModal（同关于弹窗）。 -->
+<div id="moveMask">
+  <div id="moveBox">
+    <button id="moveClose" title="关闭">✕</button>
+    <h2>移动到…</h2>
+    <p class="sub" id="moveSub"></p>
+    <div id="moveList"></div>
+    <div class="moveNew">
+      <input type="text" id="moveNewName" maxlength="60" autocomplete="off" spellcheck="false"
+             placeholder="新课程名称（回车创建并移入）"
+             title="填新课程名后回车：创建课程并把选中的笔记移进去">
+      <button id="moveNewGo" title="创建课程并移入">＋ 新建</button>
+    </div>
+    <div class="moveFoot"><button id="moveCancel">取消</button></div>
+  </div>
+</div>
+
+<!-- §4 笔记管理：编辑（md 原文）/ 重命名 / 回收站。三者都走统一入口
+     openModal/closeModal（焦点进弹窗 + 背景 inert + Escape 关闭 + 点遮罩关闭），
+     遮罩 id 已登记进 MASKS 白名单。 -->
+<div id="editMask" class="dlgMask">
+  <div id="editBox" class="dlgBox">
+    <button id="editClose" class="dlgClose" title="关闭">✕</button>
+    <h2>编辑笔记</h2>
+    <p class="sub" id="editSub"></p>
+    <div class="tagRow" id="editTags"></div>
+    <div class="dlgRow">
+      <input type="text" id="editTagNew" maxlength="16" autocomplete="off"
+             spellcheck="false" placeholder="自定义标签（回车添加；点 chips 可增删）"
+             title="≤16 字符；禁空格 / 全角空格 / # / 换行">
+      <button id="editTagAdd">＋ 加标签</button>
+    </div>
+    <textarea id="editText" spellcheck="false" autocomplete="off"></textarea>
+    <div class="dlgFoot">
+      <button id="editCancel">取消</button>
+      <button id="editSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="renameMask" class="dlgMask">
+  <div id="renameBox" class="dlgBox">
+    <button id="renameClose" class="dlgClose" title="关闭">✕</button>
+    <h2>重命名</h2>
+    <p class="sub">新文件名会规范化：自动补 lecture_ 前缀与 .md；禁路径分隔与系统保留名。
+      <b>笔记内容不改</b>，摘要/时间轴等派生文件跟着一起改名。</p>
+    <div class="dlgRow">
+      <input type="text" id="renameInput" maxlength="100" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="dlgFoot">
+      <button id="renameCancel">取消</button>
+      <button id="renameGo" class="primary">重命名</button>
+    </div>
+  </div>
+</div>
+
+<div id="sumMask" class="dlgMask">
+  <div id="sumBox" class="dlgBox">
+    <button id="sumClose" class="dlgClose" title="关闭">✕</button>
+    <h2>编辑摘要</h2>
+    <p class="sub" id="sumSub"></p>
+    <textarea id="sumText" spellcheck="false" autocomplete="off"></textarea>
+    <div class="dlgFoot">
+      <button id="sumCancel">取消</button>
+      <button id="sumSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- §5 下课归档：步骤汇总面板。点「下课」即开（先列出三步的 pending 行，做到哪步
+     更新哪步），单步失败不中断后续；面板**常驻**到用户关闭（toast 4s 就没了，
+     分钟级的摘要/导出结果得留着能回看）。走统一入口 openModal/closeModal。 -->
+<div id="endMask" class="dlgMask">
+  <div id="endBox" class="dlgBox">
+    <button id="endClose" class="dlgClose" title="关闭">✕</button>
+    <h2>下课归档</h2>
+    <p class="sub" id="endSub"></p>
+    <div class="dlgList" id="endSteps"></div>
+    <div class="dlgFoot">
+      <button id="endOpenFolder" hidden title="在文件管理器里打开导出目录（仅本机）">打开导出文件夹</button>
+      <span class="sp"></span>
+      <button id="endDone" class="primary">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- §7 手机同屏（手机扫码看字幕）：工具条「📱 手机同屏」打开。面板里的每个事实都来自
+     服务端——/api/lan-qr 的 enabled（配置意图）/ active（本次进程**实际**是否对外）/
+     restart_required（改了还没重启），以及 status.ws_clients（已连接设备数）。
+     **不自己编「已开启」**：改开关只写配置，换绑监听地址要重启，面板照实说。
+     二维码只在真的能连上时才画（服务端 url/svg 非空），其余情况给一句人话 + 排查指引。
+     走统一弹窗入口 openModal/closeModal（焦点/aria/inert/Escape 一套纪律）。 -->
+<div id="lanMask" class="dlgMask">
+  <div id="lanBox" class="dlgBox">
+    <button id="lanClose" class="dlgClose" title="关闭">✕</button>
+    <h2>📱 手机同屏</h2>
+    <p class="sub" id="lanMsg">…</p>
+    <div id="lanQr"></div>
+    <div id="lanUrlRow" hidden>
+      <input id="lanUrl" type="text" readonly spellcheck="false"
+             title="手机浏览器地址（含访问 token，勿外传截图）">
+      <button id="lanCopy" title="复制地址（手机端在地址栏粘贴一次即可）">复制</button>
+    </div>
+    <div id="lanSwitchRow" style="margin-bottom:8px">
+      <label class="chk"><input type="checkbox" id="lanChk">
+        开启手机同屏（同一 WiFi 可扫码看字幕）</label>
+    </div>
+    <p class="stateline" id="lanClients">已连接 0 台设备</p>
+    <p class="stateline" id="lanRestart" hidden></p>
+    <div id="lanHelpWrap">
+    <p class="sub" style="margin-top:12px"><b>手机连不上？按顺序排查这三步</b></p>
+    <ol class="lanSteps">
+      <li><b>防火墙弹窗点「允许访问」</b>：首次开启时 Windows 会问是否允许
+          <code>python.exe</code> 联网——必须选允许；当时点了「取消」的话，到
+          「Windows 安全中心 → 防火墙和网络保护 → 允许应用通过防火墙」里把 Python
+          的两个勾（专用/公用）补上。</li>
+      <li><b>网络配置选「专用网络」</b>：连着校园网/公司网时，Windows 常把网络判成
+          「公用」并默认拒绝入站；在「防火墙和网络保护」里把当前网络改成「专用网络」。</li>
+      <li><b>手机与电脑连同一个 WiFi</b>：别一个连 WiFi 一个连热点/有线到别的网段；
+          扫码前确认面板里显示的是「已开启」（而不是「重启后生效」）。</li>
+    </ol>
+    <p class="lanNote">仅同一 WiFi 可用（不做公网映射，出门在外连不上是正常的）；
+      URL/二维码里带着访问 token——<b>别把截图外传</b>，手机丢了或截图泄了可在设置页
+      「安全」卡重新生成 token（已配对的旧设备会被<b>立即断开</b>，需用新 token 重连）。</p>
+    </div>
+    <div class="dlgFoot">
+      <button id="lanRefresh" title="重新拉取二维码与状态（换网/换端口后用）">刷新</button>
+      <span class="sp"></span>
+      <button id="lanDone" class="primary">完成</button>
+    </div>
+  </div>
+</div>
+
+<div id="trashMask" class="dlgMask">
+  <div id="trashBox" class="dlgBox">
+    <button id="trashClose" class="dlgClose" title="关闭">✕</button>
+    <h2>回收站</h2>
+    <p class="sub" id="trashSub">删除的笔记先放这里（摘要/时间轴一起搬），随时可恢复；
+      彻底删除才是不可逆的。</p>
+    <div class="dlgList" id="trashList"></div>
+    <div class="dlgFoot">
+      <button id="trashEmpty" class="danger" title="清空回收站：不可恢复">清空回收站</button>
+      <span class="sp"></span>
+      <button id="trashDone">关闭</button>
+    </div>
   </div>
 </div>
 
@@ -1104,14 +1585,25 @@ function applyFont() {
 applyFont();
 
 // —— 条目19：LAN token —— 服务端 /api/* 与 /ws 校验 token（127.0.0.1 本机豁免）。
-// 手机首次访问 http://<ip>:8787/?token=xxx（或在弹窗粘贴一次）→ localStorage 记住。
+// 两条入口都落到同一个 localStorage 键（TOKEN_KEY）：
+//   ① ?token=xxx（老写法，手动粘贴用）；
+//   ② §7 手机同屏的二维码：URL 形如 http://<ip>:8787/#t=xxx——token 放 **hash 段**
+//      （浏览器绝不把 hash 发给服务端：不进服务端日志、不进 Referer、不落代理）。
+// 读完立刻 replaceState 清掉：地址栏不留凭据，顺手截图/转发也不会把 token 带出去。
 const TOKEN_KEY = 'll_token';
 const qsToken = new URLSearchParams(location.search).get('token');
 if (qsToken) { try { localStorage.setItem(TOKEN_KEY, qsToken); } catch (e) {} }
+const hashToken = (() => {              // §7：#t=<token>（hash 里可能还有别的前缀，取 t）
+  const m = /(?:^#|&)t=([^&]+)/.exec(location.hash || '');
+  if (!m) return '';
+  try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; }
+})();
+if (hashToken) { try { localStorage.setItem(TOKEN_KEY, hashToken); } catch (e) {} }
 let LL_TOKEN = '';
-try { LL_TOKEN = qsToken || localStorage.getItem(TOKEN_KEY) || ''; }
-catch (e) { LL_TOKEN = qsToken || ''; }
+try { LL_TOKEN = hashToken || qsToken || localStorage.getItem(TOKEN_KEY) || ''; }
+catch (e) { LL_TOKEN = hashToken || qsToken || ''; }
 if (qsToken) history.replaceState(null, '', location.pathname);  // 洗掉地址栏 token
+if (hashToken) history.replaceState(null, '', location.pathname + location.search);  // §7：同上，清 hash
 function apiURL(path) {
   return LL_TOKEN
     ? path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(LL_TOKEN)
@@ -1377,6 +1869,17 @@ function connect() {
     if (m.type === 'courses') {
       COURSES = { ...m, courses: m.courses || [] };
       renderCourseSidebar(); renderCourseCard();
+      renderToolbarCourse(m.active_name);   // §1：工具条下拉同步（另一窗口改课/切课即达）
+      return;
+    }
+    // §2 课后改归属：笔记归属变化（另一窗口移动/改归属）→ 侧栏计数与笔记库跟着刷新
+    if (m.type === 'notes') {
+      refreshCourses();
+      if (document.body.classList.contains('view-notes')) {
+        const sel = NB.sel;
+        refreshNotes().then(() => { if (sel && NB.sel === sel) openNote(sel); });
+      }
+      if ($('trashMask').classList.contains('on')) refreshTrash();   // §4：回收站开着就同步
       return;
     }
     // p2-4：模型缓存变化（另一窗口下载/删除）→ 刷新模型列表（档位视图同源刷新）
@@ -1407,7 +1910,10 @@ function connect() {
   };
 }
 connect();
-refreshCourses();   // p2-1：启动即拉课程表（侧栏/课程卡开箱有数据，不等进设置）
+// 注：课程表的启动拉取原先也写在这一行——但它在 p2-1/p3-5 引入 `let COURSES` /
+// `const LOADED` 之后成了 TDZ 死代码（实测：真 Chrome 控制台 "Uncaught (in promise)
+// at refreshCourses (index.html:2002) ← index.html:1410"，启动那次 /api/courses 从未
+// 发出，课程表要等进工作台才拉到）。已挪到脚本末尾的启动引导处，见文件末注释。
 refreshGlossaryTerms();  // p3-2：启动即拉生效词条（不等首次 2s 轮询就位）
 
 async function post(path) {
@@ -1440,9 +1946,18 @@ function friendlyError(raw) {
 }
 
 let toastTimer = null;
-function showToast(msg, kind) {
+function showToast(msg, kind, action) {
   const t = $('toast');
-  t.textContent = msg;
+  t.textContent = msg;        // 先赋值 = 顺带清掉上一次 toast 里的动作按钮
+  if (action && action.label && typeof action.fn === 'function') {
+    // §3：toast 里的动作按钮（如「打开文件夹」）——幽灵按钮（§6：无边框，
+    // 悬停才显 surface-2），点完即收起 toast 再执行动作
+    const b = document.createElement('button');
+    b.className = 'toastAct';
+    b.textContent = action.label;
+    b.onclick = () => { t.style.display = 'none'; action.fn(); };
+    t.appendChild(b);
+  }
   // p1-6：kind='ok' 走 CSS 类（成功绿）；其余沿用内联令牌边框（err/warn）
   t.className = kind === 'ok' ? 'ok' : '';
   t.style.borderColor = kind === 'ok' ? ''
@@ -1474,7 +1989,17 @@ $('btnRetrySmall').onclick = async () => {
 };
 
 $('btnPause').onclick = () => post(status_.paused ? '/api/resume' : '/api/pause');
-$('btnExport').onclick = () => { location.href = apiURL('/api/notes'); };
+$('btnExport').onclick = async () => {
+  // §3：设了导出位置 → 走导出中心（落盘 + toast「已导出到 …」+ 打开按钮）；
+  // 未设置 → **逐字保留原行为**（直接下载当前笔记 md）。现读 /api/config 而不是
+  // 复用 SETCFG 快照：设置页只在进工作台时刷新，开课后改了导出位置再回到字幕页
+  // 会让这个按钮按旧状态走（同一功能两个入口行为不一致最难查）。
+  let cfg = null;
+  try { cfg = await jfetch('/api/config'); } catch (e) { cfg = null; }
+  if (cfg && cfg.export_dir) { downloadNote('', 'md', null); return; }
+  location.href = apiURL('/api/notes');
+};
+$('btnEndClass').onclick = () => endClass();   // §5 下课一键归档
 $('btnClear').onclick = () => {
   clearPartial();
   log.innerHTML = '<div class="placeholder" id="ph">已清屏（笔记文件仍在记录）</div>';
@@ -1659,9 +2184,18 @@ async function pollStatus() {
 
     if (!modelBusy) syncModel();
     if (!langBusy) syncLang();   // 条目13④：下拉对齐服务端当前生效语言
+    // §1：status.course 变了 → 工具条课程下拉跟随（跃迁式，理由见本文件 §1 代码块注释）
+    if (status_.course !== lastCourseName) {
+      lastCourseName = status_.course;
+      syncToolbarCourse();
+    }
 
     if (status_.version) $('aboutVer').textContent = 'v' + status_.version;  // p1-3
     if (document.body.classList.contains('settings-on')) updateSettingsLive();  // p1-6
+    // §7：手机同屏面板/设置页开着时同步「已连接 N 台设备」（status.ws_clients = Hub.clients）
+    if ($('lanMask').classList.contains('on') || document.body.classList.contains('settings-on')) {
+      syncLanClients(status_.ws_clients);
+    }
     trackNoteTasks();      // p2-2：摘要/卡组任务收尾 → 刷新笔记库徽章
     trackModelDownload();  // p2-4：模型下载收尾 → 刷新列表并提示结果
     // p2-7：渐隐条数变了（设置页改的）→ 立刻重算，不必等下一句字幕到来
@@ -1687,9 +2221,16 @@ refreshTiers();   // 档位化：启动即拉一次（徽章显示档位名 + �
 //   · Escape：关闭最上层弹窗；向导走 wizardFinish()（等同「跳过向导」，语义一致）
 let _modalOpener = null;
 
+// 弹窗遮罩白名单（inert 与 Escape 共用一份）：新增弹窗只改这一行——
+// 漏一个的后果是「背景 inert 把弹窗自己也关在门外」或「Escape 关不掉」。
+const MASKS = ['aboutMask', 'wizardMask', 'moveMask', 'editMask', 'renameMask', 'trashMask',
+               'sumMask',    // §6：摘要编辑弹窗（同一套焦点/inert/Escape 纪律）
+               'endMask',    // §5：下课归档步骤面板
+               'lanMask'];   // §7：手机同屏面板（二维码/开关/排查指引）
+
 function _setBackgroundInert(on) {
   for (const el of document.body.children) {
-    if (el.tagName === 'SCRIPT' || el.id === 'aboutMask' || el.id === 'wizardMask') continue;
+    if (el.tagName === 'SCRIPT' || MASKS.includes(el.id)) continue;
     if (on) el.setAttribute('inert', '');
     else el.removeAttribute('inert');
   }
@@ -1704,7 +2245,8 @@ function openModal(mask) {
     box.setAttribute('aria-modal', 'true');
     // 第一个可聚焦控件（关于页 = ✕ 关闭；向导 = 当前步的按钮）
     const first = box.querySelector(
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled])');
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), '
+      + 'textarea:not([disabled])');
     (first || box).focus();
   }
   _setBackgroundInert(true);
@@ -1720,8 +2262,7 @@ function closeModal(mask) {
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  const mask = [$('aboutMask'), $('wizardMask')]
-    .find((m) => m && m.classList.contains('on'));
+  const mask = MASKS.map((id) => $(id)).find((m) => m && m.classList.contains('on'));
   if (!mask) return;
   e.preventDefault();
   if (mask.id === 'wizardMask') wizardFinish();   // 与「跳过向导」同一语义（写标记）
@@ -2001,7 +2542,12 @@ function emptySlot(box, cls, key, emptyText) {
 async function refreshCourses() {
   if (!LOADED.courses) renderCourseSidebar();   // 先把「载入中…」画出来
   const r = await jfetch('/api/courses');
-  if (r && r.ok) { COURSES = r; LOADED.courses = true; renderCourseSidebar(); renderCourseCard(); }
+  if (r && r.ok) {
+    COURSES = r;
+    LOADED.courses = true;
+    renderCourseSidebar(); renderCourseCard();
+    renderToolbarCourse(r.active_name);   // §1：工具条下拉随之重建（带上最新的 active_name）
+  }
   return r;
 }
 
@@ -2042,13 +2588,32 @@ function renderCourseSidebar() {
 }
 
 async function setActiveCourse(id) {
-  const r = await jfetch('/api/courses/active', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ active: id }) });
-  if (!r || !r.ok) { showToast((r && r.error) || '切换课程失败', 'err'); return; }
-  const extra = r.note === 'marked' ? '（笔记已插入切换标记）' : '';
-  showToast(`当前课程：${r.active_name}${extra}`, 'ok');
-  await refreshCourses();
+  if (courseBusy) return;              // 提交中：忽略重复选择（随后下拉对齐服务端真值）
+  courseBusy = true;
+  let ok = false, name = '';
+  try {
+    const r = await jfetch('/api/courses/active', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: id }) });
+    if (!r || !r.ok) {
+      showToast((r && r.error) || '切换课程失败', 'err');
+    } else {
+      ok = true;
+      name = r.active_name || '';
+      // note = 服务端 retag_course 的落笔结果：empty=空笔记改写头 / marked=记录中追加
+      // 切换标记 / none=无需改动。文案如实反映哪一种，别只说「已切换」。
+      const extra = r.note === 'marked' ? '（笔记已插入切换标记）'
+                  : r.note === 'empty' ? '（笔记头已更新）' : '';
+      showToast(`当前课程：${name}${extra}`, 'ok');
+    }
+  } catch (e) {
+    showToast('切换课程失败：服务无响应', 'err');
+  } finally {
+    courseBusy = false;
+  }
+  if (ok) status_.course = name;    // §1：立即反映到工具条下拉（不等下一轮 2s 轮询）
+  await refreshCourses();           // 无论成败都用服务端真值重建（失败即回滚下拉）
+  syncToolbarCourse();
 }
 
 function renderCourseCard() {
@@ -2124,10 +2689,10 @@ async function createCourse(name, glossary) {
   const r = await jfetch('/api/courses', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body) });
-  if (!r || !r.ok) { showToast((r && r.error) || '新建失败', 'err'); return false; }
+  if (!r || !r.ok) { showToast((r && r.error) || '新建失败', 'err'); return null; }
   showToast(`已新建「${r.course.name}」`, 'ok');
   await refreshCourses();
-  return true;
+  return r.course;   // §1：工具条内联新建要拿 id 接着「设为当前课程」；旧调用方只判真假
 }
 
 $('courseAdd').onclick = async () => {
@@ -2143,11 +2708,108 @@ $('sbCourseAdd').onclick = async () => {
   if (name) await createCourse(name, '');
 };
 
+// —— §1（录制页选课程）：工具条「课程」下拉 ——
+// 与侧栏/设置页**同源**（courses.json 的 active）：选项 = 未分类 + 全部课程 +
+// 「＋ 新建课程…」（选中即展开内联输入，调既有 POST /api/courses 建课，再设为当前课程）。
+// 选中 → POST /api/courses/active → 笔记归属交给服务端既有 retag_course 语义
+// （空笔记改头 / 记录中追加切换标记）——**前端不重复实现**这套分流，只显示它的结果。
+// 三条同步路径（缺一条就会出现「另一窗口改了、这边没跟上」）：
+//   ① 本窗口操作后 refreshCourses() 重建；
+//   ② WS 'courses' 广播（另一窗口改课/切课即时达，不必等轮询）；
+//   ③ status.course 轮询兜底——**跃迁式**：只在值变化时动作。若每 2s 无条件覆盖，
+//      会把 ①/② 刚取到的真值顶回这一轮之前的镜像值（同 p2-7 fade_lines 的口径）。
+const NEW_COURSE = '__new__';      // 「＋ 新建课程…」哨兵值（课程 id 不会是这种形态）
+const COURSE_PREFIX = '课程：';
+const selCourse = $('selCourse');
+const courseNewWrap = $('courseNewWrap');
+const courseNewInline = $('courseNewInline');
+let courseBusy = false;            // 切课提交中：下拉同步一律让位（别覆盖用户的选择）
+let lastCourseName = null;         // 上一次采纳的 status.course（跃迁式同步用）
+
+function courseOption(value, name, label) {
+  const o = document.createElement('option');
+  o.value = value;
+  o.dataset.name = name;           // 与 status.course 对齐的键（课程名 = 笔记归属主键）
+  o.textContent = label;           // 课程名是用户输入：一律 textContent，不拼 innerHTML
+  return o;
+}
+
+/** 重建下拉选项。fresh = **刚取到**的服务端当前课程名（GET/WS 载荷），比轮询镜像新。 */
+function renderToolbarCourse(fresh) {
+  selCourse.innerHTML = '';
+  const un = COURSES.uncategorized || '未分类';
+  selCourse.appendChild(courseOption('', un, COURSE_PREFIX + un));
+  for (const c of (COURSES.courses || [])) {
+    const o = courseOption(c.id, c.name, COURSE_PREFIX + c.name);
+    o.title = `设为当前课程：${c.name}`;
+    selCourse.appendChild(o);
+  }
+  selCourse.appendChild(courseOption(NEW_COURSE, NEW_COURSE, '＋ 新建课程…'));
+  syncToolbarCourse(fresh);
+}
+
+/** 下拉对齐服务端当前课程：默认取 status.course（条目①口径），可传更实时的 fresh。 */
+function syncToolbarCourse(fresh) {
+  if (courseBusy) return;          // 提交中：别覆盖用户刚选的值（提交完会再对齐一次）
+  const name = String(fresh ?? status_.course ?? COURSES.active_name ?? '').trim();
+  if (!name) return;
+  const hit = Array.from(selCourse.options).find((o) => o.dataset.name === name);
+  // 命不中（课程表还没拉到 / 它刚在另一窗口被删）→ 回落「未分类」默认态。
+  // 刻意不临时造一条「表外课程」选项：那种选项点不回去，只会变成新的说谎状态。
+  const target = hit ? hit.value : '';
+  if (selCourse.value !== target) selCourse.value = target;
+}
+
+function openCourseNewInline() {
+  courseNewWrap.classList.add('on');
+  courseNewInline.value = '';
+  courseNewInline.focus();
+  syncToolbarCourse();             // 下拉回到服务端当前课程（「＋ 新建课程…」不是停留态）
+}
+
+function closeCourseNewInline() {
+  courseNewWrap.classList.remove('on');
+  courseNewInline.value = '';
+  syncToolbarCourse();
+}
+
+let courseNewBusy = false;
+async function submitCourseNew() {
+  const name = courseNewInline.value.trim();
+  if (!name) { showToast('请先填课程名', 'err'); courseNewInline.focus(); return; }
+  if (courseNewBusy || courseBusy) return;
+  courseNewBusy = true;
+  try {
+    const course = await createCourse(name, '');   // 既有端点 POST /api/courses
+    if (!course) { syncToolbarCourse(); return; }  // 失败（重名/超限/非法）：toast 已给
+    closeCourseNewInline();
+    await setActiveCourse(course.id);              // 建完即设为当前课程（本下拉的语义）
+  } finally {
+    courseNewBusy = false;
+  }
+}
+
+selCourse.onchange = async () => {
+  const val = selCourse.value;
+  if (val === NEW_COURSE) { openCourseNewInline(); return; }   // 只是去新建，不切课
+  await setActiveCourse(val === '' ? null : val);              // 未分类 = active:null
+};
+courseNewInline.onkeydown = (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitCourseNew(); }
+  else if (e.key === 'Escape') closeCourseNewInline();
+};
+$('btnCourseNewGo').onclick = () => submitCourseNew();
+$('btnCourseNewCancel').onclick = () => closeCourseNewInline();
+
 // —— p2-2 笔记库（§七-2）——
 // 数据源 /api/notes/list（transcripts/ 真文件，无独立索引）；点条目 →
 // /api/notes/preview 解析 EN|ZH 行对。渲染一律 textContent（笔记正文是用户
 // 内容，绝不拼 innerHTML），与课程列表同款纪律。
-let NB = { notes: [], query: '', course: '', current: null, sel: null };
+let NB = { notes: [], query: '', course: '', tag: '', current: null, sel: null,
+           tagCounts: [] };
+// §2：行首勾选的多选集（批量改归属用）。只作用于**当前列表可见项**——筛选/检索
+// 变化时在 refreshNotes 里收敛，避免"看不见却被批量改掉"的意外。
+let nbPicked = new Set();
 let nbTimer = null;
 // 摘要/卡组是后台任务：记下上一次轮询看到的状态，只在 running→终态**跃迁**时
 // 刷新列表（否则每 2s 重扫全部笔记纯浪费）。
@@ -2171,17 +2833,25 @@ async function refreshNotes() {
   const p = new URLSearchParams();
   if (NB.query) p.set('q', NB.query);
   if (NB.course) p.set('course', NB.course);
+  if (NB.tag) p.set('tag', NB.tag);          // §8：与课程筛选、检索三者叠加
   const qs = p.toString();
   if (!LOADED.notes) renderNoteList();          // p3-5：首屏先画「载入中…」
   const r = await jfetch('/api/notes/list' + (qs ? '?' + qs : ''));
   if (!r || !r.ok) { renderNoteList(); showToast((r && r.error) || '读取笔记列表失败', 'err'); return; }
   NB.notes = r.notes || [];
   NB.current = r.current;
+  NB.tagCounts = r.tag_counts || [];         // §8：全局标签清单+计数（筛选栏用）
+  // §2：选择集收敛到当前可见项（被筛掉的自动取消勾选，见 nbPicked 注释）
+  if (nbPicked.size) {
+    nbPicked = new Set([...nbPicked].filter((n) => NB.notes.some((x) => x.name === n)));
+    renderBatchBar();
+  }
   // 当前选中项被筛选掉 → 清空预览（否则右侧会留着不在列表里的笔记）
   if (NB.sel && !NB.notes.some(n => n.name === NB.sel)) { NB.sel = null; }
   LOADED.notes = true;
   renderNoteList();
   renderCourseFilter();
+  renderTagFilter();                         // §8：标签下拉跟着刷新（含计数）
   if (!NB.sel) renderPreviewEmpty();
 }
 
@@ -2206,14 +2876,37 @@ function renderCourseFilter() {
   sel.value = NB.course;
 }
 
+function renderTagFilter() {
+  const sel = $('nbTagFilter');
+  const list = NB.tagCounts || [];
+  sel.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部标签';
+  sel.appendChild(all);
+  for (const it of list) {
+    const o = document.createElement('option');
+    o.value = it.tag;
+    o.textContent = `#${it.tag}（${it.count}）`;
+    sel.appendChild(o);
+  }
+  if (NB.tag && !list.some((x) => x.tag === NB.tag)) {
+    const o = document.createElement('option');   // 当前筛选值必须可选，否则切不回去
+    o.value = NB.tag;
+    o.textContent = '#' + NB.tag;
+    sel.appendChild(o);
+  }
+  sel.value = NB.tag;
+}
+
 function renderNoteList() {
   const box = $('nbList');
   box.innerHTML = '';
   $('nbCount').textContent = NB.notes.length ? `${NB.notes.length} 篇` : '';
   if (!NB.notes.length) {
     emptySlot(box, 'nbEmpty', 'notes',
-              (NB.query || NB.course)
-                ? '没有匹配的笔记。换个关键词或清掉课程筛选。'
+              (NB.query || NB.course || NB.tag)
+                ? '没有匹配的笔记。换个关键词，或清掉课程/标签筛选。'
                 : '还没有笔记。上一节课后会自动出现在这里。');   // p3-5：区分载入中
     return;
   }
@@ -2229,6 +2922,21 @@ function nbFlag(label, on) {
 }
 
 function noteRow(n) {
+  const wrap = document.createElement('div');
+  wrap.className = 'nbRowWrap' + (nbPicked.has(n.name) ? ' sel' : '');
+  const pick = document.createElement('label');
+  pick.className = 'nbPick';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = nbPicked.has(n.name);
+  cb.title = '勾选后可批量改课程归属';
+  cb.setAttribute('aria-label', `选择 ${n.date} 的笔记`);
+  cb.onchange = () => {
+    if (cb.checked) nbPicked.add(n.name); else nbPicked.delete(n.name);
+    wrap.classList.toggle('sel', cb.checked);
+    renderBatchBar();
+  };
+  pick.appendChild(cb);
   const b = document.createElement('button');
   b.className = 'nbRow' + (NB.sel === n.name ? ' cur' : '');
   b.title = n.name + (n.name === NB.current ? '（正在记录）' : '');
@@ -2244,13 +2952,31 @@ function noteRow(n) {
   const f = document.createElement('span');
   f.className = 'nbFlags';
   f.append(nbFlag('摘要', n.has_summary), nbFlag('卡组', n.has_deck));
+  if ((n.tags || []).length) {
+    const t = document.createElement('span');
+    t.className = 'nbTagBadge';
+    t.textContent = `🏷 ${n.tags.length}`;
+    t.title = '标签：' + n.tags.map((x) => '#' + x).join(' ');
+    f.appendChild(t);
+  }
   top.append(d, c, f);
   const first = document.createElement('div');
   first.className = 'nbFirst';
   first.textContent = n.first_en || n.first_zh || '（无内容）';
   b.append(top, first);
   b.onclick = () => openNote(n.name);
-  return b;
+  const mv = document.createElement('button');
+  mv.className = 'nbMove';
+  mv.textContent = '移动';
+  mv.title = '移动到…（改写笔记头的课程行，与课中"追加切换标记"不同）';
+  mv.onclick = () => openMoveDialog([n.name]);
+  const del = document.createElement('button');
+  del.className = 'nbMove danger';
+  del.textContent = '删除';
+  del.title = '移入回收站（可恢复；彻底删除在回收站里做）';
+  del.onclick = () => delNote([n.name]);
+  wrap.append(pick, b, mv, del);
+  return wrap;
 }
 
 function renderPreviewEmpty() {
@@ -2297,8 +3023,8 @@ function renderPreview(d) {
   // 顶部操作（§七-2）：摘要 / 卡组 / 导出 —— 均作用于**当前这篇**（name 参数化）
   const bSum = document.createElement('button');
   bSum.textContent = '摘要';
-  bSum.title = '对这篇生成课后 AI 摘要（后台任务）';
-  bSum.onclick = () => runNoteTask('摘要', 'summary', '/api/notes/summarize', d.name);
+  bSum.title = '对这篇生成课后 AI 摘要（后台任务；已有摘要会先备份再覆盖）';
+  bSum.onclick = () => startSummary(d.name, d.has_summary);   // §6：覆盖前弹确认
   const bDeck = document.createElement('button');
   bDeck.textContent = '卡组';
   bDeck.title = '从这篇的摘要生成 Anki 卡组（需先有摘要）';
@@ -2320,12 +3046,47 @@ function renderPreview(d) {
   bExp.textContent = '导出';
   bExp.title = '按左侧格式下载这篇笔记';
   bExp.onclick = () => downloadNote(d.name, fmtSel.value, bExp);
-  ph.append(bSum, bDeck, fmtSel, bExp);
+  const bMove = document.createElement('button');
+  bMove.textContent = '移动到…';
+  bMove.title = '把这篇的课程归属改成…（改写笔记头的课程行）';
+  bMove.onclick = () => openMoveDialog([d.name]);
+  // §4 三件套：编辑（md 原文）/ 重命名 / 删除（软删进回收站）
+  const bEdit = document.createElement('button');
+  bEdit.textContent = '编辑';
+  bEdit.title = '编辑 md 原文（保存时若有新字幕写进来会拒绝覆盖）';
+  bEdit.onclick = () => openEdit(d.name);
+  const bRen = document.createElement('button');
+  bRen.textContent = '重命名';
+  bRen.title = '改文件名（内容不改；摘要/时间轴跟着改名）';
+  bRen.onclick = () => openRename(d.name);
+  const bDel = document.createElement('button');
+  bDel.textContent = '删除';
+  bDel.title = '移入回收站（可恢复）';
+  bDel.onclick = () => delNote([d.name]);
+  ph.append(bSum, bDeck, bEdit, bRen, bDel, bMove, fmtSel, bExp);
+  // §8：标签 chips（点一下即增/删——比"打开编辑面板再点"快；服务端做规则校验）
+  const tagLine = document.createElement('div');
+  tagLine.className = 'nbTagLine';
+  for (const t of (d.tags || [])) {
+    tagLine.appendChild(tagChipEl(t, true, () => toggleNoteTag(d.name, d.tags || [], t)));
+  }
+  if (!(d.tags || []).length) {
+    const hint = document.createElement('span');
+    hint.className = 'nbCount';
+    hint.textContent = '还没有标签（「编辑」或字幕页 🏷 可加）';
+    tagLine.appendChild(hint);
+  }
+  ph.appendChild(tagLine);
   const head = document.createElement('div');
   head.className = 'nbHead';
   head.append(nbCell('nbTs', '时间'), nbCell('nbCol', '英文原文'),
               nbCell('nbCol', '中文译文'));
-  box.append(ph, head);
+  // §6 可编辑摘要：摘要块插在 EN|ZH 对照之上（先看结论，再看逐句对话）。
+  // 内容异步填（读摘要原文要发一次请求），失败/为空都不挡下面的对照渲染。
+  const sumBox = document.createElement('div');
+  sumBox.className = 'nbSum';
+  box.append(ph, sumBox, head);
+  renderSummaryPanel(sumBox, d.name, !!d.has_summary, !!d.has_summary_backup);
   if (!d.pairs.length) {
     const e = document.createElement('div');
     e.className = 'nbEmpty';
@@ -2353,19 +3114,145 @@ async function runNoteTask(label, key, path, name) {
   showToast(`${label}已开始（后台进行，完成后列表徽章会自动更新）`, 'ok');
 }
 
+// —— §6 可编辑摘要：预览页的摘要块 + 人工修订 ——
+// 摘要原文（lecture_*.summary.md）由服务端按笔记名派生，前端只传**笔记名**；
+// 「编辑」把原文读进弹窗（走 /api/notes/summary 的 sha 做乐观并发），保存就地写回。
+// 重新「生成摘要」前先弹确认（覆盖会丢人工修订）——服务端还会先备份为
+// `*.summary.bak.md`，两道都在：确认是防手滑，备份是防万一。
+let sumTarget = null;    // {name, sha} 正在编辑的摘要
+
+async function renderSummaryPanel(host, name, hasSummary, hasBackup) {
+  try {
+    if (!hasSummary) {
+      host.classList.add('none');
+      host.textContent = '还没有摘要 —— 点上方「摘要」生成（生成后这里可直接人工修订）。';
+      return;
+    }
+    const r = await jfetch('/api/notes/summary?name=' + encodeURIComponent(name));
+    if (!r || !r.ok || !r.exists) {
+      host.classList.add('none');   // 期间被删/读失败：如实降级，不留空块
+      host.textContent = '摘要读取失败' + ((r && r.error) ? '：' + r.error : '');
+      return;
+    }
+    const head = document.createElement('div');
+    head.className = 'nbSumHead';
+    const t = document.createElement('span');
+    t.textContent = '📝 摘要（人工可编辑）';
+    const btn = document.createElement('button');
+    btn.textContent = '编辑摘要';
+    btn.title = '人工修订摘要原文（保存就地写回）；重新「生成摘要」前会自动备份为 '
+                + r.backup;
+    btn.onclick = () => openSummaryEdit(r);
+    head.append(t, btn);
+    if (r.has_backup || hasBackup) {
+      const b = document.createElement('span');
+      b.className = 'nbCount';
+      b.textContent = `有上一版备份：${r.backup}（重新生成时刷新）`;
+      head.appendChild(b);
+    }
+    const body = document.createElement('pre');
+    body.className = 'nbSumBody';
+    body.textContent = r.text;      // 摘要正文是用户内容：textContent，绝不拼 innerHTML
+    host.append(head, body);
+  } catch (e) {
+    host.classList.add('none');
+    host.textContent = '摘要读取失败：服务无响应';
+  }
+}
+
+async function openSummaryEdit(r) {
+  sumTarget = { name: r.name, sha: r.sha };
+  $('sumSub').textContent =
+    `${r.summary} —— 人工修订版，保存即就地写回（整篇替换）。`
+    + `若之后重新「生成摘要」，这一版会先备份为 ${r.backup}。`;
+  $('sumText').value = r.text;
+  openModal($('sumMask'));
+  $('sumText').focus();
+}
+
+async function saveSummaryEdit() {
+  if (manageBusy || !sumTarget) return;
+  manageBusy = true;
+  $('sumSave').disabled = true;
+  try {
+    const r = await jfetch('/api/notes/summary', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: sumTarget.name, text: $('sumText').value,
+                             base_sha: sumTarget.sha }) });
+    if (!r || !r.ok) {
+      showToast((r && r.error) || '摘要保存失败', 'err');   // 弹窗留着：文本不丢
+      return;
+    }
+    const size = r.size < 1024 ? `${r.size} B` : `${Math.round(r.size / 1024)} KB`;
+    showToast(`摘要已保存（${size}）`, 'ok');
+    closeModal($('sumMask'));
+    sumTarget = null;
+    const sel = NB.sel;
+    await refreshNotes();
+    if (sel) await openNote(sel);   // 重画预览：摘要块显示新内容
+  } catch (e) {
+    showToast('摘要保存失败：服务无响应', 'err');
+  } finally {
+    manageBusy = false;
+    $('sumSave').disabled = false;
+  }
+}
+
+async function startSummary(name, fallbackHas) {
+  // §6：重新生成前检测已有摘要 → 确认框（文案说明会先备份到哪）。
+  // 现读一次而不是只用列表/预览的快照：快照可能过期（别的地方刚生成过）。
+  let has = !!fallbackHas;
+  try {
+    const r = await jfetch('/api/notes/summary?name=' + encodeURIComponent(name));
+    if (r && r.ok) has = !!r.exists;
+  } catch (e) { /* 读不到就用快照判：确认框宁可多弹一次，也不少弹 */ }
+  if (has) {
+    const bak = name.replace(/\.md$/, '') + '.summary.bak.md';
+    if (!confirm(`这篇已有摘要。重新生成会覆盖当前内容（包括你的修改）。\n\n`
+                 + `覆盖前会自动把现在这一版备份为：\n${bak}\n\n继续？`)) return;
+  }
+  await runNoteTask('摘要', 'summary', '/api/notes/summarize', name);
+}
+
 // p2-3 导出：走 fetch + blob，**不用 location.href** —— 后者失败时只会把用户丢到
 // 一个纯文本错误页（浏览器直接渲染 JSON），拿不到「用户可见的错误」。这里失败读
 // 响应体的 error 字段弹 toast，成功才触发下载。
+// §3 增：设置页选了导出位置后，服务端**直接落盘**并回 JSON（Content-Type 是
+// application/json，与四种格式的媒体类型都不撞）——此时不下载、只提示「已导出到 …」
+// 并给一个「打开文件夹」动作按钮；未设置仍是原来的 blob 下载（零变化）。
 function exportFilename(r, name, fmt) {
   const cd = r.headers.get('content-disposition') || '';
-  const m = /filename="([^"]+)"/.exec(cd);
+  // §3：文件名可能是中文课程名（数学_20261013.pdf）——服务端此时按 RFC 5987 发
+  // `filename*=utf-8''…`（响应头只能 latin-1，中文写不进 filename="…"），优先解析它；
+  // 纯 ASCII 名字仍走老写法。
+  let m = /filename\*=utf-8''([^;]+)/i.exec(cd);
+  if (m) {
+    try { return decodeURIComponent(m[1].trim()); } catch (e) { /* 编码坏了走老写法 */ }
+  }
+  m = /filename="([^"]+)"/.exec(cd);
   return m ? m[1] : `${name.replace(/\.md$/, '')}.${fmt}`;
 }
 
-async function downloadNote(name, fmt, btn) {
+// 桌面壳（pywebview）是否注入了 js_api：注入后才有多选文件夹的原生对话框；
+// 纯服务/浏览器/手机模式没有它 → 导出卡自动退化为「手动输入路径 + 打开文件夹」。
+function desktopApi() {
+  return (window.pywebview && window.pywebview.api) ? window.pywebview.api : null;
+}
+
+// 在文件管理器里打开导出目录（服务端 os.startfile；仅本机 127.0.0.1 可用）
+async function openExportDir() {
+  const r = await jfetch('/api/export/open', { method: 'POST' });
+  if (r && r.ok) return true;
+  showToast(friendlyError((r && r.error) || '打开文件夹失败'), 'err');
+  return false;
+}
+
+// 导出一篇笔记（§3 的核心动作）→ {ok, kind:'saved'|'downloaded', path, name, bytes,
+// error}。落盘/下载/错误三种终态都在这里做，**由调用方决定怎么反馈**：
+// 笔记库的「导出」按钮要 toast（downloadNote），§5 下课归档要写进步骤面板（endClass）。
+async function exportNote(name, fmt) {
   const url = '/api/notes/export?fmt=' + encodeURIComponent(fmt) +
               '&name=' + encodeURIComponent(name);
-  if (btn) btn.disabled = true;
   try {
     const r = await fetch(apiURL(url));
     if (!r.ok) {
@@ -2374,8 +3261,13 @@ async function downloadNote(name, fmt, btn) {
         const j = await r.json();
         if (j && j.error) msg = j.error;
       } catch (e) { /* 非 JSON 错误体：保留默认文案 */ }
-      showToast(msg, 'err');
-      return;
+      return { ok: false, error: msg };
+    }
+    if ((r.headers.get('content-type') || '').includes('application/json')) {
+      const j = await r.json();          // §3 落盘模式：{ok, path, name, dir, bytes}
+      if (!j.ok) return { ok: false, error: j.error || '导出失败' };
+      return { ok: true, kind: 'saved', path: j.path, name: j.name, bytes: j.bytes,
+               dir: j.dir };
     }
     const blob = await r.blob();
     const href = URL.createObjectURL(blob);
@@ -2386,11 +3278,290 @@ async function downloadNote(name, fmt, btn) {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(href), 5000);
-    showToast(`已导出 ${fmt.toUpperCase()}（${Math.round(blob.size / 1024)} KB）`, 'ok');
+    return { ok: true, kind: 'downloaded', name: a.download, bytes: blob.size };
   } catch (e) {
-    showToast('导出失败：' + e, 'err');
+    return { ok: false, error: '导出失败：' + e };
+  }
+}
+
+async function downloadNote(name, fmt, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await exportNote(name, fmt);
+    if (!res.ok) { showToast(res.error, 'err'); return; }
+    if (res.kind === 'saved') {
+      showToast(`已导出到 ${res.path}`, 'ok', { label: '打开', fn: openExportDir });
+      return;
+    }
+    showToast(`已导出 ${fmt.toUpperCase()}（${Math.round(res.bytes / 1024)} KB）`, 'ok');
   } finally {
     if (btn) btn.disabled = false;
+  }
+}
+
+// —— §5 下课一键归档 ——
+// 一键给一节课收尾：暂停收音 → 生成摘要（已有则跳过、无 API key 明说跳过、正在跑则
+// 等完成）→ 导出这篇笔记（§3：设了导出位置直接落盘，未设置走浏览器下载）。
+// **单步失败不中断后续**：每步成败都写进汇总面板（常驻，不像 toast 4 秒就没），
+// 后面一步失败也不影响前面已经做成的事。二次确认默认开，设置页可关
+// （config.class_end_confirm）；无笔记（还没上过课）明确提示、一步都不跑。
+const END_SUMMARY_WAIT_MS = 20 * 60 * 1000;   // 等摘要的上限（超时如实报告，不假装成功）
+const END_STEPS = [['pause', '① 暂停收音'],
+                   ['summary', '② 生成摘要'],
+                   ['export', '③ 导出笔记']];
+let endRunning = false;
+//: 每步的终态：'ok' / 'warn'（跳过）/ 'err'，以及给汇总 toast 用的短文案
+let endStepStatus = {};
+let endStepShort = {};
+
+function openEndPanel(sub, withSteps = true) {
+  const box = $('endSteps');
+  box.innerHTML = '';
+  endStepStatus = {};
+  endStepShort = {};
+  if (withSteps) {
+    for (const [key, label] of END_STEPS) {
+      const row = document.createElement('div');
+      row.className = 'tRow';
+      const name = document.createElement('span');
+      name.className = 'tName';
+      name.textContent = label;
+      const meta = document.createElement('span');
+      meta.className = 'tMeta run';
+      meta.id = 'endStep-' + key;
+      meta.textContent = '等待…';
+      row.append(name, meta);
+      box.appendChild(row);
+    }
+  }
+  $('endSub').textContent = sub;
+  $('endOpenFolder').hidden = true;
+  $('endDone').disabled = withSteps;      // 跑的过程中别点「完成」当"中止"用
+  openModal($('endMask'));
+}
+
+function setEndStep(key, text, cls, short) {
+  const el = $('endStep-' + key);
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'tMeta ' + (cls || 'run');
+  endStepStatus[key] = cls || 'run';
+  if (short) endStepShort[key] = short;
+}
+
+// §5 汇总结论（docs/notes-batch.md 承诺的「汇总 toast」）：面板可以被关掉，toast 是
+// 最后一道可见结果——跑完（或异常中断）都发一条，逐条列出三步的结局。
+function endClassSummaryToast() {
+  if (!endStepStatus.pause) return;       // 还没开始（无笔记）或没跑到：不发
+  const line = END_STEPS.map(([key, label]) =>
+    `${label.slice(0, 1)} ${endStepShort[key] || '—'}`).join(' · ');
+  const failed = END_STEPS.filter(([key]) => endStepStatus[key] === 'err')
+                           .map(([, label]) => label);
+  showToast(failed.length
+    ? `下课归档有失败：${line}（${failed.join('、')} 失败，详见面板）`
+    : `下课归档完成：${line}`, failed.length ? 'err' : 'ok');
+}
+
+async function waitEndSummary(wantName) {
+  // wantName = **本篇**的摘要文件名（lecture_X.summary.md）。只认本篇的终结态：
+  // 此前只看全局 state，别的笔记刚跑完会被算到这一步上（实测假报「✓ 摘要已生成」，
+  // 而本篇其实没有摘要）。path 为空的中间态继续等（POST 已受理，任务刚置位）。
+  const t0 = Date.now();
+  while (Date.now() - t0 < END_SUMMARY_WAIT_MS) {
+    await new Promise((r) => setTimeout(r, 2000));
+    let s = null;
+    try {
+      const st = await jfetch('/api/status');
+      s = (st && st.summary) || null;
+    } catch (e) { s = null; }             // 轮询失败不致命：下一轮再试
+    if (!s) continue;
+    const p = String(s.path || '').replace(/\\/g, '/');
+    const mine = !p || p.endsWith('/' + wantName);
+    if (!mine && (s.state === 'done' || s.state === 'error')) {
+      // 终结态属于**别的笔记**：本次没排上队（只有并发进入 busy 分支才会走到），
+      // 如实说清楚，而不是干等 20 分钟再报「等待超时」。
+      setEndStep('summary', '⏭ 上一轮生成的是另一篇笔记，本篇未生成（可到预览页单独「摘要」）',
+                 'warn', '跳过（别的在跑）');
+      return;
+    }
+    if (!mine) continue;                  // 别人家的任务还在跑：继续等本篇
+    if (s.state === 'done') {
+      const nb = s.backup ? `，上一版已备份为 ${s.backup}` : '';
+      setEndStep('summary', `✓ 摘要已生成（${s.total} 块 · 失败 ${s.failed}）${nb}`, 'ok',
+                 '摘要已生成');
+      return;
+    }
+    if (s.state === 'error') {
+      setEndStep('summary', '✗ 摘要失败：' + (s.error || '未知原因'), 'err', '摘要失败');
+      return;
+    }
+    if (s.state === 'running') {
+      setEndStep('summary', `生成中… ${s.done || 0}/${s.total || '?'} 块`, 'run',
+                 '生成中');
+    }
+    // idle→running 之间的一拍也继续等（POST 已受理）
+  }
+  setEndStep('summary', '⏳ 等待超时（摘要仍在后台跑）——之后到笔记库看结果', 'warn',
+             '等待超时');
+}
+
+async function endClassSummary(current) {
+  const want = current.replace(/\.md$/, '') + '.summary.md';
+  setEndStep('summary', '进行中…', 'run', '进行中');
+  // 任何一步的异常（fetch 被拒/响应体不是 JSON）都必须**就地记成 ✗ 并返回**：
+  // 之前裸 await 的 jfetch 抛出会整条穿出 endClass，①②停在进行中、③根本不跑
+  // （评审2 实证），与「单步失败不中断后续」直接矛盾。
+  try {
+    const snap = (status_ || {}).summary || {};
+    let exists = false;
+    try {
+      const s = await jfetch('/api/notes/summary?name=' + encodeURIComponent(current));
+      if (s && s.ok) exists = !!s.exists;
+    } catch (e) { exists = false; }
+    if (snap.state === 'running') {
+      const p = String(snap.path || '').replace(/\\/g, '/');
+      const mine = p.endsWith('/' + want);
+      if (!mine) {
+        setEndStep('summary', '⏭ 跳过：另一篇笔记的摘要正在生成（本批不排队）', 'warn',
+                   '跳过（别的在跑）');
+        return;
+      }
+      setEndStep('summary', '这篇的摘要任务在跑，等它完成…', 'run', '等生成');
+      return await waitEndSummary(want);
+    }
+    if (exists) {
+      // 已有摘要 = 不重生成（不花钱、也不会冲掉人工修订版）；要更新请去预览页手动点
+      setEndStep('summary', '⏭ 这篇已有摘要，跳过（要重新生成：笔记库预览页「摘要」）',
+                 'warn', '跳过（已有摘要）');
+      return;
+    }
+    const r = await jfetch('/api/notes/summarize', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: current }) });
+    if (!r || !r.ok) {
+      const msg = (r && r.error) || '服务无响应';
+      const skipped = msg.includes('翻译未启用');   // 无 API key 是预期边界，不是故障
+      const busy = msg.includes('进行中');          // 上一轮 status 快照还停在 idle 的竞态
+      if (busy) {
+        setEndStep('summary', '已有摘要任务在跑，等它完成…', 'run', '等生成');
+        return await waitEndSummary(want);
+      }
+      setEndStep('summary', (skipped ? '⏭ 跳过：' : '✗ 摘要失败：') + msg,
+                 skipped ? 'warn' : 'err',
+                 skipped ? '跳过（无 API key）' : '摘要失败');
+      return;
+    }
+    nbTaskState.summary = 'running';
+    setEndStep('summary', '已受理，生成中…（分钟级，关掉面板也不会中断）', 'run',
+               '生成中');
+    await waitEndSummary(want);
+  } catch (e) {
+    setEndStep('summary', '✗ 摘要步骤异常：' + e, 'err', '摘要异常');
+  }
+}
+
+// 等笔记正文写稳再导出（评审2 补充核对）：/api/pause 只置标志位，最多 2 个在飞翻译
+// 任务仍可能在完成后 append 进正文——秒级就读盘会让 md 少最后 1~2 条中文。
+// 判据 = GET /api/notes/raw 的 size+mtime_us 连续两次一致；笔记已不存在 → 立即返回
+// （让第③步如实报 404，而不是干等满 12 秒）。
+async function waitNoteStable(name, maxMs = 12000) {
+  let prev = null;
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxMs) {
+    let cur = null;
+    try {
+      const r = await jfetch('/api/notes/raw?name=' + encodeURIComponent(name));
+      if (!r || r.ok === false) return false;      // 笔记没了/读不到：不再等
+      cur = `${r.size}:${r.mtime_us}`;
+    } catch (e) { return false; }
+    if (cur && cur === prev) return true;
+    prev = cur;
+    await new Promise((res) => setTimeout(res, 1000));
+  }
+  return false;
+}
+
+async function endClass() {
+  if (endRunning) { showToast('下课归档正在进行中…', 'warn'); return; }
+  // 守卫**同步置位**（评审2 ①）：以前在 await 之后才置，手机/LAN 上一次慢往返
+  // （点「下课」到确认框弹出之间）内连点两下就能并行跑两套流程（两次暂停/两次导出，
+  // 两套面板文字互相覆盖）。取消/异常都由 finally 复位。
+  endRunning = true;
+  $('btnEndClass').disabled = true;
+  try {
+    let cfg = null;
+    try { cfg = await jfetch('/api/config'); } catch (e) { cfg = null; }
+    // §5 二次确认（可在设置页关掉）；确认框里把三步与落点写清楚——一键会暂停收音、
+    // 调 DeepSeek 摘要（少量费用）、写文件，手滑的代价不小。
+    if (!(cfg && cfg.class_end_confirm === false)) {
+      const dest = (cfg && cfg.export_dir)
+        ? `导出到 ${cfg.export_dir}` : '导出（未设置导出位置 → 浏览器下载）';
+      const go = confirm('下课归档会依次做三件事：\n'
+        + '① 暂停收音\n'
+        + '② 生成课后 AI 摘要（调 DeepSeek，少量费用；已有摘要或无 key 则跳过）\n'
+        + `③ ${dest}\n\n继续？（设置页「下课归档」卡可关掉这个确认）`);
+      if (!go) return;
+    }
+    // 当前笔记：没有 = 还没上过课 → 明确提示、一步都不跑（不空转）
+    let current = null;
+    try {
+      const lst = await jfetch('/api/notes/list');
+      if (lst && lst.ok) current = lst.current;
+    } catch (e) { current = null; }
+    if (!current) {
+      openEndPanel('还没有笔记（还没上过课）—— 先开课记录，再来点「下课」。', false);
+      return;
+    }
+    openEndPanel(`正在归档：${current}`
+                 + '（关掉面板不会打断流程；但刷新/关标签页会丢掉还没跑的步骤）');
+    if (cfg && cfg.export_dir) {
+      setEndStep('export', `等待…（将落盘到 ${cfg.export_dir}）`, 'run');
+    } else {
+      setEndStep('export', '等待…（未设置导出位置 → 浏览器下载）', 'run');
+    }
+    // ① 暂停收音
+    setEndStep('pause', '进行中…', 'run');
+    try {
+      const rp = await jfetch('/api/pause', { method: 'POST' });
+      if (rp && rp.ok) {
+        setEndStep('pause', '✓ 已暂停收音（不再接收新内容）', 'ok', '已暂停');
+      } else {
+        setEndStep('pause', '✗ 暂停失败：' + ((rp && rp.error) || '服务无响应'), 'err',
+                   '暂停失败');
+      }
+    } catch (e) {
+      setEndStep('pause', '✗ 暂停失败：' + e, 'err', '暂停失败');
+    }
+    // ② 摘要（失败/跳过/异常都不影响 ③；异常在 endClassSummary 内就地兜住）
+    await endClassSummary(current);
+    // ③ 导出：**锚定第②步那篇笔记**（评审2 ③）。用 name='' 会重新解析服务端的
+    // hub.transcript_path——摘要等待是分钟级，期间删掉当前笔记会立刻接力一篇新笔记
+    // （§4），那样导出的是刚接力的空笔记却标「✓」；锚定后用名导出，旧笔记已进回收站
+    // 就如实 404 ✗。
+    setEndStep('export', '进行中…（先等最后几条译文落盘）', 'run');
+    await waitNoteStable(current);
+    setEndStep('export', '进行中…', 'run');
+    try {
+      const ex = await exportNote(current, 'md');
+      if (ex.ok && ex.kind === 'saved') {
+        setEndStep('export', `✓ 已导出到 ${ex.path}`, 'ok', '已导出');
+        $('endOpenFolder').hidden = false;
+      } else if (ex.ok) {
+        setEndStep('export', `✓ 已下载 ${ex.name}（未设置导出位置，走浏览器下载）`, 'ok',
+                   '已下载');
+      } else {
+        setEndStep('export', '✗ ' + ex.error, 'err', '导出失败');
+      }
+    } catch (e) {
+      setEndStep('export', '✗ 导出异常：' + e, 'err', '导出异常');
+    }
+  } catch (e) {
+    showToast('下课归档异常：' + e, 'err');
+  } finally {
+    endRunning = false;
+    $('btnEndClass').disabled = false;
+    $('endDone').disabled = false;
+    endClassSummaryToast();      // 汇总 toast（面板被关掉时的唯一可见结果）
   }
 }
 
@@ -2409,6 +3580,775 @@ $('nbSearch').onkeydown = (e) => {
 $('nbCourseFilter').onchange = () => {
   NB.course = $('nbCourseFilter').value;
   refreshNotes();
+};
+
+// —— §2 课后改归属（笔记库）：多选 +「移动到…」 ——
+// 语义 = **定稿口径**：直接把笔记头的课程行改成目标课程（整篇归属跟着走）。与课上
+// 切课（Hub.retag_course 追加「切换标记」、主归属不变）是两套语义，互不顶替。
+// 端点：POST /api/notes/course {file, course} / …/course/batch {files[], course}；
+// course 传课程 **id**（与选课下拉同口径）或课程名，null = 「未分类」（改回也一等）。
+// 服务端整单校验（非法/不存在 → 400 明确文案、不落盘），前端只负责呈现与刷新。
+let moveFiles = [];        // 本次弹窗要移动的文件名（单篇=1，批量=多）
+let moveBusy = false;      // 提交中：防连点（慢网/手机端会有窗口）
+
+function renderBatchBar() {
+  $('nbBatch').classList.toggle('on', nbPicked.size > 0);
+  $('nbBatchText').textContent = `已选 ${nbPicked.size} 篇`;
+  $('nbBatchMove').disabled = nbPicked.size === 0;
+}
+
+// §2：改归属完成后的统一收尾——列表徽章 / 侧栏课程计数 /（在预览时）预览头部
+// 三处一起对齐；预览那篇若被当前筛选筛掉了就不再重开（避免右侧留着"不存在"的笔记）。
+async function afterNotesChanged() {
+  const sel = NB.sel;
+  await refreshNotes();
+  await refreshCourses();
+  if (sel && NB.notes.some((n) => n.name === sel)) await openNote(sel);
+}
+
+/** 本次要移动的这几篇的当前归属：一致 → {mixed:false, name}，不一致 → {mixed:true}。 */
+function moveCommonCourse() {
+  const names = moveFiles.map((f) => {
+    const hit = NB.notes.find((n) => n.name === f);
+    return hit ? hit.course : null;
+  });
+  const first = names.length ? names[0] : null;
+  return names.every((x) => x === first) ? { mixed: false, name: first } : { mixed: true, name: null };
+}
+
+function renderMoveList() {
+  const box = $('moveList');
+  box.innerHTML = '';
+  const cur = moveCommonCourse();
+  const row = (label, color, value, isCur, notes) => {
+    const b = document.createElement('button');
+    if (isCur) b.className = 'cur';
+    b.title = isCur ? `当前归属：${label}` : `移到「${label}」`;
+    const d = document.createElement('span');
+    d.className = 'cdot';
+    d.style.background = color;      // 课程色只做 8px 圆点身份标识（同侧栏口径）
+    const n = document.createElement('span');
+    n.textContent = label;           // 课程名是用户输入：一律 textContent
+    b.append(d, n);
+    if (notes != null) {
+      const c = document.createElement('span');
+      c.className = 'mnum';
+      c.textContent = String(notes);
+      c.title = `${notes} 篇笔记`;
+      b.appendChild(c);
+    }
+    b.onclick = () => applyMove(value);
+    return b;
+  };
+  const un = COURSES.uncategorized || '未分类';
+  // 「未分类」的高亮判据：服务端把未选课的笔记也写作「未分类」这个名字（不是 null），
+  // 所以两种形态都算命中当前归属
+  box.appendChild(row(un, 'var(--text-3)', null, !cur.mixed && (!cur.name || cur.name === un)));
+  for (const c of (COURSES.courses || [])) {
+    box.appendChild(row(c.name, c.color, c.id, !cur.mixed && cur.name === c.name, c.notes));
+  }
+}
+
+function openMoveDialog(files) {
+  moveFiles = files.slice();
+  $('moveSub').textContent = moveFiles.length === 1
+    ? `${moveFiles[0]}：选定后改写笔记头的课程行（定稿口径，整篇归属跟着走）`
+    : `${moveFiles.length} 篇一起改到同一课程（逐篇改写笔记头的课程行）`;
+  $('moveNewName').value = '';
+  renderMoveList();
+  openModal($('moveMask'));    // 统一入口：焦点进弹窗 + 背景 inert + Escape 可关
+}
+
+async function applyMove(courseId) {
+  if (moveBusy || !moveFiles.length) return;
+  moveBusy = true;
+  const files = moveFiles.slice();
+  for (const b of $('moveList').querySelectorAll('button')) b.disabled = true;
+  try {
+    const r = files.length === 1
+      ? await jfetch('/api/notes/course', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: files[0], course: courseId }) })
+      : await jfetch('/api/notes/course/batch', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files, course: courseId }) });
+    if (!r || !r.ok) {
+      showToast((r && r.error) || '移动失败', 'err');   // 弹窗留着：可直接改选重试
+      return;
+    }
+    const bad = (r.failed || []).length;
+    const cnt = r.moved != null ? r.moved : 1;   // 单篇端点不带 moved（只有批量带）
+    showToast(bad ? `已移动 ${cnt} 篇到「${r.course}」，${bad} 篇失败（详见日志）`
+                  : `已移动 ${cnt} 篇到「${r.course}」`, bad ? 'warn' : 'ok');
+    closeModal($('moveMask'));
+    nbPicked.clear();
+    renderBatchBar();
+    await afterNotesChanged();
+  } catch (e) {
+    showToast('移动失败：服务无响应', 'err');
+  } finally {
+    moveBusy = false;
+    for (const b of $('moveList').querySelectorAll('button')) b.disabled = false;
+  }
+}
+
+async function moveNewCourse() {
+  const name = $('moveNewName').value.trim();
+  if (!name) { showToast('请先填课程名', 'err'); $('moveNewName').focus(); return; }
+  const course = await createCourse(name, '');   // 既有端点 POST /api/courses
+  if (!course) return;                           // 失败（重名/超限/非法）：toast 已给
+  $('moveNewName').value = '';
+  renderMoveList();                              // 新课已在 COURSES 快照里
+  await applyMove(course.id);                    // 点「＋ 新建」的意图就是移进新课
+}
+
+$('nbBatchMove').onclick = () => { if (nbPicked.size) openMoveDialog([...nbPicked]); };
+$('nbBatchClear').onclick = () => { nbPicked.clear(); renderNoteList(); renderBatchBar(); };
+
+// —— §4 笔记管理：编辑 / 重命名 / 删除（软删）+ 回收站 ——
+// 三个弹窗共用统一入口（openModal/closeModal：焦点进弹窗、背景 inert、Escape 可关）。
+// 删除一律是**软删除**（移进 transcripts/.trash/，连摘要/时间轴一起搬），恢复/彻底
+// 删除在回收站弹窗里做——普通入口（列表/预览/raw/preview）够不到回收站里的文件。
+let editTarget = null;      // {name, sha}：sha = 打开编辑时的正文指纹（乐观并发凭据）
+let renameTarget = null;    // 正在改名的笔记名
+let manageBusy = false;     // 提交中：防连点（慢网/手机端会有窗口）
+let trashLoaded = false;    // 回收站是否成功拉过（区分「确实是空的」与「没拿到」）
+
+async function openEdit(name) {
+  let r = null;
+  try {
+    r = await jfetch('/api/notes/raw?name=' + encodeURIComponent(name));
+  } catch (e) {
+    r = null;
+  }
+  if (!r || !r.ok) { showToast((r && r.error) || '读取笔记失败：服务无响应', 'err'); return; }
+  editTarget = { name: r.name, sha: r.sha };
+  TAG_PRESETS = r.presets || TAG_PRESETS;
+  editTags = r.tags || [];                    // §8：标签以服务端为准（编辑框里的行也一致）
+  $('editSub').textContent =
+    `${r.name} —— md 原文编辑。保存会整篇替换；若期间有新字幕写进来会被拒绝（防覆盖）。`
+    + '标签点 chips 即存（预设 + 自定义）。';
+  $('editTagNew').value = '';
+  renderEditTags();
+  $('editText').value = r.text;
+  openModal($('editMask'));
+  $('editText').focus();
+}
+
+async function saveEdit() {
+  if (manageBusy || !editTarget) return;
+  manageBusy = true;
+  $('editSave').disabled = true;
+  try {
+    const r = await jfetch('/api/notes/' + encodeURIComponent(editTarget.name), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: $('editText').value, base_sha: editTarget.sha }) });
+    if (!r || !r.ok) {
+      showToast((r && r.error) || '保存失败', 'err');   // 弹窗留着：文本不丢，可重开再存
+      return;
+    }
+    const size = r.size < 1024 ? `${r.size} B` : `${Math.round(r.size / 1024)} KB`;
+    showToast(`已保存 ${r.name}（${size}）`, 'ok');
+    closeModal($('editMask'));
+    editTarget = null;
+    await afterNotesChanged();
+  } catch (e) {
+    showToast('保存失败：服务无响应', 'err');
+  } finally {
+    manageBusy = false;
+    $('editSave').disabled = false;
+  }
+}
+
+function openRename(name) {
+  renameTarget = name;
+  $('renameInput').value = name;
+  openModal($('renameMask'));
+  $('renameInput').focus();
+  $('renameInput').select();
+}
+
+async function doRename() {
+  if (manageBusy || !renameTarget) return;
+  manageBusy = true;
+  $('renameGo').disabled = true;
+  const from = renameTarget;
+  try {
+    const r = await jfetch('/api/notes/rename', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: from, to: $('renameInput').value }) });
+    if (!r || !r.ok) {
+      showToast((r && r.error) || '重命名失败', 'err');   // 弹窗留着改名字
+      return;
+    }
+    closeModal($('renameMask'));
+    renameTarget = null;
+    showToast(`已重命名为 ${r.to}`
+              + (r.sidecars ? `（含 ${r.sidecars} 个派生文件）` : ''), 'ok');
+    if (NB.sel === from) NB.sel = r.to;      // 预览跟着新名（否则右侧会挂在旧名上）
+    await afterNotesChanged();
+  } catch (e) {
+    showToast('重命名失败：服务无响应', 'err');
+  } finally {
+    manageBusy = false;
+    $('renameGo').disabled = false;
+  }
+}
+
+async function delNote(files) {
+  if (!files.length || manageBusy) return;
+  const what = files.length === 1 ? files[0] : `${files.length} 篇笔记`;
+  if (!confirm(`把 ${what} 移入回收站？\n\n可随时从「回收站」恢复；彻底删除才不可逆。`)) return;
+  manageBusy = true;
+  try {
+    const r = await jfetch('/api/notes/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files }) });
+    if (!r || !r.ok) { showToast((r && r.error) || '删除失败', 'err'); return; }
+    const bad = (r.failed || []).length;
+    let msg = `已移入回收站 ${r.trashed} 篇`;
+    if (r.restarted) msg += '（正在记录的那篇：后续字幕已接续到新笔记）';
+    if (bad) msg += `，${bad} 篇失败`;
+    showToast(msg, bad ? 'warn' : 'ok');
+    if (files.includes(NB.sel)) { NB.sel = null; renderPreviewEmpty(); }
+    nbPicked.clear();
+    renderBatchBar();
+    await afterNotesChanged();
+  } catch (e) {
+    showToast('删除失败：服务无响应', 'err');
+  } finally {
+    manageBusy = false;
+  }
+}
+
+function fmtDeleted(ts) {
+  const d = new Date(ts * 1000);
+  const p = (x) => String(x).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function trashHint(box, text) {
+  box.innerHTML = '';
+  const e = document.createElement('div');
+  e.className = 'nbEmpty';
+  e.textContent = text;
+  box.appendChild(e);
+}
+
+async function refreshTrash() {
+  const box = $('trashList');
+  if (!trashLoaded) trashHint(box, '载入中…');   // 还没成功拉过：不许说"是空的"
+  let r = null;
+  try {
+    r = await jfetch('/api/notes/trash');
+  } catch (e) {
+    r = null;                                    // 服务不可达：走下面的错误态
+  }
+  if (!r || !r.ok) {
+    // 「空」是"确实没有数据"的断言（本文件 LOADED 纪律）——失败时只能说"没拿到"
+    trashHint(box, (r && r.error) ? `回收站读取失败：${r.error}`
+                                  : '回收站读取失败（服务无响应）——稍后重试');
+    return null;
+  }
+  trashLoaded = true;
+  box.innerHTML = '';
+  const items = r.notes || [];
+  if (!items.length) {
+    trashHint(box, '回收站是空的。');
+    return items;
+  }
+  for (const n of items) {
+    const row = document.createElement('div');
+    row.className = 'tRow';
+    const name = document.createElement('span');
+    name.className = 'tName';
+    name.textContent = n.name;
+    name.title = `${n.name}（${n.course} · ${n.date}）`;
+    const meta = document.createElement('span');
+    meta.className = 'tMeta';
+    meta.textContent = `删于 ${fmtDeleted(n.deleted_at)}`;
+    const back = document.createElement('button');
+    back.textContent = '恢复';
+    back.title = '放回笔记库（若已有同名笔记则拒绝，不覆盖）';
+    back.onclick = () => trashRestore([n.name]);
+    const gone = document.createElement('button');
+    gone.className = 'danger';
+    gone.textContent = '彻底删除';
+    gone.title = '不可恢复';
+    gone.onclick = () => trashPurge([n.name]);
+    row.append(name, meta, back, gone);
+    box.appendChild(row);
+  }
+  return items;
+}
+
+async function openTrash() {
+  // 失败也要把弹窗打开：错误态画在弹窗里（否则点「🗑 回收站」什么都不发生）
+  try {
+    await refreshTrash();
+  } catch (e) {
+    showToast('回收站读取失败：服务无响应', 'err');
+  }
+  openModal($('trashMask'));
+}
+
+async function trashRestore(files) {
+  if (manageBusy) return;
+  manageBusy = true;
+  try {
+    const r = await jfetch('/api/notes/trash/restore', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files }) });
+    if (!r || !r.ok) { showToast((r && r.error) || '恢复失败', 'err'); return; }
+    const bad = (r.failed || []).length;
+    showToast(bad ? `已恢复 ${r.restored} 篇，${bad} 篇失败：`
+                    + (r.failed[0].error || '')
+                  : `已恢复 ${r.restored} 篇`, bad ? 'warn' : 'ok');
+    await refreshTrash();
+    await afterNotesChanged();
+  } catch (e) {
+    showToast('恢复失败：服务无响应', 'err');
+  } finally {
+    manageBusy = false;
+  }
+}
+
+async function trashPurge(files) {
+  if (manageBusy) return;
+  const what = files.length === 1 ? files[0] : `${files.length} 篇`;
+  if (!confirm(`彻底删除 ${what}？\n\n不可恢复（摘要/时间轴等派生文件一并删掉）。`)) return;
+  manageBusy = true;
+  try {
+    const r = await jfetch('/api/notes/trash/purge', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files }) });
+    if (!r || !r.ok) { showToast((r && r.error) || '彻底删除失败', 'err'); return; }
+    showToast(`已彻底删除 ${r.purged} 篇`, 'ok');
+    await refreshTrash();
+  } catch (e) {
+    showToast('彻底删除失败：服务无响应', 'err');
+  } finally {
+    manageBusy = false;
+  }
+}
+
+async function trashEmpty() {
+  if (manageBusy) return;
+  if (!confirm('清空回收站？\n\n里面所有笔记与派生文件都会被彻底删除，不可恢复。')) return;
+  manageBusy = true;
+  try {
+    const r = await jfetch('/api/notes/trash/empty', { method: 'POST' });
+    if (!r || !r.ok) { showToast((r && r.error) || '清空失败', 'err'); return; }
+    showToast(`已清空回收站（删 ${r.removed} 个文件）`, 'ok');
+    await refreshTrash();
+  } catch (e) {
+    showToast('清空失败：服务无响应', 'err');
+  } finally {
+    manageBusy = false;
+  }
+}
+
+// —— §8 标签：三入口（字幕页快捷面板 / 笔记库筛选栏 / 编辑面板 chips）——
+// 存储 = 笔记头块的一行 `> 标签：#重点 #考试`（存文件不存 sidecar：随编辑/移动/
+// 重命名存活）。写端点是**全量替换**（幂等），前端拿 GET 的现状做增删再整表提交；
+// 标签行也是正文的一部分，故编辑面板里改完标签要**同步编辑框里那一行**——否则
+// 用户接着点「保存」会把正文里旧的标签行写回去（文件与服务端一致、编辑框过期）。
+let TAG_PRESETS = ['重点', '考试', '没听懂', '待复习'];   // 启动后由服务端响应覆盖
+let editTags = [];          // 编辑面板当前的标签（每次提交后以服务端回显为准）
+let tagQuickFile = null;    // 字幕页快捷面板操作的笔记名（当前正在记录的那篇）
+let tagQuickTags = [];      // 它的当前标签（服务端回显为准；别从 DOM 反解）
+
+function tagChipEl(tag, on, onclick) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'tagChip' + (on ? ' on' : '');
+  b.textContent = '#' + tag;
+  b.title = on ? `点一下取消 #${tag}` : `点一下加上 #${tag}`;
+  b.onclick = onclick;
+  return b;
+}
+
+function toggleTag(tags, tag) {
+  return tags.includes(tag) ? tags.filter((t) => t !== tag) : [...tags, tag];
+}
+
+/** 提交整表（全量替换）；成功返回响应（含规范化后的 tags 与新 sha），失败 toast。 */
+async function postTags(name, tags) {
+  let r = null;
+  try {
+    r = await jfetch('/api/notes/tags', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: name, tags }) });
+  } catch (e) {
+    r = null;                       // 服务不可达：下面统一报错（绝不静默无反应）
+  }
+  if (!r || !r.ok) { showToast((r && r.error) || '标签保存失败：服务无响应', 'err'); return null; }
+  TAG_PRESETS = r.presets || TAG_PRESETS;
+  showToast((r.tags || []).length
+            ? '标签：' + r.tags.map((t) => '#' + t).join(' ')
+            : `已清空 ${r.file} 的标签`, 'ok');
+  return r;
+}
+
+/** 预览页/编辑面板共用：切换一个标签并刷新（列表徽章/筛选计数跟着变）。 */
+async function toggleNoteTag(name, current, tag) {
+  const r = await postTags(name, toggleTag(current || [], tag));
+  if (!r) return null;
+  try {
+    await refreshNotes();
+  } catch (e) {
+    // 标签已写进文件；列表只是没刷新上——提示一句，别假装全成功
+    showToast('标签已保存，但列表刷新失败：服务无响应', 'warn');
+  }
+  return r.tags;
+}
+
+/** 编辑框里那一行的同步（**只**动编辑框，不动文件——文件由服务端写）。 */
+function syncTagLine(text, tags) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const line = tags.length ? `> 标签：${tags.map((t) => '#' + t).join(' ')}` : null;
+  const lines = text.split(/\r?\n/);
+  const head = (l) => l.startsWith('> 标签');
+  const idx = lines.findIndex((l, i) => i < 12 && head(l));
+  if (line === null) {
+    if (idx >= 0) lines.splice(idx, 1);
+  } else if (idx >= 0) {
+    lines[idx] = line;
+  } else {
+    // 与服务端 notes.set_tags 同口径：课程行下方 → 自动生成行之后 → 标题行之后 → 文首
+    let at = lines.findIndex((l, i) => i < 12 && l.startsWith('> 课程：'));
+    if (at < 0) at = lines.findIndex((l, i) => i < 12 && l.startsWith('> LectureLens 自动生成'));
+    if (at < 0) at = lines.findIndex((l, i) => i < 12 && l.startsWith('# 双语课堂笔记'));
+    lines.splice(at < 0 ? 0 : at + 1, 0, line);
+  }
+  return lines.join(eol);
+}
+
+function renderEditTags() {
+  const box = $('editTags');
+  box.innerHTML = '';
+  const done = new Set();
+  for (const t of TAG_PRESETS) {
+    done.add(t);
+    box.appendChild(tagChipEl(t, editTags.includes(t), () => editToggleTag(t)));
+  }
+  for (const t of editTags) {                 // 自定义标签也画出来（可点取消）
+    if (!done.has(t)) box.appendChild(tagChipEl(t, true, () => editToggleTag(t)));
+  }
+}
+
+async function editToggleTag(tag) {
+  if (!editTarget || manageBusy) return false;
+  manageBusy = true;
+  try {
+    const r = await postTags(editTarget.name, toggleTag(editTags, tag));
+    if (!r) return false;
+    editTags = r.tags;
+    if (editTarget.name === r.file) editTarget.sha = r.sha;   // 新指纹：接着保存正文不撞 409
+    $('editText').value = syncTagLine($('editText').value, r.tags);
+    renderEditTags();
+    try {
+      await refreshNotes();
+    } catch (e) {
+      showToast('标签已保存，但列表刷新失败：服务无响应', 'warn');
+    }
+    return true;
+  } finally {
+    manageBusy = false;
+  }
+}
+
+async function editAddTag() {
+  // 归一化口径对齐服务端 notes.normalize_tag：去首尾空白 + 去掉开头的 #。
+  // 注意 JS 里没有 lstrip（那是 Python 方法）——写成 val.lstrip('#') 会抛
+  // TypeError，「＋ 加标签」与回车都静默无反应（评审2 实测抓到的硬故障）。
+  const val = $('editTagNew').value.trim().replace(/^#+/, '').trim();
+  if (!val) return;
+  if (editTags.includes(val)) { showToast('这个标签已经在表里了', 'warn'); return; }
+  const ok = await editToggleTag(val);
+  if (ok) $('editTagNew').value = '';
+}
+
+// —— 字幕页「🏷」快捷面板：一键给**当前笔记**加预设标签 ——
+async function toggleTagQuick() {
+  const wrap = $('tagQuickWrap');
+  if (wrap.classList.contains('on')) { wrap.classList.remove('on'); return; }
+  let r = null;
+  try {
+    r = await jfetch('/api/notes/tags');              // 缺省 = 当前正在记录的笔记
+  } catch (e) {
+    r = null;
+  }
+  if (!r || !r.ok) {
+    showToast((r && r.error) || '标签读取失败（服务无响应）', 'err');
+    return;
+  }
+  TAG_PRESETS = r.presets || TAG_PRESETS;
+  tagQuickFile = r.file;
+  $('tagQuickNew').value = '';
+  renderQuickTags(r.file, r.tags || []);
+  wrap.classList.add('on');
+}
+
+function renderQuickTags(name, tags) {
+  const wrap = $('tagQuickWrap');
+  tagQuickTags = (tags || []).slice();
+  wrap.querySelectorAll('.tagChip').forEach((el) => el.remove());
+  const anchor = $('tagQuickNew');
+  const seen = new Set();
+  for (const t of TAG_PRESETS) {
+    seen.add(t);
+    wrap.insertBefore(tagChipEl(t, tagQuickTags.includes(t),
+                                () => quickToggleTag(name, t)), anchor);
+  }
+  for (const t of tagQuickTags) {
+    // 自定义标签也要画出来——看不见就取消不掉（点它即删除）
+    if (!seen.has(t)) {
+      wrap.insertBefore(tagChipEl(t, true, () => quickToggleTag(name, t)), anchor);
+    }
+  }
+}
+
+async function quickToggleTag(name, tag) {
+  const r = await postTags(name, toggleTag(tagQuickTags, tag));
+  if (!r) return;
+  renderQuickTags(r.file, r.tags);      // 服务端回显为准（规范化 + 去重 + 顺序）
+  try {
+    if (document.body.classList.contains('view-notes')) await refreshNotes();
+  } catch (e) {
+    showToast('标签已保存，但列表刷新失败：服务无响应', 'warn');
+  }
+}
+
+$('btnTag').onclick = () => toggleTagQuick();
+$('tagQuickClose').onclick = () => $('tagQuickWrap').classList.remove('on');
+$('tagQuickAdd').onclick = () => {
+  const tag = $('tagQuickNew').value.trim();
+  if (!tag || !tagQuickFile) return;
+  postTags(tagQuickFile, [...tagQuickTags, tag]).then((r) => {
+    if (r) { $('tagQuickNew').value = ''; renderQuickTags(r.file, r.tags); }
+  }).catch(() => { /* postTags 自己已 toast，这里只是别留 unhandled rejection */ });
+};
+$('tagQuickNew').onkeydown = (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('tagQuickAdd').click(); }
+  else if (e.key === 'Escape') $('tagQuickWrap').classList.remove('on');
+};
+$('editTagAdd').onclick = () => editAddTag();
+$('editTagNew').onkeydown = (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); editAddTag(); }
+};
+$('nbTagFilter').onchange = () => {
+  NB.tag = $('nbTagFilter').value;
+  refreshNotes();
+};
+
+$('nbTrashBtn').onclick = () => openTrash();
+$('nbBatchDelete').onclick = () => { if (nbPicked.size) delNote([...nbPicked]); };
+$('editSave').onclick = () => saveEdit();
+$('editCancel').onclick = () => closeModal($('editMask'));
+$('editClose').onclick = () => closeModal($('editMask'));
+// §6 摘要编辑弹窗（与 §4 编辑同一套 openModal/closeModal 纪律）
+$('sumSave').onclick = () => saveSummaryEdit();
+$('sumCancel').onclick = () => { sumTarget = null; closeModal($('sumMask')); };
+$('sumClose').onclick = () => { sumTarget = null; closeModal($('sumMask')); };
+$('renameGo').onclick = () => doRename();
+$('renameCancel').onclick = () => closeModal($('renameMask'));
+$('renameClose').onclick = () => closeModal($('renameMask'));
+$('renameInput').onkeydown = (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); doRename(); }
+};
+$('trashDone').onclick = () => closeModal($('trashMask'));
+$('trashClose').onclick = () => closeModal($('trashMask'));
+$('trashEmpty').onclick = () => trashEmpty();
+// §5 下课归档面板的按钮（面板是**结果视图**，关掉不打断正在跑的流程）
+$('endDone').onclick = () => closeModal($('endMask'));
+$('endClose').onclick = () => closeModal($('endMask'));
+$('endOpenFolder').onclick = () => openExportDir();
+for (const id of ['editMask', 'renameMask', 'trashMask', 'sumMask', 'endMask']) {
+  $(id).addEventListener('click', (e) => {
+    if (e.target === $(id)) closeModal($(id));      // 点遮罩关闭（同关于弹窗）
+  });
+}
+$('moveNewGo').onclick = () => moveNewCourse();
+$('moveNewName').onkeydown = (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); moveNewCourse(); }
+};
+$('moveCancel').onclick = () => closeModal($('moveMask'));
+$('moveClose').onclick = () => closeModal($('moveMask'));
+$('moveMask').addEventListener('click', (e) => {
+  if (e.target === $('moveMask')) closeModal($('moveMask'));   // 点遮罩关闭（同关于弹窗）
+});
+
+// —— §7 手机同屏（notes-batch）：二维码 / URL / 已连接设备数 / 开关 / 排查指引 ——
+// 面板里的每个事实都来自服务端，前端只做呈现（绝不自编「已开启」）：
+//   · GET /api/lan-qr（**仅本机可读**）→ { enabled=config 开关（用户意图）、
+//     active=本次进程实际是否对外、restart_required=改了还没重启、
+//     exposed_while_disabled=配置说关但服务还开着（风险态）、host/port/ip/url/svg、
+//     auth_enabled、message（服务端给的通顺人话）}
+//   · status.ws_clients = Hub.clients 计数 → 「已连接 N 台设备」（2s 轮询刷新）
+// 为什么不用 jfetch：jfetch 见 403 会弹「粘贴 token」输入框，而本端点对非本机对端
+// 的 403 是**设计如此**（码里带 token，只给运行服务这台电脑看）——弹出输入框只会
+// 把人绕进死循环。这里自己 fetch，403 时给一句人话。
+let LAND = null;              // /api/lan-qr 的最近一次响应（null = 还没拉过）
+let LANBusy = false;
+
+async function fetchLanQr() {
+  try {
+    const r = await fetch(apiURL('/api/lan-qr'));
+    if (r.status === 403) return { error: 'only-local' };
+    if (!r.ok) return { error: 'HTTP ' + r.status };
+    return await r.json();
+  } catch (e) { return { error: String((e && e.message) || e) }; }
+}
+
+function lanSetQr(svg, note) {
+  const box = $('lanQr');
+  box.textContent = '';
+  // 只认服务端给的 SVG（自家 /api/lan-qr 产物，内容 = QR 图形，不含任何用户输入）。
+  // 形状校验一层：将来谁把别的 HTML 塞进这个字段也不会被当标签插进来。
+  if (typeof svg === 'string' && svg.indexOf('<svg') >= 0) {
+    box.innerHTML = svg;
+  } else {
+    // 变量名刻意不叫 d：本段里 `d.` 一律指 /api/lan-qr 的响应体（tests/test_lan_ui.py
+    // 用 `d.<字段>` 与响应键做子集核对，防两端字段名漂移）
+    const ph = document.createElement('div');
+    ph.className = 'noqr';
+    ph.textContent = note || '还没有可用的二维码';
+    box.appendChild(ph);
+  }
+}
+
+function renderLanPanel() {
+  const d = LAND || {};
+  const msg = $('lanMsg'), chk = $('lanChk'), row = $('lanUrlRow'), rs = $('lanRestart');
+  const err = d.error;
+  // 默认全藏，按状态逐个放出来（每次重画都从零开始，不留上一次的残影）
+  row.hidden = true;
+  rs.hidden = true;
+  $('lanHelpWrap').hidden = true;
+  if (err === 'only-local') {
+    // 手机 / 同网段别的设备打开：码里带 token，服务端只让本机读——如实说，别诱导重试
+    msg.textContent = '这个面板只在运行 LectureLens 的那台电脑上打开：二维码与 URL 里'
+      + '带着访问 token，服务端只允许本机读取。手机扫电脑上的二维码即可，不用在这里看。';
+    lanSetQr(null, '二维码只在电脑上显示');
+    $('lanSwitchRow').hidden = true;   // 开关也不在手机上摆（改它属于本机的事）
+    $('lanClients').hidden = true;
+    return;
+  }
+  $('lanSwitchRow').hidden = false;
+  $('lanClients').hidden = false;
+  chk.checked = !!d.enabled;
+  if (err) {
+    msg.textContent = '读取手机同屏状态失败：' + err + '（服务是否在运行？）';
+    lanSetQr(null, '状态读取失败，点「刷新」重试');
+    return;
+  }
+  msg.textContent = d.message || '';
+  $('lanHelpWrap').hidden = !d.active && !d.restart_required;   // 没开就不必排查防火墙
+  if (d.restart_required) {
+    rs.hidden = false;
+    rs.className = 'stateline ' + (d.exposed_while_disabled ? 'warn' : '');
+    rs.textContent = d.exposed_while_disabled
+      ? '⚠ 配置已关闭，但本次进程仍在监听 LAN —— 重启 LectureLens 后才真正停止对外'
+      : '⏳ 已保存，重启 LectureLens 后生效（监听地址要重启才能换）';
+  }
+  if (d.url && d.svg) {
+    lanSetQr(d.svg);
+    row.hidden = false;
+    $('lanUrl').value = d.url;
+  } else {
+    lanSetQr(null, d.active ? '还没有可用的二维码'
+      : (d.enabled ? '重启 LectureLens 后这里会出现二维码'
+                   : '打开下面的开关，重启 LectureLens 后这里会出现二维码'));
+  }
+  if (d.auth_enabled === false) {
+    // 鉴权关着 = 同 WiFi 谁都能连（服务端 message 里也带这句，这里再醒目一次）
+    msg.textContent = (d.message || '') +
+      ' ⚠ 当前 LAN 鉴权是关闭的：同一 WiFi 内任何设备都能看字幕（可在设置页「安全」卡打开）';
+  }
+}
+
+// 「已连接 N 台设备」：status.ws_clients（= **非环回**对端的 WS 数，评审2① 起）——
+// 本机自己的窗口（桌面窗口/浏览器标签/悬浮条）连的 WS 是环回对端，**不算设备**，
+// 否则这个数字恒 ≥1、「手机连上了吗」就被淹没了。由 pollStatus 每 2s 刷新；
+// 面板打开时同步一次，省得等下一拍。
+function syncLanClients(n) {
+  const el = $('lanClients');
+  if (!el) return;
+  const k = Number(n || 0);
+  el.textContent = k > 0
+    ? `已连接 ${k} 台手机/局域网设备`
+    : '已连接 0 台手机 —— 手机扫码打开页面后这里会变成 1（本机自己的窗口不计）';
+}
+
+async function refreshLan() {
+  if (LANBusy) return;
+  LANBusy = true;
+  try {
+    LAND = await fetchLanQr();
+    renderLanPanel();
+    syncLanClients((status_ || {}).ws_clients);
+  } finally { LANBusy = false; }
+}
+
+// 开关（面板与设置页共用一个写入口）：写的是同一把键 config.lan_enabled。
+// 保存成功只说「已保存，重启后生效」——监听地址在服务启动时定死，这句不能省。
+async function lanSetEnabled(want) {
+  try {
+    const r = await jfetch('/api/config', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lan_enabled: !!want }) });
+    if (r && r.ok) {
+      SETCFG.lan_enabled = !!want;      // 设置页快照跟着走（两处控件不许打架）
+      showToast(want ? '手机同屏已开启 —— 重启 LectureLens 后生效'
+                     : '手机同屏已关闭 —— 重启 LectureLens 后才停止对外', 'ok');
+    } else {
+      showToast(friendlyError((r && r.error) || '保存失败'), 'err');
+    }
+  } catch (e) {
+    showToast('手机同屏保存失败：服务无响应', 'err');
+  }
+  await refreshLan();                   // 按服务端事实重画（含 restart_required/风险态）
+  await refreshSetLanCard();
+}
+
+async function refreshSetLanCard() {
+  // 设置页「手机同屏」卡：状态行取自 /api/lan-qr 的**事实**（enabled/active），
+  // 不是本地快照——「改了但没重启」「配置关了但还在监听」都必须看得见。
+  const box = $('setLanChk'), st = $('setLanState');
+  if (!box) return;
+  const d = LAND && !LAND.error ? LAND : await fetchLanQr();
+  if (d.error === 'only-local') {
+    box.checked = !!SETCFG.lan_enabled;
+    st.textContent = '状态需在本机查看（二维码/URL 含 token，仅本机可读）';
+    return;
+  }
+  if (d.error) { box.checked = !!SETCFG.lan_enabled; st.textContent = '状态读取失败：' + d.error; return; }
+  box.checked = !!d.enabled;
+  const bind = (d.port ? ` · 当前监听 ${d.host}:${d.port}` : '');
+  st.textContent = (d.message || '') + bind;
+}
+
+$('btnLan').onclick = () => { openModal($('lanMask')); refreshLan(); };
+$('lanClose').onclick = () => closeModal($('lanMask'));
+$('lanDone').onclick = () => closeModal($('lanMask'));
+$('lanMask').addEventListener('click', (e) => {
+  if (e.target === $('lanMask')) closeModal($('lanMask'));   // 点遮罩关闭（同其它弹窗）
+});
+$('lanRefresh').onclick = () => refreshLan();
+$('lanChk').onchange = (e) => lanSetEnabled(e.target.checked);
+$('lanCopy').onclick = async () => {
+  const url = $('lanUrl').value || '';
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('已复制地址——手机浏览器打开它一次，之后免输 token', 'ok');
+  } catch (e) {
+    // 非 https / 非 localhost 的页面上 clipboard API 不可用（手机端就是这样）：
+    // 退回选中文本，让人手动复制——不假装复制成功
+    const el = $('lanUrl'); el.focus(); el.select();
+    showToast('自动复制不可用——已选中地址，请手动复制', 'warn');
+  }
 };
 
 // —— p2-4 模型管理器（§七-3 设置页）——
@@ -2934,6 +4874,7 @@ async function refreshSettings() {
   await refreshTiers();     // 档位化：硬件检测 + 推荐（每次进设置页现算，硬件变化能跟上）
   renderSeg();              // p2-5：分句调优控件回填（同一份 SETCFG 快照）
   await refreshAutostart();  // p3-3：开机自启（每次进设置页现读注册表真实状态）
+  await refreshSetLanCard(); // §7：手机同屏卡（现读 /api/lan-qr 的 enabled/active 事实）
 }
 function renderSettings() {
   if (SETCFG.model) setSelectValue($('setModelSel'), SETCFG.model);
@@ -2945,11 +4886,15 @@ function renderSettings() {
   }
   $('setStreamChk').checked = !!SETCFG.streaming;
   $('setFloatChk').checked = !!SETCFG.floating_bar;   // p1-7：B1 悬浮条显隐
+  // §5：下课归档的二次确认（默认开；关掉后点「下课」立即开始）
+  $('setEndConfirmChk').checked = SETCFG.class_end_confirm !== false;
   // p3-1：热键开关与键位（服务端存的是规范形，回填即规范形——用户输入的大写/
   // 别名写法在保存后会被规范化，属预期）
   $('setHotkeysChk').checked = SETCFG.hotkeys_enabled !== false;
   if (SETCFG.hotkey_pause) $('setHotkeyPause').value = SETCFG.hotkey_pause;
   if (SETCFG.hotkey_float) $('setHotkeyFloat').value = SETCFG.hotkey_float;
+  renderExportCard();       // §3：导出位置卡（当前值 + 桌面/浏览器两种交互形态）
+  $('setLanChk').checked = !!SETCFG.lan_enabled;   // §7：手机同屏（字幕页面板同键）
   $('setAuthChk').checked = !!SEC.auth_enabled;
   $('setTokenState').innerHTML = SEC.auth_token_set
     ? 'LAN token：已启用 · <span class="ok">••••••••</span>'
@@ -3087,6 +5032,10 @@ $('setFadeSel').onchange = (e) =>
   cfgSet({ fade_lines: Number(e.target.value) }, '历史行渐隐');   // p2-7（B2）
 $('setFloatChk').onchange = (e) =>  // p1-7：B1 悬浮条显隐（桌面壳 1s 内同步窗口）
   cfgSet({ floating_bar: e.target.checked }, '悬浮字幕条');
+$('setEndConfirmChk').onchange = (e) =>   // §5：下课归档的二次确认开关
+  cfgSet({ class_end_confirm: e.target.checked }, '下课归档二次确认');
+$('setLanChk').onchange = (e) =>          // §7：手机同屏（走共用写入口，面板同步重画）
+  lanSetEnabled(e.target.checked);
 // p3-1（B12）全局快捷键：开关 + 两个键位。键位只在失焦/回车时提交（逐字符提交会
 // 把 "ctrl+alt+l" 的每个中间态都打成 400 红 toast）；非法值由后端白名单拒绝并
 // 回滚控件到服务端真值（cfgSet 的两个分支都 refreshSettings）。
@@ -3159,6 +5108,94 @@ $('btnKeySave').onclick = async () => {
   }
 };
 $('btnRewizardSet').onclick = () => reopenWizard();  // p1-5 平移入口：设置页重开向导
+
+// —— §3 导出位置卡（notes-batch）：config.export_dir ——
+// 两种交互形态**同一份状态**：桌面壳（pywebview 注入 js_api）弹系统原生文件夹
+// 选择框；浏览器/手机模式没有它，退化为手动输入绝对路径 + 「打开文件夹」。
+// 路径一律走 POST /api/config 写入（后端专项校验：绝对路径/可创建/可写/非系统
+// 关键目录），本页不自己判合法性——两处判必然漂移。
+function renderExportCard() {
+  const st = $('setExportState');
+  const d = SETCFG.export_dir;
+  st.textContent = '导出位置：';
+  const v = document.createElement('span');   // 路径是用户输入：DOM 节点，不拼 innerHTML
+  v.className = d ? 'ok' : 'warn';
+  v.textContent = d || '未设置';
+  st.appendChild(v);
+  st.appendChild(document.createTextNode(d
+    ? '（导出直接落盘；同名文件自动加 -2）'
+    : ' —— 导出走浏览器下载'));
+  $('btnExportPick').hidden = !desktopApi();  // 原生选择框按钮只在桌面版出现
+  $('btnExportClear').disabled = !d;
+  $('btnExportOpen').disabled = !d;
+}
+async function pickExportDir() {
+  const api = desktopApi();
+  if (!api) { $('setExportInput').focus(); return; }   // 浏览器/手机：手动输入
+  let picked = null;
+  try { picked = await api.pick_export_dir(); } catch (e) {
+    showToast('无法打开文件夹选择框：' + e, 'err'); return;
+  }
+  if (!picked) return;              // 用户取消：不动输入框（可能已有手打的内容）
+  $('setExportInput').value = picked;
+  await saveExportDir(picked);
+}
+async function saveExportDir(value) {
+  const v = String(value || '').trim();
+  if (!v) { showToast('请填写导出文件夹的绝对路径（如 D:\\LectureLens-导出）', 'err'); return; }
+  const r = await jfetch('/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ export_dir: v }) });
+  if (r && r.ok) {
+    showToast(`导出位置已设为 ${v}（导出将直接写到这里）`, 'ok');
+    $('setExportRow').hidden = true;
+    await refreshSettings();
+  } else {
+    showToast(friendlyError((r && r.error) || '保存失败'), 'err');
+    await refreshSettings();        // 回滚到服务端真值
+  }
+}
+$('btnExportChange').onclick = () => {
+  const row = $('setExportRow');
+  row.hidden = !row.hidden;
+  if (row.hidden) return;
+  $('setExportInput').value = SETCFG.export_dir || '';
+  $('btnExportPick').hidden = !desktopApi();
+  if (desktopApi()) pickExportDir();   // 桌面版：点开即弹原生选择框（少一步）
+  else $('setExportInput').focus();
+};
+$('btnExportPick').onclick = () => pickExportDir();
+$('btnExportSave').onclick = () => saveExportDir($('setExportInput').value);
+$('btnExportCancel').onclick = () => { $('setExportRow').hidden = true; };
+$('setExportInput').onkeydown = (e) => { if (e.key === 'Enter') $('btnExportSave').click(); };
+$('btnExportOpen').onclick = () => openExportDir();
+$('btnExportClear').onclick = async () => {
+  const r = await jfetch('/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ export_dir: null }) });
+  if (r && r.ok) {
+    showToast('已改回浏览器下载', 'ok');
+    await refreshSettings();
+  } else {
+    showToast(friendlyError((r && r.error) || '操作失败'), 'err');
+    await refreshSettings();
+  }
+};
+// pywebview 的 js_api 是页面加载后才注入的：注入完成时若正停在设置页，刷新一次
+// 卡片（否则「选择文件夹…」要等到下次进设置页才出现）
+window.addEventListener('pywebviewready', () => {
+  if (document.body.classList.contains('view-settings')) renderExportCard();
+});
+
+// —— 启动引导（**必须放在全部 let/const 声明之后**）——
+// 教训（实测，真 Chrome 控制台）：`refreshCourses()` 原先写在脚本中段（connect() 之后），
+// 而它依赖的 `let COURSES` / `const LOADED` 是后文才声明的 → 函数体一碰 LOADED 就抛
+// TDZ ReferenceError；async 函数把它变成 rejected promise（"Uncaught (in promise) at
+// refreshCourses (index.html:2002)"），顶层执行照常往下走、**界面上毫无提示**，但那次
+// /api/courses 从未发出——课程表要等进工作台（设置/笔记库）才拉到。§1 起上课态工具条
+// 就要显示当前课程名，故把启动拉取挪到这里（与其余「启动即拉」同一位置）。
+renderToolbarCourse();   // §1：先画出骨架（未分类 + ＋ 新建课程…），下拉不留空
+refreshCourses();        // p2-1：启动即拉课程表（侧栏 / 课程卡 / 工具条下拉开箱有数据）
 </script>
 </body>
 </html>

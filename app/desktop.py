@@ -8,12 +8,15 @@
   python app/desktop.py --minimized                    # p3-3：启动即进托盘（不弹主窗）
                                                        #   开机自启项用的就是这个（见 autostart.py）
   python app/desktop.py --server-only [main.py 旗标…]  # 等价 python app/main.py（旗标原样转发；
-                                                       #  LAN/手机访问走这里——桌面模式只监听 127.0.0.1 随机端口）
+                                                       #  与桌面模式同一套绑定规则：默认只听
+                                                       #  127.0.0.1，开了手机同屏才对外）
   python app/desktop.py --check                        # headless 自检（门禁）: 退出码 0/1
 
 桌面模式结构:
-  后台 daemon 线程跑 uvicorn（复用 main.py 的 app，仅监听 127.0.0.1 随机空闲端口；
-  手机等 LAN 访问请用 --server-only），主进程 webview.create_window + webview.start
+  后台 daemon 线程跑 uvicorn（复用 main.py 的 app）：默认仅监听 127.0.0.1 随机空闲端口；
+  开了手机同屏（config `lan_enabled`，§7）则监听 0.0.0.0（优先 8787，被占换端口），
+  手机连同一 WiFi 扫码即可看字幕——桌面窗口自己始终走 127.0.0.1:<port>，不受影响。
+  主进程 webview.create_window + webview.start
   （Windows 默认 Edge WebView2 后端，Win11 自带）。
   - 关闭窗口(X) = 隐藏到托盘：pywebview 6 的 closing 事件 handler 返回 False 即取消
     关闭（webview/platforms/winforms.py:400-402 on_closing → args.Cancel=True，本仓库
@@ -53,6 +56,7 @@ import uvicorn  # noqa: E402
 
 import branding  # noqa: E402  品牌图标/状态色/版本号单一事实源（p1-3）
 import hotkeys  # noqa: E402  p3-5：托盘菜单里的键位提示取默认值兜底
+import lan as lan_mod  # noqa: E402  §7：手机同屏的绑定决策（0.0.0.0 / 127.0.0.1 / 端口）
 import main as service  # noqa: E402  app/main.py：app/lifespan/日志/token 工具全在这
 
 log = logging.getLogger("desktop")
@@ -206,16 +210,26 @@ def _warn_already_running() -> None:
         pass
 
 
-# —— 服务线程（main.app + uvicorn，仅 127.0.0.1）——
+# —— 服务线程（main.app + uvicorn；默认仅 127.0.0.1，§7 手机同屏开启时监听 0.0.0.0）——
 
 def start_server(port: int = 0):
     """后台 daemon 线程起 uvicorn，返回 (线程, server, 实际端口)。
-    port=0 → 随机空闲端口：等 server.started（startup 完成）后从
-    server.servers[0].sockets 读真实端口——uvicorn/server.py 先填 servers
-    （:155/:164）再置 started（:205），先等到 started 再读，无竞态。
-    proxy_headers=False 与 main.py:1179 同款：无前置反代，禁 XFF 改写
-    scope['client']，防伪造环回豁免（条目19 安全姿势）。"""
-    config = uvicorn.Config(service.app, host="127.0.0.1", port=int(port),
+
+    绑定地址跟随 config.lan_enabled（§7，只在启动时读一次）：
+    - false（默认）→ host=127.0.0.1, port 参数（0 = 随机空闲端口）；
+    - true（手机同屏）→ host=0.0.0.0，优先 8787（被占则换一个空闲端口：桌面上往往
+      同时跑着别的实例/别的服务，**不能因为 8787 被占就让窗口起不来**）。
+    桌面窗口自己始终走 http://127.0.0.1:<port>——0.0.0.0 同样接环回连接，窗口不受影响。
+    实际端口仍以 server.servers[0].sockets 为准（uvicorn/server.py 先填 servers
+    :155/:164 再置 started :205，等 started 再读，无竞态），并记进
+    service.set_bind——/api/lan-qr 的配对 URL 要用它（换成别的端口时不能说 8787）。
+    proxy_headers=False 与 main.py 同款：无前置反代，禁 XFF 改写 scope['client']，
+    防伪造环回豁免（条目19 安全姿势）。"""
+    cfg = service.load_config()
+    host, want = lan_mod.lan_bind(cfg, lan_mod.LAN_PREFERRED_PORT if
+                                  cfg.get("lan_enabled") else int(port))
+    want = lan_mod.pick_port(host, want)
+    config = uvicorn.Config(service.app, host=host, port=int(want),
                             log_config=service.uvicorn_log_config(),
                             proxy_headers=False)
     server = uvicorn.Server(config)
@@ -229,6 +243,7 @@ def start_server(port: int = 0):
             raise RuntimeError(f"服务 {SERVER_READY_TIMEOUT}s 内未就绪")
         time.sleep(0.05)
     real_port = server.servers[0].sockets[0].getsockname()[1]
+    service.set_bind(host, real_port)
     return th, server, real_port
 
 
@@ -474,6 +489,41 @@ def _float_alive(window) -> bool:
         return False
 
 
+class DesktopApi:
+    """§3：暴露给页面的原生交互（pywebview `js_api` → `window.pywebview.api`）。
+
+    只暴露**零参数、零副作用**的最小面：弹系统原生文件夹选择框，把用户**自己选的**
+    目录路径原样返回（取消/失败 → None）。页面拿到路径后再走 POST /api/config 写入，
+    仍要过 export_dir 的专项校验（绝对路径/可创建/可写/非系统关键目录）。
+
+    **绝不接受前端传入的路径**：那等于把本机文件系统的选择权交给页面（含
+    DNS-rebinding 场景下的恶意页）；原生对话框是用户亲手操作的，路径来源可信。
+
+    为什么用 js_api 而不是在服务端弹框：桌面壳与服务是两个线程/两种运行形态，
+    文件夹选择框是 Win32 原生 UI，只有 webview 窗口线程能弹——纯服务模式没有它，
+    前端自动退化为「手动输入路径 + 打开文件夹」（见 index.html 的导出卡）。"""
+
+    def pick_export_dir(self) -> str | None:
+        """弹原生文件夹选择框 → 用户选中的绝对路径；取消/不可用 → None。"""
+        try:
+            import webview
+            wins = getattr(webview, "windows", None) or []
+            if not wins:
+                log.warning("[desktop] ⚠ 原生文件夹选择不可用（窗口未就绪）")
+                return None
+            res = wins[0].create_file_dialog(webview.FOLDER_DIALOG)
+        except Exception as e:
+            log.warning(f"[desktop] ⚠ 原生文件夹选择失败: {type(e).__name__}: {e}")
+            return None
+        if not res:                      # 用户取消 → None/空
+            return None
+        first = res[0] if isinstance(res, (list, tuple)) else res
+        if not first:
+            return None
+        log.info(f"[desktop] 用户选择导出目录: {first}（由页面走 /api/config 校验写入）")
+        return str(first)
+
+
 # —— 托盘（pystray + pillow；图标色值取 docs/design-spec.md §2 令牌）——
 
 def tray_state(asr: str = "", mic: str = "", paused: bool = False) -> str:
@@ -575,8 +625,19 @@ def run_desktop(glossary: list[str] | None = None,
     service.app.router.lifespan_context = service.build_lifespan(ns)
 
     th, server, port = start_server()
-    log.info(f"[desktop] 服务就绪: http://127.0.0.1:{port}（仅本机监听，"
-             "LAN 用 --server-only）")
+    # §7：绑定事实取自 start_server 记下的 runtime['bind']（is_lan_host 已含 None/解析
+    # 失败的 fail-closed 分支），不重复判一次「有没有值」。真开了就说真的（面板/二维码
+    # 里的地址与端口都以此为准）；没开就说没开——不含糊其词，也不写「立即生效」
+    # （换绑要重启，见 main.lan_bind_state）。
+    bind_lan = lan_mod.is_lan_host((service.runtime.get("bind") or {}).get("host"))
+    if bind_lan:
+        _lan_ip = lan_mod.primary_lan_ip()
+        log.info(f"[desktop] 服务就绪: http://127.0.0.1:{port}"
+                 f"（📱 手机同屏已开启：同时监听 0.0.0.0:{port}，手机连同一 WiFi 扫 "
+                 f"http://{_lan_ip or '<电脑IP>'}:{port}/ 的配对二维码）")
+    else:
+        log.info(f"[desktop] 服务就绪: http://127.0.0.1:{port}（仅本机监听；"
+                 "手机同屏在字幕页/设置页开启，重启 LectureLens 后生效）")
 
     if not _acquire_instance_lock(port):
         log.error(f"[desktop] 已有 LectureLens 实例在运行（锁: {LOCK_PATH}）")
@@ -745,6 +806,7 @@ def run_desktop(glossary: list[str] | None = None,
         WINDOW_TITLE, f"http://127.0.0.1:{port}/",
         min_size=WINDOW_MIN_SIZE, resizable=True,
         hidden=bool(minimized),   # p3-3：--minimized 开机自启不弹窗（见 run_desktop 注释）
+        js_api=DesktopApi(),      # §3：设置页「选择文件夹…」的原生选择框
         **_geom,
     )
 
@@ -854,7 +916,8 @@ def run_check() -> int:
     状态灯像素断言 ⑤ 菜单构建器动态 text/checked 求值 ⑥ p3-1 全局快捷键白名单与
     降级路径（纯逻辑，不装真钩子） ⑦ uvicorn 后台线程起
     服务（无 lifespan：不加载模型不开麦，秒级） ⑧ HTTP 探活 /api/status（200
-    且 JSON 带 asr 键）与 /（index.html）。"""
+    且 JSON 带 asr 键）与 /（index.html） ⑨ §3 js_api 文件夹选择桥（假 webview，
+    不弹真对话框）。"""
     import importlib.metadata as md
 
     failures: list[str] = []
@@ -957,7 +1020,8 @@ def run_check() -> int:
     def _server() -> str:
         th, server, port = start_server()
         holder.update(th=th, server=server, port=port)
-        return f"uvicorn listening on 127.0.0.1:{port}"
+        host = (service.runtime.get("bind") or {}).get("host") or "127.0.0.1"
+        return f"uvicorn listening on {host}:{port}"
 
     def _probe() -> str:
         import httpx
@@ -989,6 +1053,41 @@ def run_check() -> int:
             raise RuntimeError("/float 缺少关键元素（btnThru/btnHide）")
         return f"/float 200（{len(r.content)} bytes，含穿透/关闭按钮）"
 
+    def _jsapi() -> str:
+        """§3：js_api 桥（设置页「选择文件夹…」）的**纯逻辑**自检——用假 webview
+        模块验「返回选中路径 / 取消回落 None / 窗口未就绪不炸」。真对话框不在门禁里
+        弹（--check 不该在用户机器上冒出系统窗口），由真机手测覆盖。"""
+        import sys as _sys
+        import types
+
+        class _FakeWin:
+            def __init__(self, res):
+                self.res = res
+
+            def create_file_dialog(self, kind):
+                return self.res
+
+        fake = types.ModuleType("webview")
+        fake.FOLDER_DIALOG = object()
+        win = _FakeWin(["D:\\LectureLens-导出"])
+        fake.windows = [win]
+        old = _sys.modules.get("webview")
+        _sys.modules["webview"] = fake
+        try:
+            api = DesktopApi()
+            assert api.pick_export_dir() == "D:\\LectureLens-导出", "选中路径未回传"
+            win.res = None                       # 用户取消
+            assert api.pick_export_dir() is None, "取消应回 None"
+            win.res = "D:\\x"
+            fake.windows = []                    # 窗口未就绪
+            assert api.pick_export_dir() is None, "无窗口应回 None 而不是抛"
+        finally:
+            if old is not None:
+                _sys.modules["webview"] = old
+            else:
+                _sys.modules.pop("webview", None)
+        return "选中/取消/无窗口 三态过（原生对话框走真机手测）"
+
     ok = all([
         step("deps import (webview/pystray/pillow/service)", _deps),
         step("tray icon generation", _tray),
@@ -999,6 +1098,7 @@ def run_check() -> int:
         step("uvicorn service thread", _server),
         step("HTTP probe /api/status + /", _probe),
         step("float bar page /float", _float_page),
+        step("js_api folder picker bridge (§3)", _jsapi),
     ])
     if holder:
         with contextlib.suppress(Exception):

@@ -153,7 +153,10 @@ async def test_allowed_keys_constant(app_state):
     """锁白名单键集合：防止后续演进意外收窄/扩大（条目19 全键核对的基础）。
     p1-5：+first_run_done（首启向导标记）；p1-7：+floating_bar（B1 悬浮条显隐）；
     p2-5：+5 个断句/积压调优键（B4 断句参数面板）；p3-1：+3 个全局快捷键键
-    （B12：开关 + 两个键位）；p3-5：+6 个窗口版式记忆键（B12：主窗 4 + 悬浮条 2）。"""
+    （B12：开关 + 两个键位）；p3-5：+6 个窗口版式记忆键（B12：主窗 4 + 悬浮条 2）；
+    §3：+export_dir（导出位置自选：绝对路径字符串或 null，走 exportdir.dir_problem）；
+    §5：+class_end_confirm（下课归档的二次确认开关，布尔枚举）；
+    §7：+lan_enabled（手机同屏开关，布尔枚举；写盘即存，换绑监听地址要重启）。"""
     assert set(ALLOWED_CONFIG_KEYS) == {"model", "device", "compute_type", "vad",
                                         "lang", "streaming", "source", "input_device",
                                         "translate_model", "auth_enabled",
@@ -168,7 +171,15 @@ async def test_allowed_keys_constant(app_state):
                                         # p3-5（B12）：窗口版式记忆（整数区间校验；
                                         # 坐标允许为负——多显示器主屏左侧为负坐标）
                                         "window_w", "window_h", "window_x",
-                                        "window_y", "float_x", "float_y"}
+                                        "window_y", "float_x", "float_y",
+                                        # §3：路径字符串（或 null），走
+                                        # exportdir.dir_problem 专项校验
+                                        "export_dir",
+                                        # §5：下课归档二次确认（布尔枚举，即时键）
+                                        "class_end_confirm",
+                                        # §7：手机同屏（布尔枚举；非即时键——
+                                        # 换绑监听地址要重启，见 main.lan_bind_state）
+                                        "lan_enabled"}
 
 
 # ---------------- streaming 预留键（条目11 灰度，重启服务后生效） ----------------
@@ -687,7 +698,10 @@ def test_resolve_build_cfg_does_not_mutate_runtime(app_state):
                       # p3-5（B12）新增键：窗口版式记忆（None = 还没记忆过）
                       "window_w": None, "window_h": None,
                       "window_x": None, "window_y": None,
-                      "float_x": None, "float_y": None}
+                      "float_x": None, "float_y": None,
+                      "export_dir": None,   # §3 新增键：导出位置（未设置）
+                      "class_end_confirm": True,   # §5 新增键：下课归档二次确认
+                      "lan_enabled": False}        # §7 新增键：手机同屏（默认关＝只听 127.0.0.1）
     assert main.runtime["config"]["model"] == "large-v3-turbo"  # 原配置不动
     assert main.runtime["config"]["streaming"] is True
     assert main._resolve_build_cfg() == dict(main.runtime["config"])  # 无 overrides = 原样

@@ -4,6 +4,8 @@
 组件：麦克风 VAD 分句（capture）→ faster-whisper（asr）→ DeepSeek 翻译（translate）
      → WebSocket 字幕广播 + 双语笔记实时落盘（transcripts/）。
 配置：config.json（模型/设备/VAD）持久化，字幕页可热切换；CLI 参数优先级更高。
+绑定：默认只监听 127.0.0.1（不对外）；config.lan_enabled=true（§7 手机同屏）→ 监听
+     0.0.0.0（优先 --port/8787，被占换空闲端口）。**启动时读一次**，改键要重启才换绑。
 鉴权：/api/* 与 /ws 校验 LAN token（条目19），127.0.0.1 豁免；首启生成 token 写 config.json 并打印。"""
 import argparse
 import asyncio
@@ -18,12 +20,13 @@ import logging
 import os
 import queue
 import secrets
+import socket
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote, urlparse
 
 import uvicorn
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
@@ -43,11 +46,13 @@ from asr import WhisperASR          # noqa: E402
 import autostart as autostart_mod   # noqa: E402  p3-3：开机自启（HKCU Run 项读写）
 import courses as courses_mod       # noqa: E402  p2-1：课程管理（courses.json 存储/校验）
 import notes as notes_mod           # noqa: E402  p2-2：笔记库（transcripts 解析/索引/检索）
+import exportdir as exportdir_mod   # noqa: E402  §3：导出位置自选（export_dir 校验/文件名）
 import exporters                    # noqa: E402  p2-3：导出中心（md/SRT/PDF/Word）
 import models as models_mod         # noqa: E402  p2-4：模型管理器（缓存/下载/删除）
 import tiers as tiers_mod           # noqa: E402  档位化：硬件检测与模型档位推荐
 import glossary as glossary_mod     # noqa: E402  p2-6：术语库（glossary/*.md 增删改）
 import hotkeys as hotkeys_mod       # noqa: E402  p3-1：全局快捷键（键名白名单/注册/降级）
+import lan as lan_mod               # noqa: E402  §7：手机同屏（绑定决策/主网卡探测/配对二维码）
 from capture import SR, MicSegmenter  # noqa: E402
 from loopback import LoopbackSegmenter  # noqa: E402  条目14（scipy 依赖一并就位）
 from scheduler import DecodeScheduler  # noqa: E402
@@ -119,7 +124,22 @@ DEFAULT_CONFIG = {"model": "large-v3-turbo", "device": "auto",
                   # 那块屏 x<0），故区间是 (-20000, 20000) 而不是非负区间。
                   "window_w": None, "window_h": None,
                   "window_x": None, "window_y": None,
-                  "float_x": None, "float_y": None}
+                  "float_x": None, "float_y": None,
+                  # §3（导出位置自选）：None = 未设置 → 导出维持**浏览器下载**（现状）。
+                  # 字符串 = 绝对路径，导出直接落盘到该目录并回 JSON {ok, path}。
+                  # 组合串/路径都不是枚举值，故走专项校验 exportdir.dir_problem
+                  # （绝对路径 / 可创建 / 可写 / 非系统关键目录），与 input_device 同款。
+                  "export_dir": None,
+                  # §5（下课一键归档）：点工具条「下课」时先弹二次确认。true = 弹
+                  # （默认：一键归档会暂停收音并产生 LLM 费用，手滑的代价不小）；
+                  # 可在设置页关掉（关掉后点「下课」立即开始，不再询问）。
+                  "class_end_confirm": True,
+                  # §7（手机扫码同屏）：false = 只监听 127.0.0.1（默认；与「不对外」
+                  # 的既有姿态一致——服务不会因为在跑就暴露在同网段里）；true =
+                  # 监听 0.0.0.0（优先 8787，被占则换端口），同 WiFi 持 token 设备可看字幕。
+                  # **监听地址在进程内不可热改**：改这个键只是写进配置，换绑要重启
+                  # 服务（/api/lan-qr 回 restart_required，面板文案照此如实说）。
+                  "lan_enabled": False}
 
 # —— 条目4：/api/config 全键白名单（键集合 + 每键取值范围）——
 # 新增键必须进 ALLOWED_CONFIG_KEYS + CONFIG_VALUE_CHOICES（白名单校验）
@@ -138,7 +158,15 @@ ALLOWED_CONFIG_KEYS = ("model", "device", "compute_type", "vad", "lang", "stream
                        "hotkeys_enabled", "hotkey_pause", "hotkey_float",
                        # p3-5（B12）：窗口版式记忆（数值区间校验，见 CONFIG_NUM_RANGES）
                        "window_w", "window_h", "window_x", "window_y",
-                       "float_x", "float_y")
+                       "float_x", "float_y",
+                       # §3：导出位置（字符串绝对路径或 null，走专项校验
+                       # exportdir.dir_problem——不在 CONFIG_VALUE_CHOICES）
+                       "export_dir",
+                       # §5：下课归档的二次确认开关（布尔枚举，即时键）
+                       "class_end_confirm",
+                       # §7：手机同屏（布尔枚举；**非即时键**——写配置即存盘，但
+                       # 监听地址要重启服务才换，见 DEFAULT_CONFIG 注释）
+                       "lan_enabled")
 # 条目13：lang 码表 = auto + en/zh + 常用语言码（whisper 语言码，UI 下拉为其常用子集）
 LANG_CHOICES = ("auto", "en", "zh", "ja", "ko", "fr", "de", "es", "ru", "pt", "it")
 # 条目16：translate.model 配置化——切档位前以 DeepSeek 官方定价页为准
@@ -160,6 +188,11 @@ CONFIG_VALUE_CHOICES: dict = {
     # 会被当成 0（不渐隐）——语义上等价，无害。
     "fade_lines": (0, 1, 2),
     "hotkeys_enabled": (False, True),  # p3-1：即时键，改后立即重注册/注销热键
+    # §5：下课归档的二次确认（前端点「下课」时现读；关掉 = 点一下就直接开始归档）
+    "class_end_confirm": (False, True),
+    # §7：手机同屏开关。写盘即生效（前端读 /api/lan-qr 的 enabled/active 自行区分
+    # 「已开」与「已开但还没重启」），**换绑监听地址仍要重启**——不是即时键。
+    "lan_enabled": (False, True),
     # input_device 不在静态码表里：取值 = None 或非负设备索引（动态依赖本机设备枚举，
     # 条目15 在 set_config 里走专项校验 _input_device_problem）
     # hotkey_pause/hotkey_float 同理不在码表里：取值 = 白名单键名组合串（p3-1，
@@ -406,21 +439,51 @@ class Hub:
 
     def __init__(self):
         self.clients: set = set()
+        # 评审2① 修复：**非环回**的 WS 连接（手机/局域网设备）。status.ws_clients 报的
+        # 是这个集合的大小——len(clients) 会把本机自己的窗口算进去（桌面窗口、浏览器
+        # 标签、悬浮条都会连 WS），面板上的「已连接 N 台设备」于是恒 ≥1、永远区分不出
+        # 「手机连上了」和「只有我自己的窗口」，那条连通性诊断就废了。
+        self.lan_clients: set = set()
         self.transcript_path: Path | None = None
         self.stamp: str | None = None   # p2-1：笔记时间戳（改写头时复用，不重新取时）
+        self.note_seg = 0                    # 笔记级段号（ZH 锚点 / 时间轴 seg 口径）
         self.t0_audio: float | None = None   # p2-3：本场首段音频采集墙钟（时间轴原点）
         self.times: list = []                # p2-3：[{"seg","start","end"}] 绝对偏移秒
 
-    def start_transcript(self, course: str | None = None) -> Path:
+    def start_transcript(self, course: str | None = None,
+                         avoid: set | None = None) -> Path:
+        """开一篇新笔记 → 返回路径（同时把 hub 的笔记指针/时间戳切过去）。
+
+        文件名是**分钟粒度**（lecture_YYYYMMDD_HHMM.md），所以"同一分钟再开一篇"
+        是真实场景（重启、删掉正在记录的那篇后接力）。旧实现直接 write_text——
+        同分钟重开会把前一篇**整篇截掉**（实测的数据丢失路径）；现在先避让：
+        已存在（或在 avoid 名单里）就依次试 -2/-3…，绝不覆盖任何现有笔记。
+        `avoid` 供 §4「删掉正在记录的那篇 → 接力新笔记」用：让它连**刚进回收站的
+        那个名字**也避开，于是恢复旧笔记时不会撞名（两篇都在、各自可辨）。"""
         TRANSCRIPTS.mkdir(exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
         p = TRANSCRIPTS / f"lecture_{stamp}.md"
+        n = 2
+        while p.exists() or (avoid and p.name in avoid):
+            p = TRANSCRIPTS / f"lecture_{stamp}-{n}.md"
+            n += 1
         p.write_text(note_header(stamp, course), encoding="utf-8")
         self.transcript_path = p
         self.stamp = stamp
+        self.note_seg = 0         # 笔记级段号随新笔记归零（ZH 锚点/时间轴 sidecar 用）
         self.t0_audio = None      # p2-3：换笔记 = 时间轴重新起算
         self.times = []
         return p
+
+    def next_note_seg(self) -> int:
+        """本笔记内的下一段号（1 起）——ZH 锚点与 .times sidecar 的唯一口径。
+
+        与会话级 status['segments'] 刻意分开：后者是「这场课一共说了几段」（工具栏
+        徽章/前端行标识），前者是「这是本笔记的第几段」（文件内配对）。
+        换笔记（§4 删掉正在记录的那篇 → 接力）时会话号继续、笔记号归零，若混用
+        就会让新笔记的 EN 行（从 1 起）与锚点（接着上一场的号）对不上。"""
+        self.note_seg += 1
+        return self.note_seg
 
     def record_time(self, seg: int, window_start: float | None,
                     seg_times: list | None, audio_s: float) -> None:
@@ -493,8 +556,22 @@ class Hub:
             log.warning(f"[courses] ⚠ 笔记课程重标失败: {e}")
             return "none"
 
-    def append(self, ts: str, en: str, zh: str, seg: int | None = None) -> None:
+    def append(self, ts: str, en: str, zh: str, seg: int | None = None,
+               note: Path | None = None) -> None:
+        """往当前笔记追加一行（EN 或 ZH）。
+
+        `seg` = **笔记级**段号（ZH 锚点；见 notes.parse 的配对规则），由调用方用
+        next_note_seg() 取——不是会话级 status['segments']：换笔记后 EN 行从 1 重新
+        计数，锚点必须同口径（评审实测：接力笔记若沿用会话号，整场中文列会静默消失）。
+
+        `note` = 派发这段翻译时**它属于哪篇笔记**。晚到的译文若发现笔记已经换了
+        （§4 删掉正在记录的那篇 → 接力新笔记），就直接丢弃：写进新笔记只会留下一条
+        对不上任何 EN 行的孤儿中文行。"""
         if not self.transcript_path:
+            return
+        if note is not None and note != self.transcript_path:
+            log.debug(f"[notes] 丢弃迟到译文（{seg}）：笔记已从 {note.name} 切到 "
+                      f"{self.transcript_path.name}")
             return
         with self.transcript_path.open("a", encoding="utf-8") as f:
             if en:
@@ -575,7 +652,11 @@ runtime: dict = {"asr": None, "segmenter": None, "seg_q": None,
                  "downloading": None, "download_task": None,  # p2-4：模型下载守卫/句柄
                  "summarizing": False, "summary_task": None,  # 条目17：摘要守卫与任务句柄
                  "deck_running": False, "deck_task": None,  # 条目18：卡组守卫与任务句柄
-                 "hotkeys": None}  # p3-1：全局快捷键管理器（asr_loop 按持久化配置建）
+                 "hotkeys": None,  # p3-1：全局快捷键管理器（asr_loop 按持久化配置建）
+                 # §7：本次进程**实际**监听的地址 {"host", "port"}——由入口写一次
+                 # （main.main / desktop.start_server 调 set_bind）。/api/lan-qr 的
+                 # 「是不是真的对外了」只信这个事实，不信配置意图。
+                 "bind": None}
 
 ARGS = None  # main() 里赋值
 
@@ -667,6 +748,152 @@ def token_ok(provided: str | None, expected: str | None) -> bool:
                               str(expected).encode("utf-8"))
 
 
+# —— 评审1① 修复：Host/Origin 守卫（DNS-rebinding 防线）——
+# 背景（实测复现）：环回发 `GET /api/lan-qr` 带 `Host: evil.example` +
+# `Origin: http://evil.example` 曾拿到 200，响应 url 里的 token 与 config 的
+# auth_token 逐字相等；同形态读 /api/notes/list 也 200 带数据。这是与
+# 「评审修复②（token 不出 API）」同一类通道被重复开口——环回豁免 + 只判 socket 对端。
+# 攻击链：恶意页 → DNS rebinding 到自己控的域名解析到 127.0.0.1 → 浏览器把它当
+# 同源，于是能**读到响应体**（CORS 拦不住同源请求）→ token 到手 = LAN 侧唯一门禁到手。
+# 防线只能落在 **Host 头**上（浏览器独占该头，页面改不了）：rebinding 一定带攻击者
+# 自己的域名，而那是个多标签域名。
+
+#: 单标签主机名一律放行（localhost / 本机名 DESKTOP-ABC / 测试里的 test、testserver）。
+#: 单标签名注册不了公网域名，也就做不成 rebinding 的载体。
+SINGLE_LABEL_HOSTS_OK = True
+
+
+def host_name(host_header: str | None) -> str:
+    """Host 头 → 主机名（小写、去端口、去 IPv6 方括号）。畸形/空 → ""。"""
+    s = str(host_header or "").strip()
+    if not s:
+        return ""
+    if s.startswith("["):                      # [::1]:8787
+        end = s.find("]")
+        return s[1:end].lower() if end > 0 else ""
+    if s.count(":") == 1:                      # host:port（IPv6 无括号时不这么写）
+        s = s.split(":", 1)[0]
+    return s.lower()
+
+
+def env_allowed_hosts() -> set[str]:
+    """逃生口：LECTURELENS_ALLOW_HOSTS=名字1,名字2 —— hosts 别名 / 隧道域名等自定
+    场景用（与 LECTURELENS_NO_BROWSER 等同类，属开发机开关，不进 config 键）。"""
+    raw = os.environ.get("LECTURELENS_ALLOW_HOSTS", "")
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
+def host_is_allowed(host_header: str | None) -> bool:
+    """Host 头是否可信（DNS-rebinding 的唯一判据，浏览器独占该头）。
+
+    放行：① IP 字面量（127.0.0.1 / ::1 / 192.168.1.5 / [::1]——文档里两种用法都在此列）；
+    ② 单标签主机名（localhost / 本机名 / 测试用的 test，见 SINGLE_LABEL_HOSTS_OK）；
+    ③ 本机自己的主机名与 FQDN（socket.gethostname()/getfqdn()——学院机器上按名访问的场景）；
+    ④ 环境变量 LECTURELENS_ALLOW_HOSTS 里显式列出的名字。
+    拒绝：其余多标签域名（evil.example、x.nip.io、attacker.com…）——rebinding 的载体。
+    """
+    name = host_name(host_header)
+    if not name:
+        return False
+    if name in env_allowed_hosts():
+        return True
+    try:                                       # ① IP 字面量（v4/v6 都算直连地址）
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        pass
+    if name in {"localhost", socket.gethostname().lower(),
+                socket.getfqdn().lower()}:
+        return True
+    if SINGLE_LABEL_HOSTS_OK and "." not in name:   # ② 单标签名
+        return True
+    return False
+
+
+def origin_ok(origin: str | None, host_header: str | None) -> bool:
+    """Origin 与请求 Host 同源吗。**没有 Origin → True**（同源导航/非浏览器客户端）。
+
+    浏览器只在跨源请求与 POST/PUT/DELETE 上带 Origin，所以「有 Origin 且与 Host 不同源」
+    = 某个网页在借用户浏览器的手调本机服务：读取那侧被 CORS 挡住，但**副作用**
+    （改配置、轮询 token、弹文件夹窗口）不该在挡住之前就执行。"""
+    if not origin or origin == "null":
+        return not origin                          # "null"（沙箱 iframe/本地文件）一律拒
+    try:
+        p = urlparse(origin)
+    except ValueError:
+        return False
+    if p.scheme not in ("http", "https") or not p.hostname:
+        return False
+    origin_netloc = (p.hostname.lower(), p.port or (443 if p.scheme == "https" else 80))
+    host = host_name(host_header)
+    host_port = None
+    raw = str(host_header or "").strip()
+    if raw.startswith("["):
+        tail = raw[raw.find("]"):]
+        if tail.startswith("]:") and tail[2:].isdigit():
+            host_port = int(tail[2:])
+    elif raw.count(":") == 1 and raw.rsplit(":", 1)[1].isdigit():
+        host_port = int(raw.rsplit(":", 1)[1])
+    # 端口缺省时按 Host 头算不出，就用「主机名相同」判同源（同主机不同端口在浏览器里
+    # 是不同源，但 Host 头里通常带端口；真带不上时宁可放行同主机的请求，别误伤本机页面）
+    return origin_netloc[0] == host and (host_port is None or origin_netloc[1] == host_port)
+
+
+def loopback_only_ok(peer: str | None, host_header: str | None,
+                     origin: str | None = None) -> tuple[bool, str]:
+    """「仅本机可用」端点的完整判据（评审1①）：socket 对端环回 **且** Host 是本机/直连
+    地址 **且** 没有跨源 Origin。返回 (是否放行, 不放行的原因)。
+
+    /api/lan-qr 与 /api/export/open 共用——两处都需要「只有本机能读/能触发」，而两者
+    原先都只判了 socket 对端（rebinding 页面来自本机环回，peer 判据天然为真）。"""
+    if not is_loopback_peer(peer):
+        return False, f"对端不是本机（peer={peer}）"
+    if not host_is_allowed(host_header):
+        return False, f"Host 不是本机地址（Host={host_header!r}）"
+    if not origin_ok(origin, host_header):
+        return False, f"跨源请求（Origin={origin!r} 与 Host={host_header!r} 不同源）"
+    return True, ""
+
+
+class HostGuardMiddleware:
+    """Host/Origin 守卫（评审1①）：整个 /api/* 与 /ws 不接受外部域名寻址。
+
+    - Host 不在允许集 → 400（rebinding 的请求一定带攻击者自己的域名，见 host_is_allowed）；
+    - Origin 存在且与请求 Host 不同源 → 400（跨站页面借浏览器的手调本机服务）。
+    纯 ASGI（http + websocket 双 scope，以后新增端点自动纳入），与 TokenAuthMiddleware
+    同一姿势。放行条件宽松到不误伤：IP/单标签名/本机 FQDN/环境变量白名单。
+    """
+    PROTECTED = ("/api/", "/ws")
+
+    def __init__(self, asgi_app):
+        self.asgi_app = asgi_app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            path = scope.get("path") or ""
+            if any(path == p or path.startswith(p) for p in self.PROTECTED):
+                headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                           for k, v in (scope.get("headers") or [])}
+                host = headers.get("host")
+                origin = headers.get("origin")
+                if not host_is_allowed(host) or not origin_ok(origin, host):
+                    log.warning(f"[host] ⚠ 拒绝可疑 Host/Origin: {scope['type']} {path} "
+                                f"Host={host!r} Origin={origin!r} "
+                                f"peer={(scope.get('client') or (None,))[0]}")
+                    if scope["type"] == "http":
+                        resp = JSONResponse(
+                            {"ok": False,
+                             "error": "不接受的 Host/Origin：本服务只认本机与直连地址"
+                                      "（IP / localhost / 本机名），不接受外部域名寻址"
+                                      f"（Host={host!r}）"},
+                            status_code=400)
+                        await resp(scope, receive, send)
+                    else:
+                        await send({"type": "websocket.close", "code": 1008})
+                    return
+        await self.asgi_app(scope, receive, send)
+
+
 def auth_allows(expected: str | None, provided: str | None, peer: str | None,
                 enabled: bool = True, exempt_loopback: bool = True) -> bool:
     """条目19① 鉴权判定纯函数（middleware 单一出口，tests/test_auth.py 全矩阵）：
@@ -737,6 +964,10 @@ class TokenAuthMiddleware:
 
 
 app.add_middleware(TokenAuthMiddleware)
+# 评审1① 修复：Host/Origin 守卫**在鉴权之外再套一层**（Starlette 的 add_middleware
+# 后加者在外层）——恶意的 Host/Origin 请求连鉴权都不必走到就先被 400；且它覆盖整个
+# /api/* 与 /ws（含未来新增端点），不靠逐个端点记得加。
+app.add_middleware(HostGuardMiddleware)
 
 
 def provision_token() -> str | None:
@@ -903,6 +1134,11 @@ async def api_status():
     # 而现算只是 O(词条数)——本机实测 10 条 14µs / 100 条 76µs / 500 条 346µs
     # （timeit 各 2000 次均值），相对 2s 轮询周期可忽略。
     status["glossary_rev"] = glossary_terms_payload()["rev"]
+    # §7 + 评审2①：手头连着几台**设备**（面板「已连接 N 台设备」）。数的是
+    # hub.lan_clients = 非环回对端的 WS（手机/局域网设备）——环回那几条是本机自己的
+    # 窗口（桌面窗口/浏览器标签/悬浮条都连 WS），算进来会让这个数字恒 ≥1、失去诊断意义。
+    # 现算不缓存：集合在 ws 端点 accept/断开时维护，len() 是 O(1)。
+    status["ws_clients"] = len(hub.lan_clients)
     return JSONResponse(status)
 
 
@@ -1043,6 +1279,30 @@ async def set_config(req: Request):
                     continue  # 规范化后与现值相同 = no-op
                 changes[k] = hotkeys_mod.normalize(v)  # 存规范形（去重/比对唯一口径）
                 continue
+            if k == "export_dir":
+                # §3：字符串（绝对路径）或 null。**null 是有含义的值**（取消自选 →
+                # 回到浏览器下载），故与 input_device 同款：特判放在 no-op 判空之前。
+                # 这里只做纯语法校验（不建目录——校验阶段零文件系统副作用）；
+                # 「可创建 + 可写」的实证在整体校验通过后、状态改动前做（见
+                # ensure_writable 那段）。
+                if v is not None and not isinstance(v, str):
+                    return JSONResponse(
+                        {"ok": False,
+                         "error": f"非法 export_dir: {v!r}"
+                                  f"（须为绝对路径字符串，或 null 取消自选）"},
+                        status_code=400)
+                if v is not None:
+                    v = v.strip()
+                    problem = exportdir_mod.path_problem(v)
+                    if problem:
+                        return JSONResponse({"ok": False, "error": problem},
+                                            status_code=400)
+                    if v == cfg.get(k):
+                        continue  # 与现值相同 = no-op
+                elif cfg.get(k) is None:
+                    continue      # null 且本来就没设 = no-op
+                changes[k] = v
+                continue
             if v is None or v == "" or v == cfg.get(k):
                 continue  # 未提供/空串/与现值相同 = no-op（前端下拉占位语义）
             if k in CONFIG_NUM_RANGES:
@@ -1079,6 +1339,16 @@ async def set_config(req: Request):
                  "error": f"模型 {dl_busy} 正在下载，暂不能切换模型"
                           f"（两者共用加载进度条，且下载会占用磁盘与带宽）"},
                 status_code=409)
+
+        # §3：export_dir 的**落地实证**（建目录 + 写探针）。位置与其他校验同款：
+        # 整体校验已通过、任何状态改动（cfg.update/save_config）之前——失败 → 400
+        # 且 runtime/config.json 零污染。语法校验已在逐键阶段做过（零副作用），
+        # 这里只测「这个位置真的能用」——手打一个不存在的盘符/只读目录也会被拦住。
+        if changes.get("export_dir"):
+            problem = exportdir_mod.ensure_writable(changes["export_dir"])
+            if problem:
+                return JSONResponse({"ok": False, "error": problem},
+                                    status_code=400)
 
         # —— 即时键（vad/lang 等）：赋值 → 保存 → apply_segmenter（条目4③，现状语义）——
         instant = {k: v for k, v in changes.items() if k not in MODEL_KEYS}
@@ -1132,6 +1402,15 @@ async def set_config(req: Request):
             log.info(f"config 已更新: {instant}")  # 关键字「config 已更新」= 条目3验收口径
             if "streaming" in instant:
                 log.info("[config] streaming 开关已保存，重启服务后生效（条目11 灰度）")
+            if "lan_enabled" in instant:
+                # §7：**不许写「立即生效」**——监听地址在 uvicorn 启动时定死，重新绑定
+                # 会换掉整条服务（桌面窗口/在飞字幕全断）。日志与 /api/lan-qr 的
+                # restart_required/message 三处口径一致。
+                want = bool(instant["lan_enabled"])
+                log.info(f"[config] 手机同屏（lan_enabled={want}）已保存："
+                         + ("重启 LectureLens 后开始监听 0.0.0.0（同 WiFi 持 token 可见）"
+                            if want else
+                            "重启 LectureLens 后停止 LAN 监听（回到仅本机 127.0.0.1）"))
 
         # —— 模型键（条目4④ save-after-build）：以 overrides 构建，成功才合并+持久化；
         # 失败仅置 status['asr']=error（build_asr 内），runtime['config'] 与 config.json 零污染 ——
@@ -1269,13 +1548,37 @@ async def api_security():
             "key_source": "env" if key_env else ("file" if key_file else "none")}
 
 
+async def kick_ws_clients(code: int = 1008) -> int:
+    """关闭并移除当前所有字幕 WS 连接（token 轮换后调用）。返回被断开的条数。
+
+    为什么需要它（评审2④b，本机实测）：鉴权只在**握手那一刻**做一次
+    （TokenAuthMiddleware），ws_endpoint 要等对端断开才退出，broadcast 对已连接对象
+    不再校验——所以旧实现轮换 token 只挡住**新**连接，轮换前就开着页面的人会继续收到
+    字幕。「旧设备立刻失效」这句文案在「截图外泄、对方当下正开着页面」这个主诉上是假的。
+    现在轮换时主动 close：旧页面断线后重连（页面自带重连）会被 403 拒绝——「立刻失效」
+    才成立。本机窗口也在被踢之列：它靠环回豁免 + 自己的 token 重连，无需人工干预。"""
+    n = 0
+    for ws in list(hub.clients):
+        try:
+            await ws.close(code=code)
+            n += 1
+        except Exception as e:      # 已断/半开也别让轮换失败
+            log.debug(f"[security] 关闭 WS 时异常（忽略）: {e}")
+    hub.clients.clear()
+    hub.lan_clients.clear()
+    return n
+
+
 @app.post("/api/security/token/regenerate")
 async def regenerate_token():
-    """p1-6 设置页安全卡：重新生成 LAN token（旧值立即失效，已配对手机需重新粘贴）。
+    """p1-6 设置页安全卡：重新生成 LAN token（旧值失效，已配对手机需重新粘贴）。
     新值仅本响应回传一次（等价首启 provision_token 的 print 信息流）；值不落日志。
     与「auth_token 不可经 API 设置」（DEFAULT_CONFIG 注释）不冲突：端点不接受任何
     输入值，随机性由服务端 secrets 保证——用户无法指定 token。写盘只增补 auth_token
-    单键（provision_token 同款），不动 config.json 其他内容（防把 CLI 覆盖值顺带持久化）。"""
+    单键（provision_token 同款），不动 config.json 其他内容（防把 CLI 覆盖值顺带持久化）。
+
+    评审2④b：轮换后**主动断开所有已连 WS**（kick_ws_clients）——否则已经在线的页面
+    会继续收字幕，「旧设备立刻失效」不成立。响应里回断开的条数，让调用方/日志能核对。"""
     token = secrets.token_urlsafe(24)
     runtime["config"]["auth_token"] = token
     try:
@@ -1290,8 +1593,127 @@ async def regenerate_token():
         log.warning(f"[security] ⚠ token 写盘失败: {e}——本进程内已生效，重启后可能回退")
         return JSONResponse({"ok": False, "error": f"token 写盘失败: {e}"},
                             status_code=500)
-    log.info("[security] LAN token 已重新生成（值不落日志；已配对设备需用新值重连）")
-    return {"ok": True, "token": token}
+    kicked = await kick_ws_clients()
+    log.info(f"[security] LAN token 已重新生成（值不落日志；已断开 {kicked} 条在线连接，"
+             "它们需用新 token 重连）")
+    return {"ok": True, "token": token, "disconnected": kicked}
+
+
+# —— §7（手机扫码同屏）：LAN 绑定事实 + 配对二维码 ——
+# 事实源纪律：**配置意图**（config.lan_enabled）与**内核事实**（本次进程真正绑上的
+# 地址）是两件事。监听地址在 uvicorn 启动那一刻定死、进程内换不了，所以「刚打开
+# 开关」与「真的对外了」之间隔一次重启——端点必须把这两件事分开说，否则用户会拿
+# 着扫不通的二维码在手机前干瞪眼。
+
+def set_bind(host: str, port: int) -> None:
+    """记下本次进程实际监听的 (host, port)。入口各调一次（main.main /
+    desktop.start_server）——/api/lan-qr 判断「是否真的对外」的唯一依据。
+
+    为什么不让端点自己去看 uvicorn 的 socket：监听 socket 只有 uvicorn 手里有，
+    而请求 scope 里的 scope['server'] 是**这条连接**的本地地址（从环回发出的请求
+    永远是 127.0.0.1），据此判断不出「是否也监听着 LAN」。故由启动方显式记一笔。"""
+    runtime["bind"] = {"host": str(host), "port": int(port)}
+
+
+def lan_bind_state() -> dict:
+    """手机同屏的两个事实 + 它们的分歧怎么读：
+    - enabled：config.lan_enabled（面板开关显示的那个值 = 用户意图）；
+    - active：本次进程监听在非环回地址上（事实上对外了）；
+    - restart_required：两者不一致 = 改了但还没重启（绑定换不了）；
+    - exposed_while_disabled：**配置说关、服务还开着**（刚关开关还没重启，同网段
+      此刻仍连得上）——面板必须显眼提示，不能显示成「已关闭」。"""
+    cfg = runtime["config"]
+    enabled = bool(cfg.get("lan_enabled"))
+    bind = runtime.get("bind") or {}
+    host, port = bind.get("host"), bind.get("port")
+    active = lan_mod.is_lan_host(host)
+    return {"enabled": enabled, "active": active,
+            "restart_required": enabled != active,
+            "exposed_while_disabled": bool(active and not enabled),
+            "host": str(host) if host else None,
+            "port": int(port) if port else None}
+
+
+def lan_message(state: dict, ip: str | None, port, auth_enabled: bool) -> str:
+    """状态行的人话（面板直接显示）。四种组合各说各的——**不许用一句「已开启」
+    糊过去**：真正的失败模式是用户以为开了、手机却连不上。"""
+    if state["exposed_while_disabled"]:
+        return ("已关闭手机同屏（配置已保存）——但本次进程仍在监听 LAN，"
+                "重启 LectureLens 后才真正停止对外")
+    if state["enabled"] and not state["active"]:
+        return "已开启手机同屏——重启 LectureLens 后生效（监听地址要重启才能换）"
+    if not state["enabled"]:
+        return "手机同屏未开启（开启后重启 LectureLens 生效）"
+    if not ip:
+        return "已开启，但没探测到局域网地址——检查电脑是否连上 WiFi/网线"
+    if not port:
+        return "已开启，但没读到监听端口——稍后刷新重试"
+    if not auth_enabled:
+        return ("手机与电脑连同一 WiFi，扫码即可同屏"
+                "（注意：LAN 鉴权已关闭，同 WiFi 任何人都能看字幕）")
+    return "手机与电脑连同一 WiFi，扫码即可同屏"
+
+
+@app.get("/api/lan-qr")
+async def api_lan_qr(req: Request):
+    """§7：手机同屏的配对二维码（**含访问 token，仅本机 127.0.0.1 可读**）。
+
+    为什么本端点自己再判一次对端：URL 里带着 token，那就是凭据；LAN 侧若能读这个
+    端点，同网段任何人（auth_enabled=false 时中间件放行一切，更没门禁）都能把 token
+    拿走。判据与 /api/export/open 同款——只看 socket 对端，不认任何请求头。
+
+    返回：{ok, enabled, active, restart_required, exposed_while_disabled, host, port,
+          ip, url, svg, auth_enabled, message}
+    - url/svg **只在真的能用时**才非空（enabled 且 active 且探到可用的主网卡地址）：
+      宁可显式说清「还差什么」，也不给一个扫了连不上的二维码。
+    - auth_enabled=false 时 URL 里的 token 在服务端不作数（同 WiFi 谁都能看字幕），
+      故一并回传，让面板把风险摆出来。
+    """
+    peer = req.client.host if req.client else None
+    # 评审1① 修复：判据从「只判 socket 对端」升级为 loopback_only_ok（对端环回 **且**
+    # Host 是本机/直连地址 **且** 没有跨源 Origin）——DNS-rebinding 页面正是从环回打进来
+    # 的（peer 判据天然为真），原先光看 peer 会把 token 递给任意网页。同样的判据在
+    # /api/export/open，以及全局 HostGuardMiddleware（覆盖整个 /api/* 与 /ws）。
+    ok, why = loopback_only_ok(peer, req.headers.get("host"),
+                              req.headers.get("origin"))
+    if not ok:
+        log.warning(f"[lan] ⚠ 拒绝读取配对二维码（仅本机）: {why}")
+        return JSONResponse(
+            {"ok": False,
+             "error": f"仅本机（127.0.0.1）可以读取配对二维码（内含访问 token）：{why}"},
+            status_code=403)
+
+    cfg = runtime["config"]
+    state = lan_bind_state()
+    # §7⑤：token 为空（config.json 被清空/首启流程没跑到）→ 先补发再编二维码，
+    # 否则扫出来的 URL 里没有凭据，手机连上也过不了鉴权（token 是唯一门禁）。
+    token = cfg.get("auth_token")
+    if not token:
+        token = provision_token()
+        if token:
+            cfg["auth_token"] = token
+    # 端口以**这条连接的实际监听端口**为准（scope['server'][1]，uvicorn 从内核
+    # socket 读的），退而取启动时记下的值——--port 0 或「8787 被占换端口」都不说谎。
+    port = (req.scope.get("server") or (None, None))[1] or state["port"]
+    try:
+        port = int(port) if port else None
+    except (TypeError, ValueError):
+        port = state["port"]
+    auth_enabled = bool(cfg.get("auth_enabled", True))
+    ip = lan_mod.primary_lan_ip() if (state["enabled"] and state["active"]) else None
+    url = lan_mod.lan_url(ip, port, token) if (ip and port) else None
+    svg = None
+    if url:
+        try:
+            svg = lan_mod.qr_svg(url)
+        except Exception as e:  # 缺依赖/编码异常：URL 照给，二维码如实说没有
+            log.warning(f"[lan] ⚠ 二维码生成失败（URL 仍可用）: {e}")
+            return {"ok": True, **state, "ip": ip, "port": port, "url": url,
+                    "svg": None, "auth_enabled": auth_enabled,
+                    "message": f"二维码生成失败（可手动打开上面的 URL）: {e}"}
+    return {"ok": True, **state, "ip": ip, "port": port, "url": url, "svg": svg,
+            "auth_enabled": auth_enabled,
+            "message": lan_message(state, ip, port, auth_enabled)}
 
 
 @app.post("/api/pause")
@@ -1351,12 +1773,14 @@ def note_target(name) -> tuple[Path | None, str | None]:
 
 
 @app.get("/api/notes/list")
-async def notes_list(q: str = "", course: str = ""):
-    """p2-2 笔记库列表：日期/课程/首句摘要/是否已有摘要与卡组 + 全文检索。
+async def notes_list(q: str = "", course: str = "", tag: str = ""):
+    """p2-2 笔记库列表：日期/课程/标签/首句摘要/是否已有摘要与卡组 + 全文检索。
 
-    q 为全文检索（**含中文子串**，见 notes._matches 的说明）；course 按课程名
-    精确过滤（侧栏课程下钻）。数据源是 transcripts/ 里的真文件，无独立索引。"""
-    data = notes_mod.index(TRANSCRIPTS, query=q, course=course)
+    q 为全文检索（**含中文子串**，也命中**标签名**，见 notes.index）；course 按课程名
+    精确过滤（侧栏课程下钻）；tag（§8）按标签精确过滤——三者**叠加**。另带
+    tag_counts = 全局标签清单 + 计数（只受 q/course 影响，供筛选栏显示"选它能看到几篇"）。
+    数据源是 transcripts/ 里的真文件，无独立索引。"""
+    data = notes_mod.index(TRANSCRIPTS, query=q, course=course, tag=tag)
     data["ok"] = True
     data["query"] = q
     data["current"] = hub.transcript_path.name if hub.transcript_path else None
@@ -1383,7 +1807,12 @@ async def notes_preview(name: str = ""):
         "translated": parsed["paired"],
         "first_en": en,
         "first_zh": zh,
+        "tags": parsed["tags"],          # §8：预览页头部的标签 chips 用
         "is_current": bool(hub.transcript_path and hub.transcript_path.name == p.name),
+        # §6：摘要面板与「覆盖确认」的判据（有过 -> 重新生成前弹确认框）；备份是否
+        # 已存在也一并回，让「编辑摘要」的说明文案能如实显示回退去处。
+        "has_summary": summary_path(p).is_file(),
+        "has_summary_backup": summary_backup_path(p).is_file(),
         "pairs": parsed["pairs"],
     }
 
@@ -1421,13 +1850,28 @@ def export_meta(p: Path, parsed: dict) -> dict:
     }
 
 
+def export_target_dir() -> Path | None:
+    """当前生效的导出目录（config.export_dir）→ Path；未设置 → None。
+
+    每次现读 runtime['config']：设置页改完立刻生效，不需要重启也不需要重建任何东西。
+    值只经 /api/config 写入（专项校验：绝对路径 / 可建 / 可写 / 非系统关键目录），
+    故这里可以放心 Path()；仍然只接受非空字符串（手改 config.json 写成空串 = 未设置）。"""
+    raw = runtime["config"].get("export_dir")
+    return Path(raw) if isinstance(raw, str) and raw.strip() else None
+
+
 @app.get("/api/notes/export")
 async def notes_export(fmt: str = "md", name: str = ""):
     """p2-3 导出中心：一篇笔记导出为 md / srt / pdf / docx。
 
     name 缺省 = 当前笔记；走 note_target（目录内 lecture_*.md 白名单，反越界）。
     **失败必须用户可见**：格式非法 400、笔记不存在/非法 404、生成异常 500 且响应体
-    带 `ok:false + error`（前端用 fetch 读它并弹 toast，不是丢一个白页给用户）。"""
+    带 `ok:false + error`（前端用 fetch 读它并弹 toast，不是丢一个白页给用户）。
+
+    §3 增：config.export_dir 已设置 → **直接落盘**到该目录，返回 JSON
+    `{ok, path, name, dir, bytes}`（前端 toast「已导出到 …」+ 打开按钮）；未设置 →
+    维持浏览器下载（响应形态与状态码一律不变）。两种模式共用同一套文件名 =
+    `{课程}_{日期}.{ext}`（课程为空则维持原名），见 exportdir.export_filename。"""
     key = (fmt or "md").strip().lower()
     if key not in EXPORT_FORMATS:
         return JSONResponse(
@@ -1438,20 +1882,23 @@ async def notes_export(fmt: str = "md", name: str = ""):
     if p is None:
         return JSONResponse({"ok": False, "error": err}, status_code=404)
     ext, media = EXPORT_FORMATS[key]
-    if key == "md":
-        return FileResponse(p, filename=p.name, media_type=media)
-    out_name = f"{p.stem}.{ext}"
+    dest = export_target_dir()
 
-    def _render() -> bytes:
-        """读盘 + 解析 + 生成，全在**线程**里跑（见下方 to_thread 说明）。"""
+    def _render() -> tuple[dict, bytes]:
+        """读盘 + 解析 + 生成，全在**线程**里跑（见下方 to_thread 说明）。
+
+        返回 (解析结果, 产物字节)：解析结果只用来取课程/时间戳算文件名——落盘模式
+        与下载模式都要它，故两种模式共用同一次解析（不再各读一遍盘）。"""
         parsed = notes_mod.parse(p.read_text(encoding="utf-8"))
         pairs = parsed["pairs"]
+        if key == "md":
+            return parsed, p.read_bytes()
         sidecar = exporters.read_times(p)
         if key == "srt":
-            return exporters.build_srt(pairs, sidecar)[0].encode("utf-8")
+            return parsed, exporters.build_srt(pairs, sidecar)[0].encode("utf-8")
         meta = export_meta(p, parsed)
-        return (exporters.build_pdf(pairs, meta, sidecar) if key == "pdf"
-                else exporters.build_docx(pairs, meta, sidecar))
+        return parsed, (exporters.build_pdf(pairs, meta, sidecar) if key == "pdf"
+                        else exporters.build_docx(pairs, meta, sidecar))
 
     try:
         # 评审1 修：导出是**同步 CPU/IO 重活**，直接在协程里跑会卡住整个事件循环。
@@ -1460,17 +1907,235 @@ async def notes_export(fmt: str = "md", name: str = ""):
         # 取段与广播、翻译任务全部停摆；外推 1500 段（约 2 小时课）build_pdf 约
         # 1.9s，恢复后积压还可能触发追赶丢弃而丢段。与其它重活（build_asr /
         # apply_segmenter / summarize / download）一致，一律 to_thread。
-        body = await asyncio.to_thread(_render)
+        parsed, body = await asyncio.to_thread(_render)
     except Exception as e:
         log.warning(f"[export] ⚠ {key} 导出失败（{p.name}）: {e}")
         return JSONResponse(
             {"ok": False, "error": f"{key} 导出失败: {type(e).__name__}: {e}"},
             status_code=500)
+    out_name = exportdir_mod.export_filename(p, parsed.get("course"), ext,
+                                             parsed.get("stamp"))
+
+    if dest is not None:
+        # —— §3 落盘模式：写进用户选定的目录（同名避让 -2/-3…，绝不覆盖）——
+        # 先算长度（评审④）：命中 260 上限时 `open/replace` 抛的是裸 OSError，而这里
+        # 能给出「换目录/改名」的可行动文案，且是 400 而不是 500。
+        too_long = exportdir_mod.path_length_problem(dest, out_name)
+        if too_long:
+            return JSONResponse({"ok": False, "error": too_long}, status_code=400)
+        try:
+            out = await asyncio.to_thread(exportdir_mod.write_export, dest, out_name, body)
+        except Exception as e:
+            log.warning(f"[export] ⚠ 落盘失败（{dest}）: {e}")
+            return JSONResponse(
+                {"ok": False,
+                 "error": f"导出到 {dest} 失败: {type(e).__name__}: {e}"
+                          f"（可在设置页重新选择导出位置）"},
+                status_code=500)
+        log.info(f"[export] {key} 导出 {p.name} → {out}（{len(body)} 字节，直接落盘）")
+        return JSONResponse({"ok": True, "fmt": key, "path": str(out),
+                             "name": out.name, "dir": str(dest), "bytes": len(body)})
+
+    if key == "md" and out_name == p.name:
+        return FileResponse(p, filename=p.name, media_type=media)
     log.info(f"[export] {key} 导出 {p.name} → {out_name}（{len(body)} 字节）")
     return Response(content=body, media_type=media, headers={
-        "Content-Disposition": f'attachment; filename="{out_name}"',
+        "Content-Disposition": export_disposition(out_name),
         "Content-Length": str(len(body)),
     })
+
+
+def export_disposition(filename: str) -> str:
+    """下载响应的 Content-Disposition 头值（§3 起文件名可能是中文课程名）。
+
+    必要性：Starlette 把响应头按 **latin-1** 编码——`数学_20261013.pdf` 直接写进
+    `filename="…"` 会抛 UnicodeEncodeError，整个导出变成 500（不是"名字不好看"，
+    是功能直接坏掉）。做法与 starlette 的 FileResponse 一致：需要时补 RFC 5987 的
+    `filename*=utf-8''<百分号编码>`。
+    两段都写：`filename="<ASCII 兜底>"` 给只认老写法的客户端；浏览器按 RFC 6266
+    优先取 `filename*`（前端 exportFilename 同口径优先解析它）。"""
+    ascii_name = "".join(ch if (ch.isascii() and ch not in '"\\') else "_"
+                         for ch in filename)
+    if ascii_name == filename:
+        return f'attachment; filename="{filename}"'
+    return (f'attachment; filename="{ascii_name}"; '
+            f"filename*=utf-8''{quote(filename)}")
+
+
+@app.post("/api/export/open")
+async def export_open(req: Request):
+    """§3：在文件管理器里打开导出目录（设置页与导出 toast 的「打开」按钮）。
+
+    **仅本机（环回）可用**：os.startfile 是在**运行服务的这台机器**上弹窗口，LAN/
+    手机侧调用等于在别人的电脑上开窗；且 auth_enabled=false 时鉴权中间件全放行
+    （回退开关的既定语义），端点必须自己再判一次对端——与 §7 /api/lan-qr「仅
+    loopback 可访问」同一纪律。
+    路径只取 config.export_dir：端点**不接受任何请求字段**（非空体一律 400），
+    因此不存在「用参数打开任意路径/执行任意命令」的面。"""
+    peer = req.client.host if req.client else None
+    # 评审1① 修复：同 /api/lan-qr——只判 socket 对端不够（rebinding 页面就是从环回打
+    # 进来的），必须连带判 Host/Origin，否则任意网页能让本机反复弹文件夹窗口并读出
+    # export_dir 路径。
+    ok, why = loopback_only_ok(peer, req.headers.get("host"),
+                              req.headers.get("origin"))
+    if not ok:
+        log.warning(f"[export] ⚠ 拒绝打开导出目录（仅本机）: {why}")
+        return JSONResponse(
+            {"ok": False, "error": f"仅本机（127.0.0.1）可以打开导出文件夹：{why}"},
+            status_code=403)
+    body = await optional_json(req)
+    if body:
+        return JSONResponse(
+            {"ok": False,
+             "error": f"未知字段: {sorted(body)}（本端点不接受参数，"
+                      f"打开的目录固定为 config.export_dir）"},
+            status_code=400)
+    dest = export_target_dir()
+    if dest is None:
+        return JSONResponse(
+            {"ok": False, "error": "未设置导出位置（当前为浏览器下载模式）"},
+            status_code=409)
+    if not dest.is_dir():
+        return JSONResponse(
+            {"ok": False,
+             "error": f"导出目录不存在: {dest}（可在设置页重新选择）"},
+            status_code=409)
+    problem = exportdir_mod.open_folder(dest)
+    if problem:
+        return JSONResponse({"ok": False, "error": problem}, status_code=500)
+    log.info(f"[export] 已在文件管理器打开导出目录: {dest}")
+    return {"ok": True, "path": str(dest)}
+
+
+# —— §6（可编辑摘要）：摘要原文的读/写 + 覆盖前自动备份 ——
+
+def summary_path(p: Path) -> Path:
+    """笔记对应的摘要路径（`lecture_X.md` → `lecture_X.summary.md`）。
+
+    后缀的单一来源 = notes.SUMMARY_SUFFIX（列表徽章、本模块的读写端点、summarize
+    的落盘三处共用同一常量）——同一条文件名规则在多处各拼一遍，改一处必漏一处。"""
+    p = Path(p)
+    return p.with_name(p.stem + notes_mod.SUMMARY_SUFFIX)
+
+
+def summary_backup_path(p: Path) -> Path:
+    """摘要的备份路径（`lecture_X.summary.bak.md`）。
+
+    §6：重新生成摘要前把上一版（可能是人工修订过的）存这里，覆盖不再静默丢内容。
+    备份的**实写**在 summarize.backup_existing（覆盖前那一刻），本函数只算路径。"""
+    p = Path(p)
+    return p.with_name(p.stem + notes_mod.SUMMARY_BACKUP_SUFFIX)
+
+
+@app.get("/api/notes/summary")
+async def notes_summary_get(name: str = ""):
+    """§6：读一篇笔记的**摘要原文**（预览页「编辑摘要」用）。
+
+    name = 笔记名（`lecture_*.md`，走 note_target 白名单；缺省 = 当前笔记，与
+    POST /api/notes/summarize 同口径）。摘要路径**由笔记名派生**，不接受「直接
+    指定某个 .summary.md」这类入参——派生的路径空间只有一格，比再开一张名字白名单
+    更难漏（派生物文件名一律不可直接寻址，见 notes.safe_note_path 的既有纪律）。
+    没有摘要 → 200 + exists:false（**不是错误**：预览页据此显示「还没生成摘要」）。"""
+    p, err = note_target(name)
+    if p is None:
+        return JSONResponse({"ok": False, "error": err}, status_code=404)
+    sp = summary_path(p)
+    bak = summary_backup_path(p)
+    if not sp.is_file():
+        return {"ok": True, "exists": False, "name": p.name, "summary": sp.name,
+                "text": "", "sha": None, "size": 0, "mtime_us": None,
+                "backup": bak.name, "has_backup": bak.is_file()}
+    try:
+        text = sp.read_text(encoding="utf-8")
+        st = sp.stat()
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": f"读取摘要失败: {type(e).__name__}: {e}"},
+            status_code=500)
+    return {"ok": True, "exists": True, "name": p.name, "summary": sp.name,
+            "text": text, "sha": text_sha(text), "size": st.st_size,
+            "mtime_us": st.st_mtime_ns // 1000,
+            "backup": bak.name, "has_backup": bak.is_file()}
+
+
+@app.put("/api/notes/summary")
+async def notes_summary_save(req: Request):
+    """§6：把人工修订后的摘要原文就地写回（**整篇替换**）。
+
+    与 §4 笔记编辑同款纪律：
+    - name 必填且走 note_path_arg（写操作不接受缺省落到当前笔记）；
+    - base_sha（= GET 回的摘要指纹）必填，与当前不一致 → 409「摘要已被更新」——
+      防「编辑面板开着、期间又点了一次生成摘要」把新版冲掉；
+    - 原子替换 + 整篇保存统一按本平台行尾（同 notes_save 的口径）。
+    摘要不存在 → 404（**先「摘要」生成再编辑**：不接受凭空创建——那会让用户以为
+    自己写的是 AI 摘要，实际只是往派生位写了个任意文件）。
+    「保存后重索引」在本项目天然成立（列表/索引每次现读现算）：这里只广播 notes，
+    让别的窗口刷新预览。"""
+    body, bad = await course_body(req)
+    if bad:
+        return bad
+    unknown = [k for k in body if k not in ("name", "text", "base_sha")]
+    if unknown:
+        return JSONResponse(
+            {"ok": False,
+             "error": f"未知字段: {unknown[0]}（允许: ['name', 'text', 'base_sha']）"},
+            status_code=400)
+    text = body.get("text")
+    if not isinstance(text, str):
+        return JSONResponse({"ok": False, "error": "text 必须是字符串（摘要 md 原文）"},
+                            status_code=400)
+    if len(text.encode("utf-8")) > NOTE_EDIT_MAX:
+        return JSONResponse(
+            {"ok": False, "error": f"摘要文本过大（上限 {NOTE_EDIT_MAX // 1024} KB）"},
+            status_code=400)
+    base = body.get("base_sha")
+    if not isinstance(base, str) or not base.strip():
+        return JSONResponse(
+            {"ok": False,
+             "error": "缺少 base_sha：先 GET /api/notes/summary 取 sha 再保存"
+                      "（防止覆盖编辑期间重新生成的摘要）"},
+            status_code=400)
+    # §6 评审③：**生成中不许改**。summarize 的收尾会把「当时盘上的那份」当旧版备份、
+    # 再用 AI 版覆盖正文——用户在生成期间保存的修订会立刻缩进 .bak.md，而界面上刚
+    # 显示过「保存成功」（看得见的现象是「我一保存正文就变了」）。与 POST 入口同一道
+    # 守卫；等生成完成再改即可（那时 base_sha 也已随新正文刷新）。
+    if runtime["summarizing"]:
+        return JSONResponse(
+            {"ok": False,
+             "error": "摘要正在生成中，暂不能编辑——生成结束（正文落盘）后再改，"
+                      "届时上一版会自动备份为 *.summary.bak.md"},
+            status_code=409)
+    p, err = note_path_arg(body.get("name"))
+    if p is None:
+        return JSONResponse({"ok": False, "error": err}, status_code=404)
+    sp = summary_path(p)
+    if not sp.is_file():
+        return JSONResponse(
+            {"ok": False,
+             "error": f"这篇还没有摘要（{sp.name}）——先点「摘要」生成，再来编辑"},
+            status_code=404)
+    try:
+        # 以下同步执行（读 stat → 写 .tmp → replace），中间无 await。
+        if text_sha(sp.read_text(encoding="utf-8")) != base.strip():
+            return JSONResponse(
+                {"ok": False,
+                 "error": "摘要在编辑期间已被更新（可能刚重新生成过）——"
+                          "请重新打开再编辑，避免覆盖新版"},
+                status_code=409)
+        # newline=None：整篇保存统一按本平台行尾（与 notes_save 同口径；浏览器
+        # textarea 的 value 被 DOM 规范成 \n，逐字节回放 CRLF 做不到）。
+        note_atomic_write(sp, text, newline=None)
+        st2 = sp.stat()
+    except Exception as e:
+        log.warning(f"[summary] ⚠ 摘要保存失败（{sp.name}）: {e}")
+        return JSONResponse(
+            {"ok": False, "error": f"保存失败（原文件已尽量保持原样）: "
+                                   f"{type(e).__name__}: {e}"},
+            status_code=500)
+    log.info(f"[summary] 人工修订已保存 {sp.name}（{st2.st_size} 字节）")
+    await broadcast_notes([p.name])
+    return {"ok": True, "name": p.name, "summary": sp.name, "size": st2.st_size,
+            "sha": text_sha(text), "mtime_us": st2.st_mtime_ns // 1000}
 
 
 @app.post("/api/notes/summarize")
@@ -1496,7 +2161,11 @@ async def notes_summarize(req: Request):
             {"ok": False, "error": "翻译未启用（无 DEEPSEEK_API_KEY），摘要不可用"},
             status_code=409)
     # tpath 已是本次任务的快照：摘要期间 start_transcript 换新笔记不影响本次
-    out_path = tpath.with_name(tpath.stem + ".summary.md")
+    out_path = summary_path(tpath)
+    # §6：已有摘要 = 本次是**覆盖**。把这件事如实回给前端（确认框/提示文案用它），
+    # 覆盖动作本身在 summarize.backup_existing 里先备份为 *.summary.bak.md——
+    # 「人工修订版不被静默冲掉」由那一层保证，不依赖前端有没有弹确认框。
+    overwrite = out_path.is_file()
     runtime["summarizing"] = True
 
     def _snapshot() -> dict:
@@ -1510,14 +2179,20 @@ async def notes_summarize(req: Request):
     async def _run() -> None:
         try:
             status["summary"] = {"state": "running", "done": 0, "total": 0,
-                                 "failed": 0, "path": str(out_path), "error": None}
+                                 "failed": 0, "path": str(out_path), "error": None,
+                                 # §6：备份文件名（覆盖才非 None，落盘时才填）
+                                 "backup": summary_backup_path(tpath).name
+                                           if overwrite else None}
             result = await TranscriptSummarizer(tr).summarize(
                 tpath, out_path, on_progress=_progress)
             status["summary"].update(state="done", failed=len(result["failed"]),
-                                     error=None)
+                                     error=None,
+                                     backup=(Path(result["backup"]).name
+                                             if result.get("backup") else None))
             await hub.broadcast(_snapshot())
             log.info(f"[summary] ✅ 完成: {out_path.name}"
-                     f"（{result['total']} 块，失败 {len(result['failed'])}）")
+                     f"（{result['total']} 块，失败 {len(result['failed'])}"
+                     f"{'，上一版已备份为 ' + result['backup'] if result.get('backup') else ''}）")
         except Exception as e:
             status["summary"].update(state="error", error=f"{type(e).__name__}: {e}")
             log.warning(f"[summary] ⚠ 摘要失败: {e}")
@@ -1529,7 +2204,10 @@ async def notes_summarize(req: Request):
 
     runtime["summary_task"] = asyncio.create_task(_run())
     return {"ok": True, "started": True, "transcript": tpath.name,
-            "output": out_path.name}
+            "output": out_path.name,
+            # §6：前端据此提示「已覆盖（先备份为 X）」；未覆盖时为 false/None
+            "overwrite": overwrite,
+            "backup": summary_backup_path(tpath).name if overwrite else None}
 
 
 @app.get("/api/notes/deck")
@@ -1566,8 +2244,8 @@ async def notes_deck_generate(req: Request):
         return JSONResponse(
             {"ok": False, "error": "翻译未启用（无 DEEPSEEK_API_KEY），卡组生成不可用"},
             status_code=409)
-    summary_path = tpath.with_name(tpath.stem + ".summary.md")
-    if not summary_path.is_file():
+    spath = summary_path(tpath)          # §6：派生路径走同一处口径
+    if not spath.is_file():
         return JSONResponse(
             {"ok": False, "error": "尚无摘要文件，请先 POST /api/notes/summarize"},
             status_code=409)
@@ -1590,7 +2268,7 @@ async def notes_deck_generate(req: Request):
             status["deck"] = {"state": "running", "stage": "generating",
                               "generated": 0, "kept": 0, "dropped": 0,
                               "path": str(apkg_path), "error": None}
-            result = await build_deck(tr, summary_path, apkg_path, title,
+            result = await build_deck(tr, spath, apkg_path, title,
                                       on_stage=_on_stage)
             status["deck"].update(state="done", stage=None,
                                   generated=result["generated"],
@@ -1838,6 +2516,697 @@ async def set_active_course(req: Request):
     await broadcast_courses()
     return {"ok": True, "active": cid, "active_name": name,
             "note": tag, "glossary_reloaded": gloss}
+
+
+# —— §2（课后改归属）：笔记头的课程行**定稿改写**（单篇 / 批量）——
+# 与课中切课语义分开：Hub.retag_course = 追加「切换标记」（保留"当时切过"的事实，
+# 主归属仍是开课那门课）；这里 = **整篇归属更正**（改头，不新增标记行）——下课后
+# 发现归错类就走这条。核心改写是 notes.set_course（纯函数，与解析侧同窗口）。
+# 位置说明：本段属笔记族，但校验要用课程表的 id/名解析（courses.resolve_target）
+# 与 course_body，故紧挨课程段放，依赖顺序一眼可见。
+
+
+#: 单次批量改归属的文件数上限（防一次请求扫爆目录；笔记库单页远小于此数）
+NOTE_MOVE_MAX = 200
+
+
+def note_move_targets(body: dict, raw_files) -> tuple[list[Path] | None, str | None, str | None, int]:
+    """校验改归属请求体 → (路径列表, 目标课程名, 错误文案, 错误状态码)。
+
+    目标课程名在这里一并解析好回传：端点在"校验"与"写入"之间**不再二次 load
+    课程表**（两次读之间课程恰被另一窗口删掉的话，第二次解析会得到空名——那会把
+    字面量 None 写进笔记头。一次解析、一次使用，就没有这条缝）。
+
+    **先全部校验、后动手**（与 /api/courses 的「先校验后落盘」同款纪律）：
+    任何一篇非法/不存在、或课程不存在 → 整单拒绝，绝不半批写入（否则用户看到
+    「移动成功」而一半笔记还挂在旧课程上）。
+
+    状态码两种：400 = 请求本身的问题（缺字段/非法名/不存在/课程不存在，计划口径）；
+    409 = 课程表损坏（与 /api/courses* 的 courses_corrupt 同一口径——写盘会把坏表
+    当空表覆盖，所以本轮操作直接拒绝）。
+
+    文件路径一律走 notes.safe_note_path（目录内 lecture_*.md 白名单 + 反越界），
+    与读/导出/删除同一条唯一入口——改归属会**写**这些文件，更不能例外。"""
+    unknown = [k for k in body if k not in ("file", "files", "course")]
+    if unknown:
+        return None, None, f"未知字段: {unknown[0]}（允许: ['file', 'files', 'course']）", 400
+    if raw_files is None:
+        return None, None, "缺少 file（单篇）或 files（批量）", 400
+    files = raw_files if isinstance(raw_files, list) else [raw_files]
+    if not files:
+        return None, None, "files 不能为空", 400
+    if len(files) > NOTE_MOVE_MAX:
+        return None, None, f"一次最多改 {NOTE_MOVE_MAX} 篇（收到 {len(files)}）", 400
+    data, derr = courses_mod.load_checked(COURSES_PATH)
+    if derr:
+        return None, None, COURSES_CORRUPT_HINT, 409
+    name, err = courses_mod.resolve_target(data, body.get("course"))
+    if err:
+        return None, None, err, 400
+    paths: list[Path] = []
+    seen: set = set()
+    for f in files:
+        p = notes_mod.safe_note_path(TRANSCRIPTS, f)
+        if p is None:
+            return None, None, f"非法笔记名: {f!r}（只接受 transcripts/ 下的 lecture_*.md）", 400
+        if not p.is_file():
+            return None, None, f"笔记不存在: {f}", 400
+        if p in seen:              # 同一次请求里重复列同一篇：去重（幂等，不报错）
+            continue
+        seen.add(p)
+        paths.append(p)
+    return paths, name, None, 200
+
+
+def note_course_write(p: Path, name: str) -> str:
+    """把一篇笔记的课程行改成 name → 动作 replaced / inserted / none。
+
+    **改动必须原子且不与字幕追加打架**：读全文 → 变换 → 写同目录 .tmp → os.replace
+    （同 courses.save 的原子替换；写一半断电也不会留下截断的笔记）。进程内**没有
+    任何 await**：笔记的其它写者（Hub.append / retag_course / rename_in_notes）都在
+    事件循环线程里同步执行，事件循环不会在"读"与"写"之间切走，故不存在与追加
+    并发而丢字幕段的情况（这是本函数刻意保持同步的原因，勿改成 to_thread）。"""
+    text = read_note_text(p)
+    new, action = notes_mod.set_course(text, name)
+    if new == text:
+        return "none"              # 已是该归属：不动文件（mtime 也不变，列表不用白刷）
+    # 必须用保真写（newline=""）：读进来的文本带着 \r\n，再走文本模式的 os.linesep
+    # 展开会把每个 \n 变成 \r\n，得到 \r\r\n（读/写模式必须成对，实测踩过）。
+    note_atomic_write(p, new)
+    return action
+
+
+def note_course_bad(msg: str, status: int = 400) -> JSONResponse:
+    """§2 统一错误响应：400 = 文件/课程问题（计划口径的明确文案）；409 = 课程表损坏。"""
+    return JSONResponse({"ok": False, "error": msg}, status_code=status)
+
+
+async def broadcast_notes(files: list[str]) -> None:
+    """§2：笔记归属变了 → 广播（另一窗口的笔记库据此刷新，不必等下次手动刷新）。"""
+    with contextlib.suppress(Exception):
+        await hub.broadcast({"type": "notes", "files": list(files)})
+
+
+@app.post("/api/notes/course")
+async def set_note_course(req: Request):
+    """§2 课后改归属（单篇）：{file, course} → 改写该篇笔记头的课程行。
+
+    course = 课程 id / 课程名 / null（未分类）。返回 action：replaced（改头）/
+    inserted（老笔记头部没有课程行 → 插入）/ none（本来就是该归属）。"""
+    body, bad = await course_body(req)
+    if bad:
+        return bad
+    paths, name, err, status = note_move_targets(body, body.get("file"))
+    if err:
+        return note_course_bad(err, status)
+    p = paths[0]
+    try:
+        action = note_course_write(p, name)
+    except Exception as e:
+        log.warning(f"[notes] ⚠ 改归属失败（{p.name}）: {e}")
+        return JSONResponse(
+            {"ok": False, "error": f"改写失败（原文件未改动）: {type(e).__name__}: {e}"},
+            status_code=500)
+    log.info(f"[notes] 课程归属 {p.name} → {name}（{action}）")
+    await broadcast_notes([p.name])
+    return {"ok": True, "file": p.name, "course": name, "action": action}
+
+
+@app.post("/api/notes/course/batch")
+async def set_notes_course_batch(req: Request):
+    """§2 课后改归属（批量）：{files[], course} → 逐篇改写笔记头的课程行。
+
+    校验是整单口径（见 note_move_targets）；写入阶段的单篇 IO 失败逐条记进
+    `failed` 并继续后续篇目——返回 200 + 明细，让界面能如实说「N 篇成功、M 篇失败」，
+    而不是一个 500 把已成功的部分也藏起来。"""
+    body, bad = await course_body(req)
+    if bad:
+        return bad
+    paths, name, err, status = note_move_targets(body, body.get("files"))
+    if err:
+        return note_course_bad(err, status)
+    results: list[dict] = []
+    failed: list[dict] = []
+    for p in paths:
+        try:
+            results.append({"file": p.name, "action": note_course_write(p, name)})
+        except Exception as e:
+            log.warning(f"[notes] ⚠ 批量改归属失败（{p.name}）: {e}")
+            failed.append({"file": p.name, "error": f"{type(e).__name__}: {e}"})
+    log.info(f"[notes] 批量课程归属 → {name}（成功 {len(results)}，失败 {len(failed)}）")
+    if results:
+        await broadcast_notes([r["file"] for r in results])
+    return {"ok": True, "course": name, "moved": len(results),
+            "results": results, "failed": failed}
+
+
+# —— §4（笔记管理）：软删除（回收站）/ 编辑 / 重命名 / 批量删除 ——
+# 安全口径与读端点同一条：所有名字先过 notes.safe_note_path（目录内笔记白名单 +
+# 反越界），回收站操作另加一层目录包含性校验。回收站 = transcripts/.trash/
+# （**同盘 rename**，秒级、不占额外空间、随时可还原）；索引与课程统计都用非递归
+# glob，天然看不到它。**回收站里的文件无法用普通名字访问**：它的名字只能写成
+# `.trash/xxx.md`，第一步就被 safe_note_path 的「不得含 / 」挡掉——「除回收站界面
+# 操作外不可再被打开/编辑」是结构保证，不是靠端点各自记得判断。
+
+
+#: 编辑保存的正文大小上限（2MB；实测 105 段真实笔记约 30KB，留足余量）
+NOTE_EDIT_MAX = 2 * 1024 * 1024
+#: 回收站的绝对路径（每次现算，测试里 TRANSCRIPTS 会被重定向）
+TRASH_DIR_NAME = notes_mod.TRASH_DIR
+
+
+def trash_dir() -> Path:
+    return Path(TRANSCRIPTS) / TRASH_DIR_NAME
+
+
+def note_path_arg(raw) -> tuple[Path | None, str | None]:
+    """解析**库内**笔记名 → (路径, 错误文案)。
+
+    与 note_target 的区别：写操作必须明确点哪一篇，**不接受缺省回落到当前笔记**
+    （静默回落会把编辑/删除作用到用户没指定的那篇上，比报错糟）。"""
+    p = notes_mod.safe_note_path(TRANSCRIPTS, raw)
+    if p is None:
+        return None, f"非法笔记名: {raw!r}（只接受 transcripts/ 下的笔记文件）"
+    if not p.is_file():
+        return None, f"笔记不存在: {raw}"
+    return p, None
+
+
+def trash_path_arg(raw) -> tuple[Path | None, str | None]:
+    """解析**回收站内**笔记名 → (路径, 错误文案)。名字仍要过名字规则，路径再核对
+    父目录确实是 .trash（名字规则已挡掉分隔符，这里是第二道）。"""
+    problem = notes_mod.name_problem(raw)
+    if problem:
+        return None, f"非法笔记名: {raw!r}（{problem}）"
+    d = trash_dir()
+    cand = (d / raw).resolve()
+    if cand.parent != d.resolve():
+        return None, f"非法笔记名: {raw!r}（越出回收站目录）"
+    if not cand.is_file():
+        return None, f"回收站里没有这篇: {raw}"
+    return cand, None
+
+
+def note_batch_arg(body: dict, raw) -> tuple[list[Path] | None, str | None]:
+    """{files: [...]} 批量入参的统一校验（**先全部校验、再动手**：任何一篇非法/
+    不存在 → 整单拒绝，绝不半批执行——批量删一半比报错糟得多）。"""
+    unknown = [k for k in body if k not in ("files", "course")]
+    if unknown:
+        return None, f"未知字段: {unknown[0]}（允许: ['files', 'course']）"
+    if not isinstance(raw, list) or not raw:
+        return None, "files 必须是非空数组"
+    if len(raw) > NOTE_MOVE_MAX:
+        return None, f"一次最多 {NOTE_MOVE_MAX} 篇（收到 {len(raw)}）"
+    paths: list[Path] = []
+    seen: set = set()
+    for f in raw:
+        p, err = note_path_arg(f)
+        if err:
+            return None, err
+        if p in seen:
+            continue
+        seen.add(p)
+        paths.append(p)
+    return paths, None
+
+
+def read_note_text(p: Path) -> str:
+    """读笔记正文，**不转换行尾**（newline=''）。
+
+    评审 M4 实测：read_text() 的通用换行会把 \\r\\n 归一成 \\n，写回时文本模式又按
+    os.linesep 展开——于是一篇手工维护成 LF 的笔记，只要改一次归属/标签就整篇翻成
+    CRLF（git diff 全红），而 notes.set_course/set_tags 里「按原行尾保留」的分支在
+    端点路径上永远走不到。行级改写（课程行/标签行）必须用这个入口读。"""
+    with p.open(encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def note_atomic_write(p: Path, text: str, newline: str | None = "") -> None:
+    """把整篇正文原子落盘（写同目录 .tmp → os.replace）。
+
+    `newline=""`（默认）= **逐字节原样落盘**：行级改写（课程行/标签行）走它，文件
+    里是什么行尾就保持什么行尾，不引入混排也不静默翻转。
+
+    `newline=None` = 按平台行尾展开（os.linesep）：**编辑端点**专用——浏览器
+    textarea 的 value 由 DOM 规范化成 \\n，无法逐字节回放 CRLF，故那边显式声明
+    「保存整篇 = 统一按本平台行尾」（见 notes_save 的说明）。两处口径不同是有意的：
+    行级改写保真、整篇保存归一。
+
+    **进程内没有任何 await**（调用方必须在最后一步同步调用它），故不会与正在记录
+    的字幕追加交错。"""
+    # 临时名带 pid + 随机段（评审④低）：同一份文件也被 summarize.atomic_write_text
+    # 写（摘要生成），两边若都用「<名>.tmp」就会共用一个临时文件——当前两边都在事件
+    # 循环里、读写之间无 await 因而不会真交错，但任一侧挪进线程池就会互踩（第②条
+    # 那类混合产物的复现路径）。名字不唯一 = 迟早踩，故两边都改成唯一名。
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8", newline=newline) as f:
+            f.write(text)
+        tmp.replace(p)
+    except Exception:
+        with contextlib.suppress(Exception):
+            tmp.unlink()
+        raise
+
+
+def text_sha(text: str) -> str:
+    """正文指纹（乐观并发凭据）= sha1(解码后的文本)。
+
+    用**文本**而非字节：Windows 上写文件会把 \n 落成 \r\n，逐字节比对会把
+    "同一篇笔记"误判成"有人改过"；解码后比较才是用户语义里的同一篇。"""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def live_restart_after_delete(deleted: list[Path]) -> bool:
+    """删掉"正在记录的那篇"之后立刻接力一篇新笔记 → 是否真的接力了。
+
+    必要性：删（软删）只是把文件移进回收站，而录制侧 hub.transcript_path 仍指着
+    老路径——下一条字幕 append 会把**回收站里那个文件名**在原目录重新创建出来
+    （split-brain：一边回收站里有笔记，一边又冒出个同名新文件接着写）。接力一篇
+    新笔记（与启动时的行为一致，沿用当前课程），字幕继续有地方落，回收站内容也
+    不会被后续写入污染。"""
+    cur = hub.transcript_path
+    if not cur or not any(p == cur for p in deleted):
+        return False
+    name = status.get("course")
+    hub.start_transcript(None if name in (None, courses_mod.UNCATEGORIZED) else name,
+                         avoid={cur.name})   # 连刚进回收站的名字也避开 → 恢复时不会撞名
+    log.info(f"[notes] 被删的是正在记录的笔记 → 已接力新笔记 {hub.transcript_path.name}")
+    return True
+
+
+@app.get("/api/notes/raw")
+async def notes_raw(name: str = ""):
+    """§4 编辑用：笔记的 md 原文 + 版本戳 mtime_us。
+
+    mtime_us 是保存时的「乐观并发」凭据：页面打开后若又有新字幕写进来，保存会被
+    拒绝——避免"编辑面板里还是旧文本，一保存把新内容整段覆盖"（正在记录时尤其要紧）。"""
+    p, err = note_path_arg(name)
+    if p is None:
+        return JSONResponse({"ok": False, "error": err}, status_code=404)
+    try:
+        text = p.read_text(encoding="utf-8")
+        st = p.stat()
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": f"读取失败: {type(e).__name__}: {e}"}, status_code=500)
+    return {"ok": True, "name": p.name, "text": text, "sha": text_sha(text),
+            "tags": notes_mod.note_tags(text), "presets": list(TAG_PRESETS),
+            "mtime_us": st.st_mtime_ns // 1000, "size": st.st_size}
+
+
+@app.put("/api/notes/{name}")
+async def notes_save(name: str, req: Request):
+    """§4 编辑：用请求体里的 md 原文整体替换笔记正文。
+
+    「保存后重索引」在本项目里是**天然成立**的：索引/列表每次都按文件现读现算
+    （notes.index），没有需要重建的内存索引；这里只需广播 notes 事件，让别的窗口刷新。
+
+    base_sha（= GET /api/notes/raw 回的正文指纹）必填且必须与**当前**正文一致：
+    不一致 → 409 明确文案（另有新字幕写进来）。用指纹而不是 mtime：Windows 的
+    mtime 只有约 15ms 粒度（时钟滴答），毫秒级的两次写入会撞成同一戳，而这一检查
+    要防的正是"页面开着好几分钟，期间来了新字幕"。
+
+    行尾口径：整篇保存**统一按本平台行尾**（Windows=CRLF）落盘——浏览器 textarea 的
+    value 被 DOM 规范成 \\n，无法逐字节回放 CRLF；行级改写（课程行/标签行）另走
+    保真路径（main.read_note_text + note_atomic_write 默认 newline=""）。"""
+    body, bad = await course_body(req)
+    if bad:
+        return bad
+    unknown = [k for k in body if k not in ("text", "base_sha")]
+    if unknown:
+        return JSONResponse(
+            {"ok": False,
+             "error": f"未知字段: {unknown[0]}（允许: ['text', 'base_sha']）"},
+            status_code=400)
+    text = body.get("text")
+    if not isinstance(text, str):
+        return JSONResponse({"ok": False, "error": "text 必须是字符串（md 原文）"},
+                            status_code=400)
+    if len(text.encode("utf-8")) > NOTE_EDIT_MAX:
+        return JSONResponse(
+            {"ok": False, "error": f"正文过大（上限 {NOTE_EDIT_MAX // 1024} KB）"},
+            status_code=400)
+    base = body.get("base_sha")
+    if not isinstance(base, str) or not base.strip():
+        return JSONResponse(
+            {"ok": False,
+             "error": "缺少 base_sha：先 GET /api/notes/raw 取 sha 再保存"
+                      "（防止覆盖编辑期间新写入的字幕）"},
+            status_code=400)
+    p, err = note_path_arg(name)
+    if p is None:
+        return JSONResponse({"ok": False, "error": err}, status_code=404)
+    try:
+        # 以下同步执行（读 stat → 写 .tmp → replace），中间无 await：
+        # 事件循环不会把字幕追加插进来，故不会丢段。
+        if text_sha(p.read_text(encoding="utf-8")) != base.strip():
+            return JSONResponse(
+                {"ok": False,
+                 "error": "笔记在编辑期间有新内容写入（可能正在记录字幕）——"
+                          "请重新打开再编辑，避免覆盖新内容"},
+                status_code=409)
+        # newline=None：**整篇保存统一按本平台行尾**（Windows=CRLF）落盘。
+        # 理由（评审 M4）：浏览器 textarea 的 value 由 DOM 规范成 \n，无法逐字节
+        # 回放 CRLF，若按"原样"写反而会把 CRLF 笔记静默翻成 LF。行级改写
+        # （课程行/标签行）走的是保真路径（read_note_text + 默认 newline=""），
+        # 两者口径不同且各自写明；本平台录制的笔记本就是 CRLF，故这里归一即稳定。
+        note_atomic_write(p, text, newline=None)
+        st2 = p.stat()
+    except Exception as e:
+        log.warning(f"[notes] ⚠ 保存失败（{p.name}）: {e}")
+        return JSONResponse(
+            {"ok": False, "error": f"保存失败（原文件已尽量保持原样）: "
+                                   f"{type(e).__name__}: {e}"},
+            status_code=500)
+    log.info(f"[notes] 编辑保存 {p.name}（{st2.st_size} 字节）")
+    await broadcast_notes([p.name])
+    return {"ok": True, "name": p.name, "size": st2.st_size,
+            "mtime_us": st2.st_mtime_ns // 1000}
+
+
+@app.post("/api/notes/rename")
+async def notes_rename(req: Request):
+    """§4 重命名：改文件名（**内容零改动**），派生文件（摘要/时间轴/卡组）跟着改。
+
+    新名 sanitize 见 notes.normalize_note_name（补 .md / 补 lecture_ 前缀 / 禁路径
+    分隔与系统保留名 / 长度限）。正在记录的那篇也能改名——改完把 hub.transcript_path
+    指到新路径上，字幕继续写进同一个文件（否则录制会另起一个旧名文件）。"""
+    body, bad = await course_body(req)
+    if bad:
+        return bad
+    unknown = [k for k in body if k not in ("file", "to")]
+    if unknown:
+        return JSONResponse(
+            {"ok": False, "error": f"未知字段: {unknown[0]}（允许: ['file', 'to']）"},
+            status_code=400)
+    p, err = note_path_arg(body.get("file"))
+    if p is None:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    new, nerr = notes_mod.normalize_note_name(body.get("to"))
+    if nerr:
+        return JSONResponse({"ok": False, "error": nerr}, status_code=400)
+    if new == p.name:
+        return JSONResponse({"ok": False, "error": f"新文件名与原名相同: {new}"},
+                            status_code=400)
+    dest = Path(TRANSCRIPTS) / new
+    if dest.exists():
+        return JSONResponse({"ok": False, "error": f"已存在同名笔记: {new}"},
+                            status_code=400)
+    old_name = p.name
+    moved: list[str] = []
+    try:
+        p.replace(dest)
+        moved.append(new)
+        for old_sidecar, new_sidecar in zip(notes_mod.sidecar_paths(p),
+                                            notes_mod.sidecar_paths(dest)):
+            src = p.with_name(old_sidecar)
+            if src.is_file():
+                src.replace(dest.with_name(new_sidecar))
+                moved.append(new_sidecar)
+    except Exception as e:
+        log.warning(f"[notes] ⚠ 重命名失败（{old_name}）: {e}")
+        return JSONResponse(
+            {"ok": False, "error": f"重命名失败: {type(e).__name__}: {e}（已移动: {moved}）"},
+            status_code=500)
+    was_live = False
+    if hub.transcript_path and hub.transcript_path.name == old_name:
+        hub.transcript_path = dest       # 录制跟着改名走（否则会另起旧名文件）
+        was_live = True
+    log.info(f"[notes] 重命名 {old_name} → {new}（派生文件 {len(moved) - 1} 个；"
+             f"{'正在记录，已重指' if was_live else '历史笔记'}）")
+    await broadcast_notes([new, old_name])
+    return {"ok": True, "file": old_name, "to": new, "sidecars": len(moved) - 1,
+            "live": was_live}
+
+
+@app.post("/api/notes/delete")
+async def notes_delete(req: Request):
+    """§4 删除 = **软删除**：连同派生文件移进 transcripts/.trash/（同盘 rename）。
+
+    删的是"正在记录的那篇"时，顺手接力一篇新笔记（见 live_restart_after_delete）——
+    不这么做，后面的字幕会把回收站里的文件名在原目录重新创建出来。"""
+    body, bad = await course_body(req)
+    if bad:
+        return bad
+    paths, err = note_batch_arg(body, body.get("files"))
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    results: list[dict] = []
+    failed: list[dict] = []
+    for p in paths:
+        try:
+            moved = notes_mod.move_note_with_sidecars(p, trash_dir())
+            results.append({"file": p.name, "moved": moved})
+        except notes_mod.MoveConflict as e:
+            # 回收站里已有同名文件（评审 M2：旧实现直接 replace，静默覆盖旧笔记
+            # 与它的摘要）。如实报失败并点名冲突文件，绝不覆盖。
+            log.warning(f"[notes] ⚠ 软删除冲突（{p.name}）: {e.names}")
+            failed.append({"file": p.name,
+                           "error": f"回收站里已有同名文件，未删除也未覆盖："
+                                    f"{', '.join(e.names)}（先彻底删除/清空回收站）"})
+        except Exception as e:
+            log.warning(f"[notes] ⚠ 软删除失败（{p.name}）: {e}")
+            failed.append({"file": p.name, "error": f"{type(e).__name__}: {e}"})
+    done = [Path(TRANSCRIPTS) / r["file"] for r in results]
+    restarted = live_restart_after_delete(done)
+    log.info(f"[notes] 软删除 {len(results)} 篇（失败 {len(failed)}）→ {TRASH_DIR_NAME}/"
+             f"{'（已接力新笔记）' if restarted else ''}")
+    if results:
+        await broadcast_notes([r["file"] for r in results])
+    return {"ok": True, "trashed": len(results), "results": results,
+            "failed": failed, "restarted": restarted}
+
+
+@app.get("/api/notes/trash")
+async def notes_trash_list():
+    """§4 回收站列表（按删除时间倒序）。只列笔记正文；同名派生文件跟着笔记一起搬运，
+    不单独出现。"""
+    d = trash_dir()
+    items: list[dict] = []
+    if d.is_dir():
+        for p in d.glob(notes_mod.NOTE_GLOB):
+            if not notes_mod.is_note_file(p):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+                st = p.stat()
+            except Exception:
+                continue              # 单篇坏文件不该让回收站整体 500
+            parsed = notes_mod.parse(text)
+            en, zh = notes_mod.first_sentence(parsed["pairs"])
+            items.append({
+                "name": p.name,
+                "date": notes_mod.display_date(parsed["stamp"], p.name),
+                "deleted_at": st.st_mtime,
+                "size": st.st_size,
+                "course": parsed["course"] or courses_mod.UNCATEGORIZED,
+                "first_en": en,
+                "first_zh": zh,
+                "segments": parsed["segments"],
+            })
+    items.sort(key=lambda x: x["deleted_at"], reverse=True)
+    return {"ok": True, "notes": items, "total": len(items), "dir": TRASH_DIR_NAME}
+
+
+@app.post("/api/notes/trash/restore")
+async def notes_trash_restore(req: Request):
+    """§4 回收站：恢复（搬回 transcripts/）。目标位置已有同名文件（正文**或派生物**）
+    → 该篇记 failed 并继续（**绝不覆盖**，评审 M2：旧实现只查正文，于是同名摘要
+    会被静默盖掉，与这句承诺自相矛盾）。"""
+    body, bad = await course_body(req)
+    if bad:
+        return bad
+    raw = body.get("files")
+    unknown = [k for k in body if k != "files"]
+    if unknown:
+        return JSONResponse(
+            {"ok": False, "error": f"未知字段: {unknown[0]}（允许: ['files']）"},
+            status_code=400)
+    if not isinstance(raw, list) or not raw:
+        return JSONResponse({"ok": False, "error": "files 必须是非空数组"},
+                            status_code=400)
+    results: list[dict] = []
+    failed: list[dict] = []
+    for name in raw:
+        p, err = trash_path_arg(name)
+        if err:
+            failed.append({"file": name, "error": err})
+            continue
+        try:
+            notes_mod.move_note_with_sidecars(p, Path(TRANSCRIPTS))
+            results.append({"file": p.name})
+        except notes_mod.MoveConflict as e:
+            log.warning(f"[notes] ⚠ 恢复冲突（{p.name}）: {e.names}")
+            failed.append({"file": p.name,
+                           "error": f"目标位置已有同名文件，未覆盖：{', '.join(e.names)}"
+                                    f"（先改名或删掉它）"})
+        except Exception as e:
+            failed.append({"file": p.name, "error": f"{type(e).__name__}: {e}"})
+    log.info(f"[notes] 回收站恢复 {len(results)} 篇（失败 {len(failed)}）")
+    if results:
+        await broadcast_notes([r["file"] for r in results])
+    return {"ok": True, "restored": len(results), "results": results, "failed": failed}
+
+
+@app.post("/api/notes/trash/purge")
+async def notes_trash_purge(req: Request):
+    """§4 回收站：彻底删除（连派生文件一起 unlink，不可恢复）。"""
+    body, bad = await course_body(req)
+    if bad:
+        return bad
+    raw = body.get("files")
+    unknown = [k for k in body if k != "files"]
+    if unknown:
+        return JSONResponse(
+            {"ok": False, "error": f"未知字段: {unknown[0]}（允许: ['files']）"},
+            status_code=400)
+    if not isinstance(raw, list) or not raw:
+        return JSONResponse({"ok": False, "error": "files 必须是非空数组"},
+                            status_code=400)
+    results: list[dict] = []
+    failed: list[dict] = []
+    for name in raw:
+        p, err = trash_path_arg(name)
+        if err:
+            failed.append({"file": name, "error": err})
+            continue
+        try:
+            gone = _purge_one(p)
+            results.append({"file": p.name, "removed": gone})
+        except Exception as e:
+            failed.append({"file": p.name, "error": f"{type(e).__name__}: {e}"})
+    log.info(f"[notes] 回收站彻底删除 {len(results)} 篇（失败 {len(failed)}）")
+    return {"ok": True, "purged": len(results), "results": results, "failed": failed}
+
+
+def _purge_one(p: Path) -> list[str]:
+    """彻底删除回收站里的一篇（连派生文件）→ 实际删掉的文件名。"""
+    gone = [p.name]
+    p.unlink()
+    for name in notes_mod.sidecar_paths(p):
+        s = p.with_name(name)
+        if s.is_file():
+            s.unlink()
+            gone.append(name)
+    return gone
+
+
+@app.post("/api/notes/trash/empty")
+async def notes_trash_empty():
+    """§4 回收站：清空（目录里所有**文件**，含派生文件；子目录不动——我们不放目录，
+    真有也是别人的东西，不替用户删）。"""
+    d = trash_dir()
+    removed = 0
+    failed: list[dict] = []
+    if d.is_dir():
+        for entry in d.iterdir():
+            if not entry.is_file():
+                continue
+            try:
+                entry.unlink()
+                removed += 1
+            except Exception as e:
+                failed.append({"file": entry.name, "error": f"{type(e).__name__}: {e}"})
+    log.info(f"[notes] 清空回收站（删 {removed} 个文件，失败 {len(failed)}）")
+    return {"ok": True, "removed": removed, "failed": failed}
+
+
+# —— §8（标签）：笔记头块内的 `> 标签：#a #b` 一行 ——
+# 存**文件里**不存 sidecar：可移植（笔记拷走标签跟着走）、随编辑/移动/重命名存活、
+# git 友好。读写都只认头部区块（与课程行同窗口，见 notes.HEAD_SCAN）——正文里恰好
+# 同形的引用行不受影响。写端点是**全量替换**（幂等）：重不重要由配置决定，前端拿
+# 一次 GET 的现状做增删，再整表提交。
+
+
+#: UI 预设标签（服务端当唯一来源回给两个入口，前后端不各写一份）
+TAG_PRESETS = ("重点", "考试", "没听懂", "待复习")
+
+
+def note_tags_write(p: Path, tags: list[str]) -> str:
+    """把标签行写成 tags（全量替换）→ 动作 replaced / inserted / removed / none。
+
+    与 note_course_write 同款：读全文 → 变换 → 写 .tmp + os.replace，**中间无 await**，
+    故不会与正在记录的字幕追加交错丢段。"""
+    text = read_note_text(p)
+    new, action = notes_mod.set_tags(text, tags)
+    if new == text:
+        return "none"
+    note_atomic_write(p, new)
+    return action
+
+
+def tags_view(p: Path) -> dict:
+    """一篇笔记的标签视图（GET/POST 共用同一形状，前端两个入口都吃它）。"""
+    text = p.read_text(encoding="utf-8")
+    st = p.stat()
+    return {"ok": True, "file": p.name, "tags": notes_mod.note_tags(text),
+            "sha": text_sha(text), "mtime_us": st.st_mtime_ns // 1000,
+            "size": st.st_size, "presets": list(TAG_PRESETS)}
+
+
+@app.get("/api/notes/tags")
+async def notes_tags_get(name: str = ""):
+    """§8 读一篇笔记的标签（name 缺省 = **当前正在记录的那篇**，字幕页 🏷 用）。
+
+    为什么要有 GET：写端点是全量替换，而"增一个 / 删一个"必须先知道现状——没有它
+    前端只能自己解析 md 或拉整篇原文（raw 会把几百 KB 带回浏览器）。"""
+    if not (name or "").strip():
+        p = hub.transcript_path
+        if not (p and p.is_file()):
+            return JSONResponse({"ok": False, "error": "还没有正在记录的笔记"},
+                                status_code=404)
+    else:
+        p, err = note_path_arg(name)
+        if p is None:
+            return JSONResponse({"ok": False, "error": err}, status_code=404)
+    try:
+        return tags_view(p)
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": f"读取失败: {type(e).__name__}: {e}"}, status_code=500)
+
+
+@app.post("/api/notes/tags")
+async def notes_tags_set(req: Request):
+    """§8 全量替换一篇笔记的标签（幂等）：{file, tags: [...]}。
+
+    规则（notes.normalize_tags）：每个 ≤16 字符、禁空格/全角空格/#/换行、每篇 ≤20 个、
+    同名去重；非法标签点名报 400（不静默丢弃——用户以为存上了才糟）。标签行不存在时
+    插到**课程行下方**；tags=[] 则删掉该行。返回新 sha：前端"加完标签接着编辑正文"
+    要把当次 PUT 的乐观并发凭据换成它，否则会自己把自己撞成 409。"""
+    body, bad = await course_body(req)
+    if bad:
+        return bad
+    unknown = [k for k in body if k not in ("file", "tags")]
+    if unknown:
+        return JSONResponse(
+            {"ok": False, "error": f"未知字段: {unknown[0]}（允许: ['file', 'tags']）"},
+            status_code=400)
+    tags, err = notes_mod.normalize_tags(body.get("tags"))
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    if not isinstance(body.get("file"), str) or not body.get("file", "").strip():
+        return JSONResponse({"ok": False, "error": "缺少 file（要打标签的那篇笔记名）"},
+                            status_code=400)
+    p, err = note_path_arg(body.get("file"))
+    if p is None:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    try:
+        action = note_tags_write(p, tags)
+        view = tags_view(p)
+    except Exception as e:
+        log.warning(f"[notes] ⚠ 标签写入失败（{p.name}）: {e}")
+        return JSONResponse(
+            {"ok": False, "error": f"写入失败（原文件未改动）: {type(e).__name__}: {e}"},
+            status_code=500)
+    log.info(f"[notes] 标签 {p.name} → {' '.join('#' + t for t in tags) or '（清空）'}"
+             f"（{action}）")
+    await broadcast_notes([p.name])
+    # 回显**从文件解析出来的**标签表，而不是提交值（评审 M3）：写盘若与提交值有出入
+    # （规范化差异/被别的写入插入），GET 与 POST 会自相矛盾——以文件为准则不会。
+    view["action"] = action
+    return view
 
 
 # —— p2-4：模型管理器（缓存状态 / 下载 / 删除）——
@@ -2254,6 +3623,12 @@ def sync_glossary_reload() -> bool:
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     hub.clients.add(ws)
+    # 评审2①：按**对端**分档——非环回（手机/局域网设备）才计入「已连接 N 台设备」。
+    # 判据与环回豁免同源（main.is_loopback_peer，只认 socket 对端，不认任何请求头）；
+    # 对端缺失 → 保守地按「本机」处理（不计入设备数，宁可少报不谎报有人在看）。
+    lan_peer = not is_loopback_peer(ws.client.host if ws.client else None)
+    if lan_peer:
+        hub.lan_clients.add(ws)
     try:
         while True:
             msg = await ws.receive_text()  # 保活 + ui_metrics 上行（条目9④）
@@ -2265,6 +3640,7 @@ async def ws_endpoint(ws: WebSocket):
         pass
     finally:
         hub.clients.discard(ws)
+        hub.lan_clients.discard(ws)
 
 
 MIC_REBUILD_COOLDOWN = 30  # 采集器重建的最小间隔（秒），防设备持续占用时反复横跳
@@ -2470,11 +3846,18 @@ async def asr_loop(args) -> None:
     # 翻译失败也已定稿广播，故 append 在派发前）
     en_history: deque = deque(maxlen=TRANSLATE_CONTEXT_WINDOW)
 
-    async def translate_and_broadcast(seg: int, ts_clock: str, en: str) -> None:
+    async def translate_and_broadcast(session_seg: int, note_seg: int,
+                                      ts_clock: str, en: str) -> None:
         """后台翻译 → 二次广播中文 + 笔记补写；重试耗尽仍失败时降级补偿：
         字幕灰色『（翻译失败）』提示 + 笔记占位行，保证用户可见、笔记完整。
         条目16：每段先查术语表 mtime（双侧同步刷新），再带最近 3 条已定稿
-        EN 上下文派译（仅参考前缀防指代/术语跨段漂移，1200 字符封顶）。"""
+        EN 上下文派译（仅参考前缀防指代/术语跨段漂移，1200 字符封顶）。
+
+        两个段号刻意分开（评审 M1）：
+        - session_seg → WS 载荷的 `seg`（前端行标识/译文配对，跨笔记保持唯一）；
+        - note_seg + 派发时捕获的 note → 写进**文件**的 ZH 锚点（笔记内配对）。
+        晚到的译文若发现笔记已经换了，hub.append 会丢弃它，不留孤儿中文行。"""
+        note = hub.transcript_path
         try:
             sync_glossary_reload()
             context = list(en_history)
@@ -2484,16 +3867,16 @@ async def asr_loop(args) -> None:
             # 未接 key 时外层守卫（if runtime["translator"]）拦截，行为不变
             zh = await runtime["translator"].translate(en, context=context)
             status["last_zh"] = zh
-            hub.append(ts_clock, "", zh, seg)
+            hub.append(ts_clock, "", zh, note_seg, note=note)
             # 只带 zh 不带 en：翻译乱序完成时，避免前端把旧段误判成新的英文段落
-            await hub.broadcast({"ts": ts_clock, "seg": seg, "zh": zh})
+            await hub.broadcast({"ts": ts_clock, "seg": session_seg, "zh": zh})
             log.info(f"      → {zh}")
         except Exception as e:
             log.warning(f"[translate] error: {e}")
-            hub.append(ts_clock, "", "（翻译失败）", seg)
+            hub.append(ts_clock, "", "（翻译失败）", note_seg, note=note)
             # err 标记：前端把该行渲染成灰色，区别于正常黄色译文
             await hub.broadcast(
-                {"ts": ts_clock, "seg": seg, "zh": "（翻译失败）", "err": True}
+                {"ts": ts_clock, "seg": session_seg, "zh": "（翻译失败）", "err": True}
             )
 
     while True:
@@ -2552,10 +3935,15 @@ async def asr_loop(args) -> None:
             continue
 
         try:
-            status["segments"] += 1
-            status["last_en"] = en
+            # 笔记级段号：ZH 锚点与 .times sidecar 都用它，**换笔记归零**（评审 M1）。
+            # 先算预期值、EN 行落盘成功后再提交两处计数：append 抛异常时本段被外层
+            # 跳过，锚点基数与 EN 行数仍然相等（先加后写在写失败时会错位一格）。
+            note_seg = hub.note_seg + 1
             ts_clock = datetime.datetime.now().strftime("%H:%M:%S")
             hub.append(ts_clock, en, "")
+            hub.note_seg = note_seg
+            status["segments"] += 1
+            status["last_en"] = en
             # 评审1 修：capture 投递的 audio_ts 是**窗口末尾**（_emit 组装完才 put），
             # 本段音频的**窗口起点** = 发射时刻 − 窗口时长。下游一律用起点：
             # ① record_time → SRT cue 不再整体后移（旧实现每段误差 = d_i − d_1）；
@@ -2564,7 +3952,7 @@ async def asr_loop(args) -> None:
             #    「该句音频的采集墙钟秒…什么时候说的」——旧实现与它自己的注释矛盾）。
             audio_s = len(audio) / SR
             win_start = (audio_ts - audio_s) if audio_ts is not None else None
-            hub.record_time(status["segments"], win_start, seg_times, audio_s)
+            hub.record_time(note_seg, win_start, seg_times, audio_s)
             await hub.broadcast(final_payload(ts_clock, en, status["segments"], win_start))
             log.info(f"[{ts_clock}] {en}")
 
@@ -2575,7 +3963,7 @@ async def asr_loop(args) -> None:
                 if len(flights) >= MAX_FLIGHTS:
                     await flights.popleft()  # 在飞已满：等最旧的任务完成再派新
                 flights.append(asyncio.create_task(
-                    translate_and_broadcast(status["segments"], ts_clock, en)
+                    translate_and_broadcast(status["segments"], note_seg, ts_clock, en)
                 ))
         except Exception as e:
             log.warning(f"[segment] error: {e}")
@@ -2589,15 +3977,19 @@ def build_lifespan(args):
     parse_args()，两值同源），此处统一用入参 args，行为不变。"""
 
     async def _open_browser_later() -> None:
-        """等服务开始监听后再开浏览器：页面加载即显示模型加载进度条。"""
+        """等服务开始监听后再开浏览器：页面加载即显示模型加载进度条。
+
+        §7：端口取**实际**绑上的那个（runtime['bind']，由 main() 在起服务前写好）——
+        lan_enabled=true 且 8787 被占时会换端口，打开 args.port 会开到一个空页面上。"""
         await asyncio.sleep(2.5)
         if os.environ.get("LECTURELENS_NO_BROWSER"):
             return
+        port = (runtime.get("bind") or {}).get("port") or args.port
         try:
             import webbrowser
-            webbrowser.open(f"http://localhost:{args.port}")
+            webbrowser.open(f"http://localhost:{port}")
         except Exception as e:
-            log.warning(f"[main] ⚠ 打开浏览器失败: {e}（手动访问 http://localhost:{args.port}）")
+            log.warning(f"[main] ⚠ 打开浏览器失败: {e}（手动访问 http://localhost:{port}）")
 
     def _watch_asr_task(task: asyncio.Task) -> None:
         """识别主循环的 done-callback：任务意外死亡时把异常写进状态与日志，
@@ -2670,12 +4062,37 @@ def main():
     except Exception as e:
         log.warning(f"[main] ⚠ 查询输入设备失败: {e}")
 
+    # §7（手机扫码同屏）：绑定决策——**只在启动时读一次 config**。
+    #   lan_enabled=false → 127.0.0.1:args.port（与本服务一贯的「不对外」姿态一致；
+    #                       端口被占仍由 uvicorn 响亮报错退出，不静默换端口）
+    #   lan_enabled=true  → 0.0.0.0，优先 args.port（默认 8787），**被占则换一个空闲
+    #                       端口**（§7 明文），实际端口记进 runtime['bind']——
+    #                       /api/lan-qr 的 URL 与 --open-browser 都以它为准。
+    # 监听地址在进程内换不了（换绑=换整条服务），所以改键要重启：端点的
+    # restart_required / 日志 / 面板文案三处同一口径。
+    cfg_start = load_config()
+    lan_on = bool(cfg_start.get("lan_enabled"))
+    bind_host, bind_want = lan_mod.lan_bind(cfg_start, args.port)
+    bind_port = lan_mod.pick_port(bind_host, bind_want) if lan_on else bind_want
+    set_bind(bind_host, bind_port)
+    if lan_on:
+        lan_ip = lan_mod.primary_lan_ip()
+        log.info(f"[lan] 📱 手机同屏已开启：监听 {bind_host}:{bind_port}"
+                 f"（手机连同一 WiFi 打开 http://{lan_ip or '<电脑IP>'}:{bind_port}/ "
+                 f"或扫字幕页「📱 手机同屏」面板里的二维码；需要访问 token）")
+        if bind_port != bind_want:
+            log.warning(f"[lan] ⚠ 首选端口 {bind_want} 被占用 → 实际监听 {bind_port}"
+                        f"（配对 URL/二维码里的端口以此为准）")
+    else:
+        log.info(f"[lan] 手机同屏未开启（config.lan_enabled=false）：仅监听 "
+                 f"{bind_host}:{bind_port}，LAN 侧连不上；开启后需重启 LectureLens 生效")
+
     # p1-1：lifespan 三件套（_open_browser_later/_watch_asr_task/lifespan）原内嵌
     # 在此，已提升为模块级 build_lifespan(args)（行为不变），desktop.py 复用同一份
     app.router.lifespan_context = build_lifespan(args)
 
-    log.info(f"[main] LectureLens starting — port={args.port}, lang={args.lang}"
-             + (", force-gpu" if args.gpu else ""))
+    log.info(f"[main] LectureLens starting — host={bind_host}, port={bind_port}, "
+             f"lang={args.lang}" + (", force-gpu" if args.gpu else ""))
     # uvicorn 经 dictConfig 纳入同一落盘（applog.uvicorn_log_config）：
     # 自带 handler 清空、propagate 到 root；WARNING 级别维持原 log_level='warning'
     # 的控制台表现（INFO 行本来就被抑制）
@@ -2686,7 +4103,7 @@ def main():
     # 非环回（403，fail-closed 破坏豁免）；FORWARDED_ALLOW_IPS=* 下 LAN 对端
     # 伪造 XFF:127.0.0.1 可整体绕过环回豁免（实测复现 101）。本服务无前置反代，
     # 条目19 豁免只认 socket 对端——直接关闭代理头改写。
-    uvicorn.run(app, host="0.0.0.0", port=args.port,
+    uvicorn.run(app, host=bind_host, port=bind_port,
                 log_config=uvicorn_log_config(), proxy_headers=False)
 
 

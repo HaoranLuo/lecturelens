@@ -202,6 +202,34 @@ def find(data: dict, cid: str) -> dict | None:
     return None
 
 
+def resolve_target(data: dict, value) -> tuple[str | None, str | None]:
+    """§2 课后改归属：把请求里的课程标识解析成**要写进笔记头的课程名**。
+
+    返回 (课程名, 错误文案)。接受三种写法（顺序即优先级）：
+    - None / 空串 / UNCATEGORIZED 字面量 → UNCATEGORIZED（「未分类」是合法目标：
+      归错能改，改回未分类同样是一等操作）；
+    - 课程 **id**（前端选课下拉/移动到菜单同口径，与 /api/courses/active 一致）；
+    - 课程 **名**（手写 curl / 脚本调用时贴的是笔记里看得见的那串字）。
+    都没命中 → 错误（**明确文案**，不做模糊匹配——归属写错比报错更糟）。
+
+    id 优先于同名：课程名可以随便取，id 由服务端生成且唯一（sanitize_course 保证）；
+    真撞上了（有人把课名取成另一门课的 id）也只会落到 id 那门课——可预期且可核对。"""
+    if value is None:
+        return UNCATEGORIZED, None
+    if not isinstance(value, str):
+        return None, f"course 须为课程 id / 课程名 / null（未分类），收到 {type(value).__name__}"
+    v = value.strip()
+    if not v or v == UNCATEGORIZED:
+        return UNCATEGORIZED, None
+    hit = find(data, v)
+    if hit:
+        return hit["name"], None
+    for c in data.get("courses") or []:
+        if c.get("name") == v:
+            return c["name"], None
+    return None, f"课程不存在: {v}（可用 id 或课程名；先建课程或改用「未分类」）"
+
+
 def validation_error(payload, root: Path) -> tuple[dict, str | None]:
     """校验一条课程写入载荷（创建/更新共用）。
 
