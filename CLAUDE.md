@@ -9,20 +9,32 @@
 桌面应用先行；浏览器页面手机连同一 WiFi 也能看字幕。
 
 ## 二、结构
-- app/capture.py    麦克风采集 + 能量 VAD 分句（自适应噪声底）
-- app/asr.py        faster-whisper 封装（默认 CPU int8 small，GPU 可选）
-- app/translate.py  DeepSeek 翻译 + 课程术语表注入
-- app/main.py       FastAPI + WebSocket + 双语笔记落盘
-- app/web/index.html 字幕页（断线自动重连）
+- app/capture.py    麦克风采集 + VAD 分句（默认 silero 流式，--vad energy 回退）
+- app/asr.py        faster-whisper 封装（auto=自动上 CUDA；GPU float16 / CPU int8）
+- app/translate.py  DeepSeek 翻译 + 课程术语表注入（含 whisper initial_prompt）
+- app/summarize.py  课后 AI 笔记摘要（map-reduce 分块并行 → 概览/要点/术语/存疑 md）
+- app/ankideck.py   Anki 复习卡生成（摘要 → LLM 生成+二次过滤 → genanki .apkg）
+- app/main.py       FastAPI + WebSocket + config.json + 模型热切换/暂停/导出端点
+- app/web/index.html 字幕页（工具条：暂停/换模型/电平条/字号/导出/清屏/全屏）
+- config.json       模型/设备/VAD 持久化（字幕页热切换会写回）
 - glossary/         课程术语表（每行 `EN term = 中文译名`，--glossary 传入）
+- scripts/smoke_test.py 全管线自检（无需麦克风；--gpu 基准 / --server 在线 / --translate）
 - transcripts/      每节课双语笔记（gitignore：含课程内容）
-- scripts/build.py  无——本项目无出版管线（区别于菜单项目）
 
 ## 三、运行
-1. `.venv` 已建好；启动：双击 start_translate.bat 或
-   `.venv\Scripts\python.exe app\main.py --glossary glossary/CS.md`
-2. 浏览器打开 http://localhost:8787 （手机连同一 WiFi 访问 http://<电脑IP>:8787）
+1. `.venv` 已建好（含 nvidia-cublas/cudnn cu12，全在 D 盘）；启动：双击 start_translate.bat
+   （桌面窗口 + 托盘 + 悬浮字幕条，`app/desktop.py`；`--glossary` 可透传，其余旗标走
+   `--server-only`），或 `.venv\Scripts\python.exe app\desktop.py --glossary glossary/CS.md`
+2. 桌面模式无需浏览器（原生窗口）。LAN/手机访问：`start_translate.bat --server-only` 后浏览器打开
+   http://localhost:8787 （手机连同一 WiFi 访问 http://<电脑IP>:8787；桌面模式只听 127.0.0.1）
 3. KCL SSO / DeepSeek key：DEEPSEEK_API_KEY 放环境变量或项目根 .env
+4. 自检：`.venv\Scripts\python.exe scripts\smoke_test.py`（--gpu/--server/--translate 可选）
+
+## 三·一、GPU 本地顶配（RTX 5060 8GB 实测）
+- config.json 默认 large-v3-turbo + device=auto → RTX 5060 上 float16，RTF 0.05，显存 2.2/8GB
+- Windows 坑：ctranslate2 首次推理经 PATH 搜 cuBLAS DLL，asr.py 的 _setup_cuda_dlls 已双保险
+  （add_dll_directory + 进程 PATH 前插），换机器装了 nvidia-*cu12 即可
+- C 盘零占用原则：venv/模型缓存全在 D 盘（HF_HOME=D:\01_Environments\model-cache）
 
 ## 四、红线（永久）
 - ⚠️ Student visa 禁 self-employment：**不收费、不注册公司、不公开分发**
