@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>LectureLens 字幕条</title>
+<style>
+  /* B1 悬浮字幕条（p1-7）：桌面壳第二窗口载入（frameless/on_top/transparent）。
+     窗口透明由 WebView2 原生支持（winforms.py:281-287），此处 rgba 半透明深底 +
+     圆角 = 浮动卡片观感；色值走 docs/design-spec.md §2 令牌。
+     浏览器直接打开本页亦可预览（穿透按钮会提示仅桌面版可用）。 */
+  :root { --surface:#12161D; --surface-2:#171C24; --border:#232B35;
+          --border-strong:#2E3844; --text-1:#E8EEF5; --text-2:#93A1B0;
+          --text-3:#5C6B7A; --gold:#FFD97A; --err:#FF6B6B; }
+  html, body { height:100%; margin:0; background:transparent; overflow:hidden; }
+  body { font-family:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+         display:flex; align-items:stretch; }
+  #bar { flex:1; margin:6px;                 /* 6px 边距=圆角外露桌面 */
+         background:rgba(18, 22, 29, .82);    /* --surface 82%：半透明深底 */
+         border:1px solid var(--border); border-radius:12px;
+         padding:10px 18px; position:relative; overflow:hidden;
+         display:flex; flex-direction:column; justify-content:center; gap:2px;
+         cursor:grab; }                         /* easy_drag：整窗可拖 */
+  #bar:active { cursor:grabbing; }
+  #en { font-size:18px; line-height:1.35; color:var(--text-1);
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #zh { font-size:22px; line-height:1.4; color:var(--gold); font-weight:600;
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #en.idle, #zh.idle { color:var(--text-3); font-weight:400; font-size:15px; }
+  #zh.err { color:var(--text-2); font-weight:400; }
+  .actions { position:absolute; top:6px; right:8px; display:flex; gap:6px;
+             opacity:0; transition:opacity .2s; }
+  #bar:hover .actions { opacity:1; }
+  /* p3-5 评审修复（F6）：键盘焦点必须能看到它落在哪。
+     修前实测：Tab 能进 #btnThru/#btnHide，但 .actions 的 opacity 仍是 0（只有
+     #bar:hover 才显形），全文件 0 处 focus 规则，轮廓只剩 UA 默认的近黑细线，
+     压在暗色条上基本看不见——即「焦点落在不可见控件上」。
+     两条一起给：focus-within 把按钮显形，焦点环沿用主页面的 gold 50% 口径。 */
+  #bar:focus-within .actions { opacity:1; }
+  .actions button:focus-visible { opacity:1; }
+  #bar :focus-visible {
+    outline:2px solid color-mix(in srgb, var(--gold) 50%, transparent);
+    outline-offset:2px;
+  }
+  .actions button { background:var(--surface-2); color:var(--text-2);
+                    border:1px solid var(--border); border-radius:8px;
+                    width:28px; height:22px; font-size:11px; cursor:pointer; }
+  .actions button:hover { color:var(--text-1); border-color:var(--border-strong); }
+  #hint { position:absolute; left:14px; bottom:3px; font-size:10px;
+          color:var(--text-3); font-family:Consolas,monospace;
+          opacity:0; transition:opacity .2s; white-space:nowrap;
+          overflow:hidden; text-overflow:ellipsis; max-width:92%; }
+</style>
+</head>
+<body>
+  <div id="bar" title="拖动本窗口可移动（无边框小窗）">
+    <div id="en" class="idle">等待语音……（拖动可移动；悬停右上角有按钮）</div>
+    <div id="zh" class="idle"></div>
+    <div class="actions">
+      <button id="btnThru"
+              title="点击穿透（尽力而为）：鼠标将穿过本窗口，不挡视频控制；解除请用托盘菜单的「字幕条点击穿透」">📌</button>
+      <button id="btnHide" title="关闭字幕条（托盘菜单 / 设置页可重新开启）">✕</button>
+    </div>
+    <div id="hint"></div>
+  </div>
+<script>
+const $ = (id) => document.getElementById(id);
+const enEl = $('en'), zhEl = $('zh'), hintEl = $('hint');
+let curSeg = null, hintTimer = null;
+
+function setHint(msg, ms) {
+  hintEl.textContent = msg;
+  hintEl.style.opacity = 1;
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => { hintEl.style.opacity = 0; }, ms || 4000);
+}
+function showSentence(en, zh, seg, err) {
+  enEl.textContent = en || '…';
+  enEl.classList.toggle('idle', !en);
+  zhEl.textContent = zh || '';
+  zhEl.classList.toggle('idle', !zh);
+  zhEl.classList.toggle('err', !!err);
+  curSeg = seg;
+}
+
+// —— 最新一句字幕：与主窗同一 /ws 广播（127.0.0.1 环回豁免免 token）。
+// 只显示当前句：final(EN) 到达即换句，ZH 补丁按 seg 精确匹配（快语速下旧句
+// 译文晚到时丢弃——本窗只保留最新一句）。partial 消息不消费（小窗求稳不闪烁）。——
+function connect() {
+  const ws = new WebSocket('ws://' + location.host + '/ws');
+  ws.onmessage = (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch (_) { return; }
+    if (m.type) return;  // partial / summary / deck / ui_metrics 等忽略
+    if (m.en !== undefined && m.en) {
+      showSentence(m.en, '', m.seg, false);
+    } else if (m.zh && (curSeg === null || m.seg === curSeg)) {
+      zhEl.textContent = m.zh;
+      zhEl.classList.toggle('idle', false);
+      zhEl.classList.toggle('err', !!m.err);
+    }
+  };
+  ws.onclose = () => {
+    setHint('连接断开，5s 后重连…', 4500);
+    setTimeout(connect, 5000);
+  };
+}
+connect();
+
+// —— 按钮：mousedown 阻断冒泡（否则 easy_drag 的整窗拖拽会吞掉点击）——
+const stopDrag = (e) => e.stopPropagation();
+$('btnThru').addEventListener('mousedown', stopDrag);
+$('btnHide').addEventListener('mousedown', stopDrag);
+
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) });
+    let data = null; try { data = await r.json(); } catch (_) {}
+    return { status: r.status, data };
+  } catch (e) { return { status: 0, data: null }; }
+}
+
+$('btnThru').onclick = async () => {
+  const r = await post('/api/float/click-through', { on: true });
+  if (r.status === 200 && r.data && r.data.ok) {
+    setHint('已开启穿透：鼠标将穿过本窗口（解除：托盘菜单「字幕条点击穿透」）', 7000);
+  } else {
+    const why = (r.data && r.data.error) || '未知错误';
+    setHint('穿透不可用：' + why + '（已降级：本窗口保持可关闭）', 8000);
+  }
+};
+$('btnHide').onclick = async () => {
+  // p1-review 修复⑦：校验结果——config 未被写入时窗口不会被隐藏，
+  // 不能无条件报「已关闭」（否则用户看到"成功"提示但窗口又回来）
+  const r = await post('/api/config', { floating_bar: false });
+  if (r.status === 200 && r.data && r.data.ok) {
+    setHint('已关闭——托盘菜单 / 设置页可重新开启', 3000);
+  } else {
+    const why = (r.data && r.data.error) || '服务无响应';
+    setHint('关闭失败：' + why + '（可稍后重试，或从托盘菜单关闭）', 7000);
+  }
+};
+</script>
+</body>
+</html>

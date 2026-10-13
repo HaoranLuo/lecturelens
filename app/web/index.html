@@ -5,88 +5,2951 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LectureLens — 课堂实时字幕</title>
 <style>
-  :root { --bg:#101418; --en:#EAF2F8; --zh:#FFD97A; --muted:#6B7A88; --ok:#5FD08A; }
+  /* —— 语义令牌：docs/design-spec.md §2（p1-4 落地，§九映射：--en→--text-1、
+     --zh→--gold、--muted→--text-2、--panel→--surface(-2)、--line→--border）—— */
+  :root { --bg:#0B0E13; --surface:#12161D; --surface-2:#171C24;
+          --border:#232B35; --border-strong:#2E3844;
+          --text-1:#E8EEF5; --text-2:#93A1B0; --text-3:#5C6B7A;
+          --gold:#FFD97A; --gold-dim:rgba(255,217,122,.14);
+          --ok:#5FD08A; --warn:#E8B44A; --err:#FF6B6B; --partial:#7C8B99;
+          --radius:12px;
+          /* 字阶 §3（字号档；A-/A+ 运行时覆盖 --cap-*） */
+          --cap-en:24px; --cap-zh:34px; --ui-title:16px; --ui-body:14px; --ui-small:12px; }
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:var(--bg); color:var(--en);
-         font-family:'Microsoft YaHei','PingFang SC',sans-serif;
+  html { height:100%; }
+  body { background:var(--bg); color:var(--text-1);
+         font-family:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
          height:100vh; display:flex; flex-direction:column; }
-  header { padding:10px 16px; display:flex; justify-content:space-between; align-items:center;
-           border-bottom:1px solid #232B33; flex:none; }
-  header .title { font-size:14px; color:var(--muted); letter-spacing:.12em; }
-  header .dot { display:inline-block; width:9px; height:9px; border-radius:50%;
-                background:#888; margin-right:7px; }
-  header .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
-  #log { flex:1; overflow-y:auto; padding:18px 22px; scroll-behavior:smooth; }
-  .entry { margin-bottom:22px; max-width:900px; }
-  .ts { font-size:12px; color:var(--muted); font-family:Consolas,monospace; }
-  .en { font-size:24px; line-height:1.45; margin:3px 0; }
-  .zh { font-size:30px; line-height:1.5; color:var(--zh); font-weight:600; margin-bottom:4px; }
-  .placeholder { color:var(--muted); font-size:16px; padding:40px 0; text-align:center; }
-  footer { flex:none; padding:10px 16px; font-size:12px; color:var(--muted);
-           border-top:1px solid #232B33; display:flex; justify-content:space-between; }
+
+  header { flex:none; display:flex; justify-content:space-between; align-items:center;
+           padding:8px 16px; gap:8px; }
+  .brand { display:flex; align-items:center; gap:8px; font-weight:600; white-space:nowrap;
+           font-size:var(--ui-title); }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--text-3); }
+  .dot.on { background:var(--ok);
+            box-shadow:0 0 10px color-mix(in srgb, var(--ok) 8%, transparent); }   /* §6 状态灯 8% 光晕 */
+  .dot.paused { background:var(--warn);
+            box-shadow:0 0 10px color-mix(in srgb, var(--warn) 8%, transparent); }
+  #btnCollapse { background:none; border:1px solid var(--border); color:var(--text-2);
+                 border-radius:8px; width:28px; height:28px; cursor:pointer; font-size:12px; }
+  #btnCollapse:hover { color:var(--text-1); border-color:var(--border-strong); }
+  .chips { display:flex; gap:8px; overflow:hidden; }
+  .chip { font-size:var(--ui-small); color:var(--text-2); background:var(--surface-2);
+          border:1px solid var(--border);
+          border-radius:999px; padding:3px 10px; white-space:nowrap; font-family:Consolas,monospace; }
+  .chip.warn { color:var(--warn); background:color-mix(in srgb, var(--warn) 14%, transparent); }  /* §6 警示态 */
+
+  /* §7.1 顶部工具条（header 品牌名/徽章 + #toolbar 按钮行）默认隐藏（保留占位防
+     字幕跳动）；§5-3 浮现：鼠标靠近顶部 / 暂停态 / 错误态时 opacity+translateY
+     200ms 唤出（paused/err 强制显示，否则「点击工具条继续」死锁） */
+  header, #toolbar { opacity:0; transform:translateY(-4px); pointer-events:none;
+                     transition:opacity .2s, transform .2s; }
+  #toolbar { flex:none; display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+             padding:8px 16px 12px; border-bottom:1px solid var(--border);
+             background:var(--surface); }
+  body.tb-show header, body.tb-show #toolbar,
+  body.paused header, body.paused #toolbar,
+  body:has(#errBanner.on) header, body:has(#errBanner.on) #toolbar {
+    opacity:1; transform:none; pointer-events:auto; }
+  @media (hover: none) {  /* 触屏（手机 LAN 访问）无 mousemove：工具条常显 */
+    header, #toolbar { opacity:1; transform:none; pointer-events:auto; } }
+  body.collapsed #toolbar { display:none; }  /* 用户 ▾ 收起：优先级最高 */
+  /* p1-review 修复①：collapsed 只藏按钮行，header 必须常显——否则 ▾ 自身随
+     header 一起不可见/不可点，「收起」变不可逆死锁（验收：收起后仍能点 ▾ 展开） */
+  body.collapsed header { opacity:1; transform:none; pointer-events:auto; }
+  #toolbar button, #toolbar select {
+    background:var(--surface-2); color:var(--text-1); border:1px solid var(--border);
+    border-radius:8px; padding:4px 12px; font-size:var(--ui-body); height:28px; cursor:pointer; }
+  #toolbar button:hover, #toolbar select:hover { border-color:var(--border-strong); }
+  #toolbar select:focus { border-color:color-mix(in srgb, var(--gold) 50%, transparent);
+                          outline:none; }  /* §6 输入聚焦 gold 50% */
+  #toolbar button:disabled { opacity:.45; cursor:not-allowed; }
+
+  /* —— p3-5（B12）键盘可达：统一焦点环 ——
+     §六 的聚焦口径是「border 变 gold 50% 透明度」（输入框/下拉已在各处 :focus
+     规则里按此实现）。按钮/复选框/链接此前只有浏览器默认描边——在暗色底上既不
+     明显也不统一；这里补上同一口径的焦点环。
+     · 用 :focus-visible 而非 :focus：鼠标点击不弹环（少视觉噪音），键盘 Tab/
+       Enter/方向键操作必弹——「键盘可达」要的正是这个反馈；
+     · 用 outline 而非改 border：不动布局（不引起 ±1px 抖动），也不覆盖组件自身
+       1px 描边（§四）。
+     可达性现状（本项已核对）：所有可点行（侧栏项 .sbItem/.sbCourse、笔记行
+     .nbRow、模型行 .mRow、术语行 .glRow 等）在 JS 里都是 document.createElement
+     ('button')，原生可 Tab 到位 + Enter/Space 激活；本规则补的是可见反馈。 */
+  button:focus-visible, a:focus-visible, [tabindex]:focus-visible,
+  input[type=checkbox]:focus-visible, input[type=radio]:focus-visible {
+    outline:2px solid color-mix(in srgb, var(--gold) 50%, transparent);
+    outline-offset:2px;
+  }
+  /* 列表行在各自容器内被裁切（overflow:hidden 的滚动区），焦点环内收才看得见 */
+  .sbItem:focus-visible, .sbCourse:focus-visible, .nbRow:focus-visible,
+  .mRow:focus-visible, .glRow:focus-visible { outline-offset:-2px; }
+  #btnPause.warn { color:var(--warn);
+                   border-color:color-mix(in srgb, var(--warn) 45%, transparent); }
+  .spacer { flex:1; }
+  .lvl { position:relative; width:150px; height:12px; background:var(--surface-2);
+         border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  #lvlBar { height:100%; width:0%; background:linear-gradient(90deg,
+            color-mix(in srgb, var(--ok) 55%, var(--bg)), var(--ok)); }
+  #lvlThr { position:absolute; left:50%; top:0; bottom:0; width:1px;
+            background:var(--warn); opacity:.7; }
+  body.paused .lvl { opacity:.35; }
+
+  /* 模型加载进度条：条纹滚动=活着（§5 豁免：状态指示非装饰动效），阶段+百分比=进行到哪 */
+  #loadwrap { flex:none; display:none; align-items:center; gap:8px;
+              padding:0 16px 8px; }
+  #loadwrap.on { display:flex; }
+  #loadbox { flex:1; max-width:520px; height:14px; background:var(--surface-2);
+             border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  #loadfill { height:100%; width:0%;
+              background:repeating-linear-gradient(45deg,
+                color-mix(in srgb, var(--ok) 55%, var(--bg)) 0 12px, var(--ok) 12px 24px);
+              background-size:34px 100%; animation:crawl 1s linear infinite; }
+  @keyframes crawl { to { background-position:34px 0; } }
+  #loadstage { font-size:var(--ui-small); color:var(--text-2); font-family:Consolas,monospace; white-space:nowrap; }
+
+  /* 暂停横幅：防上课时忘关忘开（§6 警示态：warn 14% 底） */
+  #pausedBanner { display:none; flex:none; padding:8px 16px; font-size:var(--ui-small);
+                  background:color-mix(in srgb, var(--warn) 14%, transparent);
+                  color:var(--warn);
+                  border-bottom:1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
+  body.paused #pausedBanner { display:block; }
+
+  /* 统一错误横幅（条目8⑤）：asr/mic/translate 错误态集中展示，附「切小模型重试」退路
+     （§6 警示态：err 14% 底） */
+  #errBanner { display:none; flex:none; align-items:center; gap:8px; padding:8px 16px;
+               font-size:var(--ui-small);
+               background:color-mix(in srgb, var(--err) 14%, transparent); color:var(--err);
+               border-bottom:1px solid color-mix(in srgb, var(--err) 45%, transparent); }
+  #errBanner.on { display:flex; }
+  #errBanner .msg { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #btnRetrySmall { flex:none; background:var(--surface-2); color:var(--err);
+                   border:1px solid color-mix(in srgb, var(--err) 45%, transparent);
+                   border-radius:8px; padding:3px 10px; font-size:12px; cursor:pointer; }
+  #btnRetrySmall:hover { border-color:var(--err); }
+  #errClose { flex:none; background:none; border:none; color:var(--err); cursor:pointer; font-size:14px; }
+
+  /* 轻提示 toast（条目8①③）：瞬态反馈（配置拒绝等），chip 2s 内会被轮询覆盖 */
+  #toast { position:fixed; top:48px; left:50%; transform:translateX(-50%); z-index:99;
+           max-width:80vw; padding:8px 16px; border-radius:8px; font-size:var(--ui-small);
+           background:color-mix(in srgb, var(--err) 14%, transparent); color:var(--err);
+           border:1px solid color-mix(in srgb, var(--err) 45%, transparent);
+           box-shadow:0 1px 2px rgba(0,0,0,.4); display:none; }  /* §4 投影上限 */
+
+  /* 「回到最新」悬浮按钮（条目9②）：上滑回看时出现，点击回底并恢复吸底
+     （§5-3 浮现动效；.on 由回看 JS 切换，display 语义不变） */
+  #btnLatest { position:fixed; right:24px; bottom:56px; z-index:50;
+               background:var(--surface-2); color:var(--text-1); border:1px solid var(--border-strong);
+               border-radius:999px; padding:8px 16px; font-size:var(--ui-small); cursor:pointer;
+               box-shadow:0 1px 2px rgba(0,0,0,.4);
+               display:block; opacity:0; transform:translateY(4px); pointer-events:none;
+               transition:opacity .2s, transform .2s; }
+  #btnLatest.on { opacity:1; transform:none; pointer-events:auto; }
+  #btnLatest:hover { border-color:var(--text-1); }
+  #zhDropped { color:var(--warn); }
+
+  /* 关于弹窗（p1-3）：版本 + 签证红线声明 + 隐私透明页入口（p1-4 令牌对齐：
+     悬浮层 = surface-2 底，投影 = §4 上限 0 1px 2px） */
+  #aboutMask { position:fixed; inset:0; z-index:100; display:none;
+               align-items:center; justify-content:center; background:rgba(0,0,0,.55); }
+  #aboutMask.on { display:flex; }
+  #aboutBox { width:min(480px,92vw); max-height:82vh; overflow-y:auto;
+              background:var(--surface-2); border:1px solid var(--border);
+              border-radius:var(--radius);
+              padding:16px 24px; box-shadow:0 1px 2px rgba(0,0,0,.4); }
+  #aboutBox h2 { font-size:var(--ui-title); color:var(--gold); margin-bottom:2px; }
+  #aboutBox .ver { font-size:var(--ui-small); color:var(--text-2); font-family:Consolas,monospace; }
+  #aboutBox h3 { font-size:var(--ui-body); color:var(--text-1); margin:14px 0 6px; }
+  #aboutBox ul { padding-left:18px; }
+  #aboutBox li, #aboutBox p { font-size:var(--ui-body); line-height:1.8; color:var(--text-2); }
+  #aboutBox a { color:var(--gold); text-decoration:none; }
+  #aboutBox a:hover { text-decoration:underline; }
+  /* p3-4：开源致谢——辅助信息降一档（§三：--ui-small 12px，最小 11px）；
+     项目名提亮到 --text-1，许可证标用等宽小字弱化（可读但不喧宾）
+     许可证字号取 §三 允许的下限 11px。 */
+  #aboutBox .credits li { font-size:var(--ui-small); line-height:1.7; margin:2px 0; }
+  #aboutBox .credits b { color:var(--text-1); }
+  #aboutBox .lic { font-family:Consolas,monospace; font-size:11px;
+                   color:var(--text-3); }
+  #aboutClose { float:right; background:none; border:1px solid var(--border);
+                color:var(--text-2); border-radius:8px; width:24px; height:24px;
+                cursor:pointer; font-size:12px; }
+  #aboutClose:hover { color:var(--text-1); border-color:var(--border-strong); }
+
+  /* 首启向导（p1-5）：全屏 3 步——①麦克风测试 ②DeepSeek key（可跳过）③试说一句 */
+  #wizardMask { position:fixed; inset:0; z-index:200; display:none;
+                align-items:center; justify-content:center; background:rgba(4,6,10,.88); }
+  #wizardMask.on { display:flex; }
+  #wizardBox { width:min(560px,94vw); max-height:86vh; overflow-y:auto;
+               background:var(--surface-2); border:1px solid var(--border);
+               border-radius:var(--radius); padding:16px 24px;
+               box-shadow:0 1px 2px rgba(0,0,0,.4); }
+  #wizardBox h2 { font-size:var(--ui-title); color:var(--gold); margin-bottom:4px; }
+  #wizSteps { display:flex; gap:8px; margin:12px 0 16px; }
+  .wizStep { flex:1; text-align:center; font-size:var(--ui-small); color:var(--text-3);
+             border:1px solid var(--border); border-radius:999px; padding:4px 0; }
+  .wizStep.cur { color:#1A1408; background:var(--gold); border-color:var(--gold);
+                 font-weight:600; }  /* §6：gold 唯一品牌色 */
+  .wizStep.done { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 45%, transparent); }
+  .wizPane p { font-size:var(--ui-body); line-height:1.8; color:var(--text-2); margin:8px 0; }
+  .wizPane b { color:var(--text-1); }
+  #wizLvl { display:block; width:100%; margin:12px 0; }
+  #wizLvlBar { height:100%; width:0%; background:linear-gradient(90deg,
+               color-mix(in srgb, var(--ok) 55%, var(--bg)), var(--ok)); }
+  .wizHeard { display:none; align-items:center; gap:8px; color:var(--ok); font-weight:600;
+              font-size:var(--ui-body); margin:8px 0; }
+  .wizHeard.on { display:flex; }
+  .wizHeard::before { content:'✓'; }
+  #wizCap { font-size:var(--ui-body); color:var(--text-1); margin:10px 0; min-height:1.6em;
+            line-height:1.7; }
+  #wizKeyRow { display:flex; gap:8px; }
+  #wizKey { flex:1; background:var(--surface); color:var(--text-1); border:1px solid var(--border);
+            border-radius:8px; padding:6px 12px; font-size:var(--ui-body); }
+  #wizKey:focus { border-color:color-mix(in srgb, var(--gold) 50%, transparent); outline:none; }
+  #wizKeyMsg { font-family:Consolas,monospace; }
+  #wizardBox .wizBtns { display:flex; gap:8px; margin-top:16px; align-items:center; }
+  #wizardBox button { background:var(--surface-2); color:var(--text-1);
+                      border:1px solid var(--border); border-radius:8px; padding:6px 16px;
+                      font-size:var(--ui-body); cursor:pointer; }
+  #wizardBox button:hover:not(:disabled) { border-color:var(--border-strong); }
+  #wizardBox button:disabled { opacity:.45; cursor:not-allowed; }
+  #wizardBox button.primary { background:var(--gold); color:#1A1408; border-color:var(--gold);
+                              font-weight:600; }  /* §6 主要按钮：gold 底深字，每屏一个 */
+  #wizardBox button.primary:hover:not(:disabled) { border-color:var(--gold); }
+  #wizardBox button.wizSkip { background:none; border:none; color:var(--text-2);
+                              text-decoration:underline; font-size:var(--ui-small); }
+  #wizardBox button.wizSkip:hover { border:none; color:var(--text-1); }
+
+  /* toast 成功变体（p1-6 设置页即时保存反馈；错误/警示沿用基础样式） */
+  #toast.ok { background:color-mix(in srgb, var(--ok) 14%, transparent);
+              color:var(--ok); border-color:color-mix(in srgb, var(--ok) 45%, transparent); }
+
+  /* —— 工作台骨架（p1-6）：侧栏 240px（§7.2）+ 设置视图；与上课态互斥 ——
+     上课态（默认）= 现有沉浸布局；body.settings-on = 隐藏上课元素、显示工作台。
+     侧栏选中态用 --gold-dim/--gold（§1 金色仅用于选中/品牌/主按钮）。 */
+  #shell { display:none; flex:1; min-height:0; }
+  body.settings-on #shell { display:flex; }
+  body.settings-on header, body.settings-on #toolbar, body.settings-on #loadwrap,
+  body.settings-on #pausedBanner, body.settings-on #errBanner,
+  body.settings-on #log, body.settings-on #btnLatest, body.settings-on footer {
+    display:none !important;
+  }
+  #sidebar { flex:none; width:240px; background:var(--surface);
+             border-right:1px solid var(--border); display:flex; flex-direction:column;
+             padding:16px 0; }
+  .sbBrand { display:flex; align-items:center; gap:8px; font-weight:600;
+             font-size:var(--ui-title); color:var(--text-1); padding:0 16px 16px; }
+  .sbBrand .dot { width:8px; height:8px; }
+  .sbNav { display:flex; flex-direction:column; gap:4px; padding:0 8px; }
+  .sbItem { display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:8px;
+            color:var(--text-2); font-size:var(--ui-body); cursor:pointer;
+            border:none; background:none; text-align:left; width:100%; }
+  .sbItem:hover { background:var(--surface-2); color:var(--text-1); }
+  .sbItem.cur { background:var(--gold-dim); color:var(--gold); }
+  .sbFoot { margin-top:auto; padding:0 16px; font-size:var(--ui-small);
+            color:var(--text-3); font-family:Consolas,monospace; }
+  /* —— p2-1 课程列表（§7.2：品牌标 + 课程列表 + 设置入口）——
+     颜色只做 8px 身份圆点（§一-2 不大面积铺底）；选中态走 --gold-dim/--gold（§六） */
+  .sbSec { padding:0 8px 8px; }
+  .sbSecHead { display:flex; align-items:center; justify-content:space-between;
+               padding:8px 12px; font-size:var(--ui-small); color:var(--text-3); }
+  .sbSecHead button { background:none; border:none; width:20px; height:20px; padding:0;
+               border-radius:8px; color:var(--text-3); cursor:pointer;
+               font-size:var(--ui-body); line-height:1; }
+  .sbSecHead button:hover { background:var(--surface-2); color:var(--gold); }
+  .sbCourses { display:flex; flex-direction:column; gap:2px;
+               max-height:34vh; overflow-y:auto; }
+  .sbCourse { display:flex; align-items:center; gap:8px; padding:8px 12px;
+              border-radius:8px; color:var(--text-2); font-size:var(--ui-body);
+              cursor:pointer; border:none; background:none; text-align:left; width:100%; }
+  .sbCourse:hover { background:var(--surface-2); color:var(--text-1); }
+  .sbCourse.cur { background:var(--gold-dim); color:var(--gold); }
+  .sbCourse .cdot { width:8px; height:8px; border-radius:999px; flex:none; }
+  .sbCourse .cname { flex:1; min-width:0; overflow:hidden;
+                     text-overflow:ellipsis; white-space:nowrap; }
+  .sbCourse .cnum { flex:none; font-family:Consolas,monospace;
+                    font-size:var(--ui-small); color:var(--text-3); }
+  .sbCourse.cur .cnum { color:var(--gold); }
+  .sbEmpty { padding:8px 12px; font-size:var(--ui-small); color:var(--text-3);
+             line-height:1.6; }
+  /* 课程管理卡（§7.3 分区卡片；§6 输入 32px 高 + --surface-2 底） */
+  .cRow { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+          padding:8px 0; border-top:1px solid var(--border); }
+  .cRow:first-child { border-top:none; }
+  .cRow input { background:var(--surface-2); color:var(--text-1);
+                border:1px solid var(--border); border-radius:8px; padding:4px 12px;
+                font-size:var(--ui-body); height:32px; flex:1; min-width:140px; }
+  .cRow input:focus { outline:none;
+                border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .cSw { display:flex; gap:4px; flex:none; }
+  .cSwDot { width:16px; height:16px; padding:0; border-radius:999px; cursor:pointer;
+            border:1px solid transparent; }
+  .cSwDot.cur { border-color:var(--text-1);
+                box-shadow:0 0 0 2px color-mix(in srgb, var(--text-1) 20%, transparent); }
+  .cDel { background:none; border:1px solid var(--border); color:var(--text-2);
+          border-radius:8px; height:32px; padding:0 12px; cursor:pointer;
+          font-size:var(--ui-small); flex:none; }
+  .cDel:hover { border-color:color-mix(in srgb, var(--err) 45%, transparent);
+                color:var(--err); }
+  .cHint { font-size:var(--ui-small); color:var(--text-3); padding:4px 0; }
+
+  /* —— p2-4 模型管理器（§七-3）：每行 = 名称 | 缓存状态 | 占用 | 操作 ——
+     令牌全走 §二/§三；状态色沿用 §六 语义（ok 绿 / warn 黄），不加新色。 */
+  .mList { margin-top:12px; border-top:1px solid var(--border); }
+  .mRow { display:flex; align-items:center; gap:8px; padding:8px 0;
+          border-bottom:1px solid var(--border); font-size:var(--ui-body); }
+  .mRow:last-child { border-bottom:none; }
+  .mName { flex:1; min-width:0; color:var(--text-1);
+           font-family:Consolas,monospace; overflow:hidden;
+           text-overflow:ellipsis; white-space:nowrap; }
+  .mState { flex:none; font-size:var(--ui-small); color:var(--text-3);
+            background:var(--surface-2); border-radius:999px; padding:1px 8px; }
+  .mState.ok { color:var(--ok);
+               background:color-mix(in srgb, var(--ok) 14%, transparent); }
+  .mState.warn { color:var(--warn);
+                 background:color-mix(in srgb, var(--warn) 14%, transparent); }
+  .mSize { flex:none; width:72px; text-align:right; font-size:var(--ui-small);
+           color:var(--text-2); font-family:Consolas,monospace; }
+  .mBusy { flex:none; font-size:var(--ui-small); color:var(--gold); }
+  .mRow button { background:var(--surface-2); color:var(--text-1);
+    border:1px solid var(--border); border-radius:8px; height:28px;
+    padding:0 12px; font-size:var(--ui-small); cursor:pointer; flex:none; }
+  .mRow button:hover:not(:disabled) { border-color:var(--border-strong); }
+  .mRow button:disabled { opacity:.45; cursor:not-allowed; }
+  .mRow button.danger { color:var(--err);
+    border-color:color-mix(in srgb, var(--err) 45%, transparent); }
+  .mRow button.danger:hover:not(:disabled) { border-color:var(--err); }
+
+  /* —— p2-5（B4）分句调优（§七-3）：数值输入网格 ——
+     沿用 §六「输入/下拉 = surface-2 底 + 1px border，聚焦时 border 转 gold 50%」 */
+  .segGrid { display:grid; gap:8px; margin-top:12px;
+             grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); }
+  .segItem { display:flex; align-items:center; gap:8px; height:32px;
+             background:var(--surface-2); border:1px solid var(--border);
+             border-radius:8px; padding:4px 12px; }
+  .segItem:focus-within { border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .segLabel { flex:1; font-size:var(--ui-small); color:var(--text-2); }
+  .segUnit { flex:none; font-size:var(--ui-small); color:var(--text-3);
+             font-family:Consolas,monospace; }
+  .segItem input[type=number] { width:76px; flex:none; background:none; border:none;
+             color:var(--text-1); font-size:var(--ui-body); text-align:right;
+             font-family:Consolas,monospace; appearance:textfield; }
+  .segItem input[type=number]:focus { outline:none; }
+  /* 去掉 spinner 箭头：占宽且与右对齐的数字打架 */
+  .segItem input[type=number]::-webkit-outer-spin-button,
+  .segItem input[type=number]::-webkit-inner-spin-button {
+    -webkit-appearance:none; margin:0; }
+
+  /* —— p2-6（B8）术语库（§七-2）：文件选择条 + 词条表（§六 输入 32px + surface-2） —— */
+  .glBar { display:flex; align-items:center; gap:8px; margin-bottom:16px; max-width:880px; }
+  .glBar select { background:var(--surface-2); color:var(--text-1);
+    border:1px solid var(--border); border-radius:8px; padding:0 12px;
+    height:32px; font-size:var(--ui-body); max-width:340px; }
+  .glBar select:focus { outline:none;
+    border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .glBar button { background:var(--surface-2); color:var(--text-1);
+    border:1px solid var(--border); border-radius:8px; height:32px;
+    padding:0 16px; font-size:var(--ui-body); cursor:pointer; flex:none; }
+  .glBar button:hover:not(:disabled) { border-color:var(--border-strong); }
+  #viewGlossary .card { max-width:880px; }
+  .glRow { display:flex; align-items:center; gap:8px; padding:4px 0; }
+  .glRow .glCol { flex:1; min-width:0; font-size:var(--ui-small); color:var(--text-3); }
+  .glRow .glOp { flex:none; width:64px; }
+  .glRow input { flex:1; min-width:0; background:var(--surface-2); color:var(--text-1);
+    border:1px solid var(--border); border-radius:8px; padding:4px 12px;
+    height:32px; font-size:var(--ui-body); }
+  .glRow input:focus { outline:none;
+    border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .glRow.glHead { padding-bottom:8px; border-bottom:1px solid var(--border); }
+  .glRow:not(.glHead) { border-bottom:1px solid
+    color-mix(in srgb, var(--border) 50%, transparent); }
+  .glRow button { background:none; border:1px solid var(--border); color:var(--text-2);
+    border-radius:8px; height:28px; padding:0 10px; font-size:var(--ui-small);
+    cursor:pointer; flex:none; width:64px; }
+  .glRow button:hover:not(:disabled) {
+    border-color:color-mix(in srgb, var(--err) 45%, transparent); color:var(--err); }
+  .glEmpty { font-size:var(--ui-small); color:var(--text-3); padding:8px 0; }
+
+  /* —— p2-2 笔记库（§七-2）：主区顶部搜索 + 列表 + 右侧双栏 EN|ZH 预览 ——
+     视图切换：body.view-notes / view-settings 与 settings-on（工作台开关）叠加。
+     令牌全部走 §二/§三（surface/border/text 系 + gold + radius），无硬编码色。
+     注意：注释里**不能出现星号紧跟斜杠**——那会提前闭合注释，把它与紧随其后的
+     规则一起吃成非法 CSS（实测踩过：display:none 被吞 → 两个视图同时可见）。 */
+  #viewNotes, #viewGlossary, #viewSettings { display:none; }
+  body.view-notes #viewNotes { display:block; }
+  body.view-glossary #viewGlossary { display:block; }
+  body.view-settings #viewSettings { display:block; }
+  .nbBar { display:flex; align-items:center; gap:8px; margin-bottom:16px; max-width:1180px; }
+  .nbBar input[type=search], .nbBar select {
+    background:var(--surface-2); color:var(--text-1); border:1px solid var(--border);
+    border-radius:8px; padding:4px 12px; font-size:var(--ui-body); height:32px; }
+  .nbBar input[type=search] { flex:1; min-width:180px; }
+  .nbBar input:focus, .nbBar select:focus {
+    border-color:color-mix(in srgb, var(--gold) 50%, transparent); outline:none; }
+  .nbCount { font-size:var(--ui-small); color:var(--text-3);
+             font-family:Consolas,monospace; flex:none; }
+  .nbSplit { display:flex; gap:16px; align-items:flex-start; max-width:1180px; }
+  .nbList { flex:none; width:340px; display:flex; flex-direction:column; gap:4px;
+            max-height:calc(100vh - 230px); overflow-y:auto; }
+  .nbRow { display:block; width:100%; text-align:left; cursor:pointer;
+           background:var(--surface); border:1px solid var(--border);
+           border-radius:var(--radius); padding:12px; color:var(--text-1);
+           font:inherit; }
+  .nbRow:hover { border-color:var(--border-strong); }
+  .nbRow.cur { border-color:color-mix(in srgb, var(--gold) 50%, transparent);
+               background:var(--gold-dim); }
+  .nbRowTop { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .nbDate { font-size:var(--ui-small); color:var(--text-2); flex:none;
+            font-family:Consolas,monospace; }
+  .nbChip { font-size:var(--ui-small); color:var(--text-2); background:var(--surface-2);
+            border-radius:999px; padding:1px 8px; max-width:140px;
+            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nbFlags { margin-left:auto; display:flex; gap:4px; flex:none; }
+  .nbFlag { font-size:var(--ui-small); border-radius:999px; padding:1px 6px;
+            background:color-mix(in srgb, var(--ok) 14%, transparent); color:var(--ok); }
+  .nbFlag.no { background:var(--surface-2); color:var(--text-3); }
+  .nbFirst { font-size:var(--ui-body); color:var(--text-2); line-height:1.5;
+             display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+             overflow:hidden; word-break:break-word; }
+  .nbPreview { flex:1; min-width:0; background:var(--surface);
+               border:1px solid var(--border); border-radius:var(--radius); padding:16px;
+               max-height:calc(100vh - 230px); overflow-y:auto; }
+  .nbEmpty { color:var(--text-3); font-size:var(--ui-body); padding:24px 0;
+             text-align:center; line-height:1.7; }
+  /* p3-5：通用列表占位（模型列表等）——与 .sbEmpty/.glEmpty 同一口径：
+     --text-3（§2 占位角色）+ --ui-small（§三 辅助说明），不另造色值。 */
+  .listEmpty { font-size:var(--ui-small); color:var(--text-3); padding:8px 0; }
+  .nbPH { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+          padding-bottom:12px; border-bottom:1px solid var(--border); margin-bottom:12px; }
+  .nbPH h2 { font-size:var(--ui-title); margin:0; }
+  .nbPH button { background:var(--surface-2); color:var(--text-1);
+    border:1px solid var(--border); border-radius:8px; padding:4px 16px;
+    height:32px; font-size:var(--ui-body); cursor:pointer; }
+  .nbPH button:hover:not(:disabled) { border-color:var(--border-strong); }
+  .nbPH button:disabled { opacity:.45; cursor:not-allowed; }
+  /* p2-3 导出格式下拉：与 .nbPH button 同高同族（§六 输入/下拉 = surface-2 + 1px border） */
+  .nbPH select { background:var(--surface-2); color:var(--text-1);
+    border:1px solid var(--border); border-radius:8px; padding:0 8px;
+    height:32px; font-size:var(--ui-small); cursor:pointer; }
+  .nbPH select:focus { outline:none;
+    border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .nbPH button.primary { background:var(--gold); color:#1A1408; border-color:var(--gold);
+                         font-weight:600; }
+  .nbHead { display:flex; gap:16px; padding-bottom:8px; margin-bottom:4px;
+            border-bottom:1px solid var(--border); font-size:var(--ui-small);
+            color:var(--text-3); position:sticky; top:-16px; background:var(--surface); }
+  .nbHead .nbTs, .nbHead .nbCol { flex:1; }
+  .nbHead .nbTs { flex:none; width:64px; }
+  .nbPair { display:flex; gap:16px; padding:8px 0;
+            border-bottom:1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+  .nbPair:last-child { border-bottom:none; }
+  .nbTs { flex:none; width:64px; font-size:var(--ui-small); color:var(--text-3);
+          font-family:Consolas,monospace; padding-top:2px; }
+  .nbCell { flex:1; min-width:0; font-size:var(--ui-body); line-height:1.5;
+            word-break:break-word; }
+  .nbCell.en { color:var(--text-1); }
+  .nbCell.zh { color:var(--gold); }
+  .nbCell.none { color:var(--text-3); font-style:italic; }
+  #workspace { flex:1; min-width:0; overflow-y:auto; padding:24px 32px 48px; }
+  #workspace h1 { font-size:22px; margin-bottom:4px; }
+  #workspace .sub { color:var(--text-2); font-size:var(--ui-small); margin-bottom:24px; }
+  .card { background:var(--surface); border:1px solid var(--border);
+          border-radius:var(--radius); padding:16px; margin-bottom:24px; max-width:880px; }
+  .card h2 { font-size:var(--ui-title); margin-bottom:4px; }
+  .card .desc { font-size:var(--ui-small); color:var(--text-2); margin-bottom:12px;
+                line-height:1.7; }
+  .card .desc b { color:var(--text-1); }
+  .card .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .card .row[hidden] { display:none; }  /* 显式 display 会盖掉 [hidden] 的 UA 样式，须补回 */
+  .card select, .card input[type=text], .card input[type=password] {
+    background:var(--surface-2); color:var(--text-1); border:1px solid var(--border);
+    border-radius:8px; padding:4px 12px; font-size:var(--ui-body); height:32px; }
+  .card select:focus, .card input:focus {
+    border-color:color-mix(in srgb, var(--gold) 50%, transparent); outline:none; }
+  .card button { background:var(--surface-2); color:var(--text-1); border:1px solid var(--border);
+    border-radius:8px; padding:4px 16px; height:32px; font-size:var(--ui-body); cursor:pointer; }
+  .card button:hover:not(:disabled) { border-color:var(--border-strong); }
+  .card button:disabled { opacity:.45; cursor:not-allowed; }
+  .card button.primary { background:var(--gold); color:#1A1408; border-color:var(--gold);
+                         font-weight:600; }
+  .card button.danger { color:var(--err);
+    border-color:color-mix(in srgb, var(--err) 45%, transparent); }
+  .card button.danger:hover:not(:disabled) { border-color:var(--err); }
+  .card input[type=checkbox] { accent-color:var(--gold); width:16px; height:16px;
+                               cursor:pointer; flex:none; }
+  /* p3-5（B12）键盘可达：复选框的**可见焦点**。
+     上面 .card input:focus / .nbBar input:focus 里的 `outline:none` 是给**文本框**
+     写的（文本框聚焦靠 border 变金），但它同样命中 input[type=checkbox]；而复选框是
+     原生外观、不吃 border-color——两下一叠，键盘 Tab 到复选框此前**毫无可见反馈**
+     （实测 outline-style:none、border 仍是 UA 黑）。这里用双伪类提权（(0,3,1) >
+     那条的 (0,2,1)）把焦点环要回来，且只加 outline 不动布局。
+     accent-color 已在上一条给了勾选态的品牌金（§2「选中态」）。 */
+  input[type=checkbox]:focus-visible:focus-visible {
+    outline:2px solid color-mix(in srgb, var(--gold) 50%, transparent);
+    outline-offset:2px;
+  }
+  .card label.chk { display:flex; align-items:center; gap:8px; font-size:var(--ui-body);
+                    color:var(--text-1); cursor:pointer; }
+  .stateline { font-family:Consolas,monospace; font-size:var(--ui-small);
+               color:var(--text-2); margin:8px 0; }
+  .stateline .warn { color:var(--warn); }
+  .stateline .ok { color:var(--ok); }
+  .stateline .err { color:var(--err); }
+  #tokOut { flex:1; min-width:200px; font-family:Consolas,monospace; }
+  .privacyList { list-style:none; margin:4px 0 12px; }
+  .privacyList li { font-size:var(--ui-small); color:var(--text-2); line-height:1.9; }
+  .privacyList b { color:var(--text-1); }
+  .card a { color:var(--gold); text-decoration:none; font-size:var(--ui-small); }
+  .card a:hover { text-decoration:underline; }
+
+  #log { flex:1; overflow-y:auto; padding:24px; scroll-behavior:smooth; }  /* §4 安全边距 ≥24px */
+  .entry { margin-bottom:24px; max-width:900px; margin-inline:auto;   /* §7.1 居中 900px */
+           animation:fadein .25s ease-out; }   /* §5-1 淡入：纯 opacity 250ms */
+  @keyframes fadein { from { opacity:0; } to { opacity:1; } }
+  .ts { font-size:var(--ui-small); color:var(--text-2); font-family:Consolas,monospace; }
+  .en { font-size:var(--cap-en); line-height:1.45; margin:4px 0;
+        transition:color .2s; }                 /* §5-2 落定 */
+  .zh { font-size:var(--cap-zh); line-height:1.5; color:var(--gold); font-weight:600;
+        margin:2px 0 4px; transition:color .2s; }   /* §3：zh 34/1.5 600 gold */
+  .zh.err { color:var(--text-2); font-weight:400; }  /* 翻译失败提示：灰色弱化 */
+  .placeholder { color:var(--text-3); font-size:16px; padding:48px 0; text-align:center; }
+
+  /* 条目12③：流式 partial 预览——§3 草稿令牌（斜体 --partial）+ 尾部"…"；
+     final 到达后原位替换（删预览行 + 正常 .entry）恢复配色。
+     .entry.partial 被裁剪选择器 :not(.partial) 豁免——不进 1000 条计数 */
+  .entry.partial .en { color: var(--partial); font-style: italic; }
+  .entry.partial .en::after { content: ' …'; }
+
+  /* p3-2（B12）术语高亮：命中术语表的词 = §2 令牌 gold-dim 底 + gold 字
+     （与侧栏选中态 .sbItem.cur 同一套用法，不引入新色值）。三条纪律：
+     ① **只加内联 span，不动字号/字重/行高**——§一-1 沉浸优先，高亮不得与字幕
+        主次层级争夺注意力；
+     ② 金色只落在被命中的那几个字上，不上整行/整块底——不碰 §一-2「绝不大面积
+        铺底」；
+     ③ **无过渡动画**——§五 全应用只有 3 个动效；高亮是状态，不是动画。
+     .zh 本就是 gold 字（§三），高亮靠 gold-dim 底区分，仍读得出强调。 */
+  .term { background:var(--gold-dim); color:var(--gold); border-radius:4px;
+          padding:0 2px; }
+
+  /* p2-7（B2）历史行渐隐（§七-1 沉浸字幕）：当前句上方最近 N 行「半透明 + 缩小」，
+     视线自然落在最新一句上。三条纪律：
+     ① **纯视觉**——只加类，不删节点、不改结构，故 1000 条向上回看完全不受影响；
+     ② **不可交互**——pointer-events:none（字幕行本无点击行为，这里把「不可交互」
+        写成显式约束，防以后有人给它挂交互）。**不加 user-select:none**（评审2）：
+        那会连同 Ctrl+A 一起把这几行排除出选区，用户连「复制刚才那句」都做不到，
+        而 pointer-events:none 已经兑现了「不接收鼠标交互」；
+     ③ **不加过渡**——§五 规定全应用只有 3 个动效，渐隐是状态切换不是动画。
+     缩放沿用 --cap-en/--cap-zh 变量（A−/A＋ 调字号时渐隐行同步缩放）。 */
+  .entry.fade { opacity:.45; margin-bottom:10px; pointer-events:none; }
+  .entry.fade .en { font-size:calc(var(--cap-en) * .72); }
+  .entry.fade .zh { font-size:calc(var(--cap-zh) * .72); }
+  .entry.fade .ts { opacity:.8; }
+
+footer { flex:none; padding:8px 16px; font-size:var(--ui-small); color:var(--text-2);
+         border-top:1px solid var(--border); display:flex; justify-content:space-between;
+         gap:12px; font-family:Consolas,monospace; }
+footer span { white-space:nowrap; }
+#micState.micerr { color:var(--err); font-weight:600; }  /* 麦克风故障：红色警示 */
+
+  @media (max-width:640px) {
+    .chips .chip.optional { display:none; }
+    .en { font-size:calc(var(--cap-en) * .82); }
+    .zh { font-size:calc(var(--cap-zh) * .82); }
+    #log { padding:16px; }
+  }
+
+  /* §5：一律尊重 prefers-reduced-motion——全部动效（含 3 个动效与进度条条纹）瞬时完成 */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    #log { scroll-behavior: auto; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <span><span class="dot" id="dot"></span>LectureLens · 课堂实时字幕</span>
-  <span class="title" id="count">SEGMENTS 0</span>
+  <span class="brand"><span class="dot" id="dot"></span>LectureLens
+    <button id="btnCollapse" title="收起/展开工具条">▾</button></span>
+  <span class="chips">
+    <span class="chip" id="chipDevice">…</span>
+    <span class="chip" id="chipTranslate">translate: init</span>
+    <span class="chip optional" id="chipSeg">SEGMENTS 0</span>
+  </span>
 </header>
+
+<div id="toolbar">
+  <button id="btnPause">⏸ 暂停</button>
+  <select id="selModel" title="识别模型（热切换）">
+    <option value="tiny">tiny（最快）</option>
+    <option value="base">base</option>
+    <option value="small">small</option>
+    <option value="medium">medium</option>
+    <option value="large-v3">large-v3（最强）</option>
+    <option value="large-v3-turbo">large-v3-turbo（推荐）</option>
+  </select>
+  <select id="selLang" title="识别语言（条目13：热切换即生效，无需重建模型；自动检测在长段才采纳结果，短段沿用上一段）">
+    <option value="auto">语言：自动检测</option>
+    <option value="en">English</option>
+    <option value="zh">中文</option>
+    <option value="ja">日本語</option>
+    <option value="ko">한국어</option>
+    <option value="fr">Français</option>
+    <option value="de">Deutsch</option>
+    <option value="es">Español</option>
+    <option value="ru">Русский</option>
+  </select>
+  <select id="selDevice" title="麦克风设备（条目15：切换即重建采集器并写入 config；loopback 音源下不参与采集）">
+    <option value="">麦克风：跟随系统默认</option>
+  </select>
+  <span class="lvl" title="VAD 语音概率（黄线为触发门限）">
+    <div id="lvlBar"></div><div id="lvlThr"></div>
+  </span>
+  <span class="chip" id="chipBacklog" hidden
+        title="待转写段数：积压过多时后端自动丢弃旧段追赶实时">积压 0 段</span>
+  <span class="spacer"></span>
+  <button id="btnFontMinus" title="缩小字幕">A−</button>
+  <button id="btnFontPlus" title="放大字幕">A＋</button>
+  <button id="btnExport" title="下载当前双语笔记 md">导出笔记</button>
+  <button id="btnClear" title="清空屏幕（不影响笔记文件）">清屏</button>
+  <button id="btnFull" title="全屏">⛶</button>
+  <button id="btnAbout" title="关于 LectureLens（版本 / 合规声明 / 隐私）">ℹ 关于</button>
+  <button id="btnNotes" title="笔记库（工作台）">📚 笔记库</button>
+  <button id="btnSettings" title="设置（工作台）">⚙ 设置</button>
+</div>
+
+<div id="loadwrap"><div id="loadbox"><div id="loadfill"></div></div><span id="loadstage">…</span></div>
+<div id="pausedBanner">⏸ 已暂停收音 —— 点击工具条「▶ 继续」恢复字幕（暂停期间的语音不会进入笔记）</div>
+<div id="errBanner"><span class="msg" id="errMsg"></span>
+  <button id="btnRetrySmall" title="切换到 CPU base（int8）小模型重试">切小模型重试</button>
+  <button id="errClose" title="关闭提示（状态恢复前每 2s 会重新出现）">✕</button></div>
+<div id="toast"></div>
+
 <div id="log"><div class="placeholder" id="ph">等待语音…… 对着麦克风说英语试试</div></div>
+<button id="btnLatest" title="回到最新字幕（恢复自动滚动）">↓ 回到最新</button>
+
 <footer>
   <span>EN 上 · 中 下 ｜ 翻译 DeepSeek · 识别 faster-whisper</span>
-  <span id="translate-status">translate: init</span>
+  <span id="latency" hidden
+        title="最近一句从音频采集到字幕上屏的全程落后量（含识别、翻译、广播，及跨设备时钟误差）——仅近似参考（条目12②）">延迟 ≈ … s</span>
+  <span id="zhDropped" hidden
+        title="回看窗口内被裁剪掉而未显示的翻译条数（含「（翻译失败）」占位行）；实时上报服务端 /api/status"></span>
+  <span><span id="micState">mic …</span> ｜ <span id="footStatus">…</span></span>
 </footer>
-<script>
-const log = document.getElementById('log');
-const dot = document.getElementById('dot');
-const count = document.getElementById('count');
-const tstat = document.getElementById('translate-status');
-let last = null;
 
-function addEntry(en, zh, ts) {
-  const ph = document.getElementById('ph');
-  if (ph) ph.remove();
+<!-- 工作台骨架（p1-6）：侧栏导航（上课/设置）+ 设置视图。
+     settings-on 时上课态元素隐藏（见 CSS）；控件全部即时写 /api/config 白名单键 -->
+<div id="shell">
+  <aside id="sidebar">
+    <div class="sbBrand"><span class="dot on"></span>LectureLens</div>
+    <!-- p2-1 课程列表（§7.2）：数据全部来自 /api/courses（courses.json），
+         点条目 = 设为当前课程（记入笔记头 + 挂该课术语表）；「未分类」为默认态 -->
+    <div class="sbSec">
+      <div class="sbSecHead"><span>课程</span>
+        <button id="sbCourseAdd" title="新建课程">＋</button></div>
+      <div class="sbCourses" id="sbCourses"></div>
+    </div>
+    <nav class="sbNav">
+      <button class="sbItem" id="navLesson" title="回到上课字幕视图">🎧 上课</button>
+      <button class="sbItem cur" id="navNotes" title="笔记库（工作台主页）">📚 笔记库</button>
+      <button class="sbItem" id="navGlossary" title="术语库（按课程维护 EN=中文）">📖 术语库</button>
+      <button class="sbItem" id="navSettings" title="设置">⚙ 设置</button>
+    </nav>
+    <div class="sbFoot" id="sbVer">v—</div>
+  </aside>
+  <main id="workspace">
+    <!-- p2-2 笔记库（§七-2）：主区顶部搜索 + 课程筛选，列表行 = 日期|课程徽章|
+         首句摘要|状态徽章；点行 → 右侧双栏 EN|ZH 预览，顶部 摘要/卡组/导出。
+         数据全部来自 /api/notes/list（transcripts/ 真文件，无独立索引） -->
+    <section id="viewNotes">
+      <h1>笔记库</h1>
+      <p class="sub">每节课一篇双语笔记（transcripts/*.md）。点条目看 EN|ZH 对照，
+        可对任意一篇发起摘要 / 卡组 / 导出。</p>
+      <div class="nbBar">
+        <input type="search" id="nbSearch" placeholder="全文检索（支持中文，如「神经网络」）"
+               autocomplete="off" spellcheck="false">
+        <select id="nbCourseFilter" title="按课程筛选"><option value="">全部课程</option></select>
+        <span class="nbCount" id="nbCount"></span>
+      </div>
+      <div class="nbSplit">
+        <div class="nbList" id="nbList"></div>
+        <div class="nbPreview" id="nbPreview">
+          <div class="nbEmpty" id="nbPreviewEmpty">← 选一篇笔记查看 EN|ZH 对照</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- p2-6（B8）术语库：按文件（=按课程）维护 `EN = 中文`，保存即热重载。
+         数据来自 GET /api/glossary；写操作走 POST /api/glossary（裸文件名）。
+         注释行与顺序由后端原样保留，前端只负责呈现词条表。 -->
+    <section id="viewGlossary">
+      <h1>术语库</h1>
+      <p class="sub">每行一条 <b>EN = 中文</b>；保存即热重载——翻译与识别两侧同步。
+        文件里的注释行与词条顺序原样保留。<br>
+        p3-2：命中词条的词会在字幕里<b>高亮</b>（英文按词边界、中文按译名子串），
+        改完词条已显示的字幕会跟着重刷。高亮范围 = <b>当前生效词表</b>
+        （课程术语表 + 启动时的 <b>--glossary</b>；未配 DeepSeek key 时术语表不参与
+        任何一侧，故不显示高亮）。</p>
+      <div class="glBar">
+        <select id="glFileSel" title="按课程文件选择（每门课一份术语表）"></select>
+        <button id="glNewFile" title="新建一份术语表文件">＋ 新建文件</button>
+        <span class="nbCount" id="glMeta"></span>
+      </div>
+      <div class="card">
+        <div class="glRow glHead">
+          <span class="glCol">英文术语</span><span class="glCol">中文译名</span>
+          <span class="glOp"></span>
+        </div>
+        <div id="glRows"></div>
+        <div class="row" style="margin-top:12px">
+          <input type="text" id="glNewEn" placeholder="新术语（英文，如 attention mechanism）">
+          <input type="text" id="glNewZh" placeholder="中文译名（如 注意力机制）">
+          <button id="glAdd" class="primary">＋ 添加词条</button>
+        </div>
+        <p class="stateline" id="glState"></p>
+      </div>
+    </section>
+
+    <!-- p2-1/p1-6 设置（§七-3）：分区卡片，控件即时写 config.json 白名单键 -->
+    <section id="viewSettings">
+    <h1>设置</h1>
+    <p class="sub">全部即时保存（config.json 白名单键）；标 ⚠ 的改动重启服务后生效</p>
+
+    <div class="card">
+      <h2>课程</h2>
+      <p class="desc">课程决定<b>笔记归属</b>（写入笔记头 `&gt; 课程：…`）与<b>术语表绑定</b>；
+        未选课程时记为「未分类」。术语表填相对项目根目录的 .md 路径（如
+        <b>glossary/CS.md</b>），选中该课后自动注入翻译与识别 prompt。<br>
+        改动即时生效；改名会同步已写笔记的课程名，删除课程不会删笔记。</p>
+      <div id="courseRows"></div>
+      <div class="row" style="margin-top:12px">
+        <input type="text" id="courseNewName" maxlength="60" placeholder="新课程名称">
+        <input type="text" id="courseNewGloss" placeholder="术语表（可选）glossary/CS.md">
+        <button id="courseAdd">＋ 新建课程</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>识别模型</h2>
+      <p class="desc">当前态：<span id="setModelCur" class="stateline" style="display:inline">…</span><br>
+        切换模型会立即重建识别器（首次使用某模型需下载，可能分钟级；期间字幕暂停）。</p>
+      <div class="row">
+        <select id="setModelSel" title="识别模型（热切换，同一白名单键 model）">
+          <option value="tiny">tiny（最快）</option>
+          <option value="base">base</option>
+          <option value="small">small</option>
+          <option value="medium">medium</option>
+          <option value="large-v3">large-v3（最强）</option>
+          <option value="large-v3-turbo">large-v3-turbo（推荐）</option>
+        </select>
+        <span class="stateline" id="setAsrState"></span>
+      </div>
+      <!-- p2-4 模型管理器（§七-3 分区卡片）：真实缓存状态 + 下载/删除。
+           数据来自 GET /api/models；下载进度复用上方 status.load 进度条 -->
+      <div class="mList" id="modelRows"></div>
+      <!-- p2-4：下载/删除的终态要**持久可见**——toast 4s 就没了、刷新页面更看不见，
+           否则失败后只剩一个无解释的「不完整」。（评审2） -->
+      <p class="stateline" id="modelDlNote" hidden></p>
+      <p class="stateline" id="modelCacheInfo"></p>
+    </div>
+
+    <div class="card">
+      <h2>音源</h2>
+      <p class="desc">麦克风 = 教室现场收音；系统声音 = WASAPI 内录（Zoom/视频课，强制 silero VAD）。</p>
+      <div class="row">
+        <select id="setSourceSel" title="音源（热切换，白名单键 source）">
+          <option value="mic">🎙 麦克风（现场）</option>
+          <option value="loopback">🔊 系统声音内录（Zoom/视频）</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>识别语言</h2>
+      <p class="desc">热切换即生效（无需重建模型）。自动检测在长段才采纳结果，短段沿用上一段。</p>
+      <div class="row">
+        <select id="setLangSel" title="识别语言（白名单键 lang）">
+          <option value="auto">语言：自动检测</option>
+          <option value="en">English</option>
+          <option value="zh">中文</option>
+          <option value="ja">日本語</option>
+          <option value="ko">한국어</option>
+          <option value="fr">Français</option>
+          <option value="de">Deutsch</option>
+          <option value="es">Español</option>
+          <option value="ru">Русский</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- p2-5（B4）高级·分句调优（§七-3 分区卡片）：控制「一句话什么时候算说完」。
+         前三个键改后重建采集器；积压阈值 asr_loop 每轮现读、即时生效。
+         默认值不在前端硬编码——「恢复默认」走后端 /api/config/segmentation/reset。 -->
+    <div class="card">
+      <h2>高级 · 分句调优</h2>
+      <p class="desc">控制「一句话什么时候算说完」。<b>静音断句 / 软上限 / 硬切上限</b>
+        改动会重建采集器（正在说的那一段会丢，建议开课前调）；
+        <b>积压阈值</b>每轮现读、即时生效。<br>
+        越界或非法组合（如硬切 ≤ 软上限）会被拒绝并提示。</p>
+      <div class="segGrid">
+        <label class="segItem" title="连续静音超过该时长，判定一句话结束">
+          <span class="segLabel">静音断句</span>
+          <input type="number" id="setSilenceMs" min="200" max="3000" step="50">
+          <span class="segUnit">ms</span></label>
+        <label class="segItem" title="软上限：超过后不再硬切，改等静音对齐切点">
+          <span class="segLabel">软上限</span>
+          <input type="number" id="setMaxSeg" min="3" max="30" step="0.5">
+          <span class="segUnit">s</span></label>
+        <label class="segItem" title="硬上限兜底：一直不停嘴时的强制切点，必须大于软上限">
+          <span class="segLabel">硬切上限</span>
+          <input type="number" id="setHardCut" min="5" max="60" step="0.5">
+          <span class="segUnit">s</span></label>
+        <label class="segItem" title="音频段积压超过该段数触发追赶丢弃（丢最旧的追实时）">
+          <span class="segLabel">积压阈值</span>
+          <input type="number" id="setBacklogDrop" min="2" max="50" step="1">
+          <span class="segUnit">段</span></label>
+        <label class="segItem" title="追赶丢弃后保留的最新段数（必须小于积压阈值）">
+          <span class="segLabel">积压保留</span>
+          <input type="number" id="setBacklogKeep" min="1" max="20" step="1">
+          <span class="segUnit">段</span></label>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="btnSegReset" title="把这五个键恢复成内置默认值">恢复默认</button>
+        <span class="stateline" id="segState"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>流式字幕 <span class="stateline" style="display:inline">⚠ 重启后生效</span></h2>
+      <p class="desc">开启后先出灰色斜体草稿（partial）、定稿后转正——延迟更低，CPU 占用略增。</p>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="setStreamChk"> 启用流式 partial 字幕</label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>字幕显示 <span class="stateline" style="display:inline">B2 · 历史行渐隐</span></h2>
+      <p class="desc">上课时把<b>当前句上方的最近几行</b>做渐隐（半透明 + 缩小），
+        视线自然落在最新一句上。<br>
+        只改变这几行的<b>呈现</b>：不删除任何条目，向上回看历史（最多 1000 条）不受
+        影响；渐隐行不接收鼠标交互（点击/划选会落到字幕背景上），需要复制它们时先
+        选「不渐隐」。</p>
+      <div class="row">
+        <select id="setFadeSel" title="历史行渐隐条数（白名单键 fade_lines）">
+          <option value="0">不渐隐（0 行）</option>
+          <option value="1">渐隐最近 1 行（推荐）</option>
+          <option value="2">渐隐最近 2 行</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>悬浮字幕条 <span class="stateline" style="display:inline">B1 · 桌面版</span></h2>
+      <p class="desc">第二块屏场景：独立的无边框置顶小窗，只显示最新一句中英字幕，
+        可拖动到任意位置；<b>主窗最小化时它仍显示</b>。
+        点击穿透为尽力而为（Win32 WS_EX_TRANSPARENT）——<b>失败自动降级为可关闭窗口</b>；
+        穿透开启后请用<b>托盘菜单</b>「字幕条点击穿透」解除。</p>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="setFloatChk"> 显示悬浮字幕条</label>
+      </div>
+    </div>
+
+    <!-- p3-1（B12 快捷键体系）：全局热键。键名字符串白名单校验在后端
+         （hotkeys.combo_problem），非法值 400 + toast，控件回滚到服务端真值；
+         注册失败（被占用/权限）在这里显示降级原因——用户看不到日志，
+         状态行是「为什么按了没反应」的唯一出口。 -->
+    <div class="card">
+      <h2>全局快捷键 <span class="stateline" style="display:inline">B12 · 桌面版</span></h2>
+      <p class="desc">全局生效：<b>任何窗口聚焦时</b>都能用，不用先切回本应用。<br>
+        格式 <b>ctrl+alt+l</b>：修饰键 ctrl/alt/shift/win <b>至少一个</b> + 主键一个
+        （a-z / 0-9 / f1-f12）；大小写与顺序不限（win/meta/super 等价）。<br>
+        热键被其它程序占用或权限不足时<b>自动降级为仅托盘菜单操作</b>，
+        原因见下方状态行；不需要可整个关掉。</p>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="setHotkeysChk"> 启用全局快捷键</label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="setHotkeyPause" maxlength="32" spellcheck="false"
+               placeholder="ctrl+alt+l" style="width:160px"
+               title="暂停/恢复字幕（白名单键 hotkey_pause）">
+        <span class="stateline">暂停 / 恢复字幕</span>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="setHotkeyFloat" maxlength="32" spellcheck="false"
+               placeholder="ctrl+alt+s" style="width:160px"
+               title="悬浮字幕条显隐（白名单键 hotkey_float）">
+        <span class="stateline">悬浮字幕条显隐</span>
+      </div>
+      <p class="stateline" id="setHotkeyState">…</p>
+    </div>
+
+    <!-- p3-3（B12）开机自启：开关的事实源是 HKCU 的 Run 注册表项**本身**，不是本地
+         标记——手工删掉启动项后重开设置页就如实变回未勾选；写入/删除失败在状态行
+         里显示原因（权限/策略拦截），不静默假成功。 -->
+    <div class="card">
+      <h2>开机自启 <span class="stateline" style="display:inline">B12 · 桌面版</span></h2>
+      <p class="desc">开机后自动在<b>托盘</b>待命（不弹主窗；按快捷键或点托盘图标即可
+        唤起，<b>Ctrl+Alt+L / Ctrl+Alt+S</b> 全局可用）。<br>
+        写的是<b>当前用户</b>的启动项 <code>HKCU\Software\Microsoft\Windows\
+        CurrentVersion\Run</code>，不需要管理员权限；关闭时只删本应用自己那一项，
+        不动其它程序的开机项。</p>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="setAutostartChk">
+          开机自动启动（进托盘）</label>
+      </div>
+      <p class="stateline" id="setAutostartState">…</p>
+    </div>
+
+    <div class="card">
+      <h2>安全</h2>
+      <p class="desc">LAN 访问 token：手机等非本机设备首次访问需粘贴一次（页面会记住）。
+        <b>服务端从不回传 token 原文</b>——下面是固定掩码占位。</p>
+      <div class="row" style="margin-bottom:8px">
+        <label class="chk"><input type="checkbox" id="setAuthChk"> 启用 LAN 鉴权（关闭 = 同一 WiFi 内任何人可看字幕）</label>
+      </div>
+      <p class="stateline" id="setTokenState">…</p>
+      <div class="row">
+        <input id="tokOut" type="text" readonly hidden placeholder="新 token（仅此一次显示）">
+        <button id="btnCopyTok" disabled title="复制刚生成的新 token">复制</button>
+        <span class="spacer"></span>
+        <button id="btnRegen" class="danger" title="生成新 token；已配对手机需重新粘贴">重新生成 token</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>DeepSeek API key</h2>
+      <p class="desc">用于中文翻译 / 课后摘要 / Anki 卡组；只存本机 <b>.env</b>（不进 git）。
+        未配置 = 纯英文字幕模式。</p>
+      <p class="stateline" id="setKeyState">…</p>
+      <div class="row" id="keyEditRow" hidden>
+        <input id="setKeyInput" type="password" placeholder="sk-…（粘贴新 key）"
+               autocomplete="off" spellcheck="false" style="flex:1;min-width:220px">
+        <button id="btnKeySave" class="primary">保存</button>
+        <button id="btnKeyCancel">取消</button>
+      </div>
+      <div class="row">
+        <button id="btnKeyChange" title="更换 key（写入 .env 并热重建翻译器）">更换 key</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>数据去向（隐私透明页 B9）</h2>
+      <ul class="privacyList">
+        <li><b>🎙 音频不出电脑</b> —— 采集 / 分句 / 识别全部本机完成（faster-whisper 本地推理）</li>
+        <li><b>📝 仅文字发 DeepSeek</b> —— 识别后的文本经 HTTPS 用于翻译 / 摘要 / 卡组；音频与身份不上传</li>
+        <li><b>💾 笔记在本地</b> —— transcripts/（与 config.json 同目录），不进 git、不上传</li>
+      </ul>
+      <div class="row">
+        <a href="/privacy" target="_blank">查看完整隐私透明页 →</a>
+        <span class="spacer"></span>
+        <button id="btnRewizardSet" title="重新走一遍：麦克风测试 → DeepSeek → 试说一句">重开首启向导</button>
+      </div>
+    </div>
+    </section>
+  </main>
+</div>
+
+<!-- 关于弹窗（p1-3）：版本号经 /api/status 的 version 键填充 -->
+<div id="aboutMask">
+  <div id="aboutBox">
+    <button id="aboutClose" title="关闭">✕</button>
+    <h2>LectureLens <span class="ver" id="aboutVer"></span></h2>
+    <p class="ver">课堂实时字幕翻译 · 本地优先 · faster-whisper + DeepSeek</p>
+    <!-- 评审员2 修复：原文写成「不公开分发」并挂在「永久」之下——两处都跟仓库权威
+         口径对不上。README.md:3 的原话是「不收费、不注册公司、**不分发**，商业化
+         决策**推迟至毕业后**」；而「不分发」到底含不含朋友装机是 docs/upgrade-plan.md
+         §3.3-1 明确列出的**待用户裁决点**（裁决结果决定打包/分发条目是否挂起）。
+         页面不该替用户选定一支、更不该用「永久」把「推迟裁决」写成既成事实。 -->
+    <h3>合规红线</h3>
+    <ul>
+      <li><b>免费自用 + 朋友</b>：不收费、不注册公司、<b>不分发</b>——Student visa
+        禁 self-employment；<b>商业化决策推迟至毕业后</b>（README.md:3 原文口径）</li>
+      <li><b>「不分发」的边界待裁决</b>：若含「朋友装机」则打包/分发相关条目挂起，
+        若仅指不公开分发则按计划执行（docs/upgrade-plan.md §3.3-1，<b>须本人裁决</b>）</li>
+      <li>课堂音频仅限本人学习用途，笔记不外传</li>
+    </ul>
+    <h3>数据去向</h3>
+    <ul>
+      <li>音频不出电脑：采集 / 识别 / 分句全在本机（faster-whisper 本地推理）</li>
+      <li>文字出网：仅识别后的文本经 HTTPS 发 DeepSeek（翻译 / 摘要 / 卡组）</li>
+      <li>笔记在本地：transcripts/ 目录，不进 git、不上传</li>
+      <li><b>LAN 模式会对外提供明文 HTTP</b>：桌面模式只监听 127.0.0.1；用
+        <b>--server-only</b> 时服务监听 0.0.0.0，同一 WiFi 内持 token 的设备可用
+        <b>明文 HTTP</b> 读到字幕文本——仅在可信网络启用，详见隐私透明页</li>
+    </ul>
+    <p>详见 <a href="/privacy" target="_blank">隐私透明页</a>（B9 最小版）；
+      <a href="#" id="aboutRewizard" title="清 first_run_done 标记并刷新">重开首启向导</a>。</p>
+
+    <!-- p3-4：开源致谢。点名「实际用到的那部分」而不是笼统道谢——
+         UFAL 这里只致谢 LocalAgreement-2 算法（whisper_streaming，MIT，本仓库 streaming.py
+         移植并在文件头保留 MIT 版权头）；其 SimulStreaming 经评估未采用
+         （torch 栈不可替换 + 需 ≥10GB 显存，本机 8GB，见 docs/design-borrowing.md §六），
+         列进来会是不实致谢。许可证标注取自本机 .venv 内各包 LICENSE/dist-info 与
+         requirements.txt 的记录。 -->
+    <h3>开源致谢</h3>
+    <ul class="credits">
+      <li><b>faster-whisper</b> <span class="lic">MIT</span> —— 本地语音识别引擎
+        （CTranslate2 后端，音频不出电脑这一条靠它）</li>
+      <li><b>Silero VAD</b> —— 语音活动检测（faster-whisper 内置
+        <span class="lic">silero_vad_v6.onnx</span>，VAD 分句的默认实现）</li>
+      <li><b>OpenAI Whisper</b> —— 识别模型权重（large-v3-turbo 等）</li>
+      <li><b>ufal/whisper_streaming</b>（查理大学 ÚFAL）
+        <span class="lic">MIT</span> —— <b>LocalAgreement-2</b> 流式算法：
+        本仓库的流式管线由它移植（<span class="lic">app/streaming.py</span> 保留原
+        MIT 版权头；算法出处 Macháček et al. 2023）</li>
+      <li><b>DeepSeek</b> —— 翻译 / 摘要 / Anki 卡组的 API 服务（在线的，不是本地代码）</li>
+    </ul>
+    <p class="ver">应用骨架：FastAPI <span class="lic">MIT</span> ·
+      Uvicorn <span class="lic">BSD</span> · pywebview <span class="lic">BSD-3</span> ·
+      pystray <span class="lic">LGPLv3</span> · Pillow <span class="lic">MIT-CMU</span> ·
+      sounddevice <span class="lic">MIT</span> ·
+      PyAudioWPatch <span class="lic">Apache-2.0</span> ·
+      ctranslate2 <span class="lic">MIT</span> · onnxruntime <span class="lic">MIT</span> ·
+      fpdf2 <span class="lic">LGPL-3.0</span> · python-docx <span class="lic">MIT</span> ·
+      genanki <span class="lic">MIT</span> · keyboard <span class="lic">MIT</span></p>
+  </div>
+</div>
+
+<!-- 首启向导（p1-5）：config.first_run_done=false 时全屏弹出；完成/跳过写 true，关于页可重开 -->
+<div id="wizardMask">
+  <div id="wizardBox">
+    <h2>欢迎来到 LectureLens</h2>
+    <p class="ver">三步就绪：麦克风 → DeepSeek（可跳过）→ 试说一句</p>
+    <div id="wizSteps">
+      <span class="wizStep" data-step="1">① 麦克风</span>
+      <span class="wizStep" data-step="2">② DeepSeek</span>
+      <span class="wizStep" data-step="3">③ 试说一句</span>
+    </div>
+
+    <div class="wizPane" id="wizPane1">
+      <p>先确认麦克风就绪：请对着麦克风<b>正常说话</b>，电平条应随声音起伏。</p>
+      <span class="lvl" id="wizLvl"><div id="wizLvlBar"></div></span>
+      <div class="wizHeard" id="wizHeard">能听到你——麦克风工作正常</div>
+      <p class="ver" id="wizMicErr" hidden></p>
+      <div class="wizBtns">
+        <button class="wizSkip" id="wizQuit1">跳过向导</button>
+        <span class="spacer"></span>
+        <button id="wizNext1" disabled>下一步</button>
+      </div>
+    </div>
+
+    <div class="wizPane" id="wizPane2" hidden>
+      <p>填入 DeepSeek API key 以启用中文翻译 / 课后摘要 / Anki 卡组
+        （platform.deepseek.com 获取；<b>只存本机 .env，不进 git</b>）。
+        <b>跳过这步 = 纯英文字幕模式</b>，之后可随时重开本向导补填。</p>
+      <div id="wizKeyRow">
+        <input id="wizKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false">
+        <button id="wizKeyEye" title="显示/隐藏 key">👁</button>
+      </div>
+      <p class="ver" id="wizKeyMsg" hidden></p>
+      <div class="wizBtns">
+        <button class="wizSkip" id="wizQuit2">跳过向导</button>
+        <span class="spacer"></span>
+        <button id="wizSkipKey" title="暂不填 key：只出英文字幕">跳过这步</button>
+        <button id="wizNext2" class="primary" disabled>保存并继续</button>
+      </div>
+    </div>
+
+    <div class="wizPane" id="wizPane3" hidden>
+      <p>最后试一下真实管线。<span class="ver" id="wizLoad"></span></p>
+      <p>模型就绪后，请<b>对着麦克风说一句英语</b>（比如 "Hello, can you hear me?"）。</p>
+      <div id="wizCap">等待字幕……</div>
+      <div class="wizHeard" id="wizHeard2">字幕出来了——管线全通！</div>
+      <div class="wizBtns">
+        <button class="wizSkip" id="wizQuit3">跳过向导</button>
+        <span class="spacer"></span>
+        <button id="wizDone" class="primary" disabled>完成</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $('log'), dot = $('dot');
+const FONT_MIN = 18, FONT_MAX = 44;
+let lastSeg = null;
+let fontSize = parseInt(localStorage.getItem('ll_font') || '24', 10);  // p1-4：默认对齐 §3 --cap-en 24px
+
+function applyFont() {
+  fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, fontSize));
+  log.style.setProperty('--cap-en', fontSize + 'px');               // p1-4：字阶变量名对齐 §3
+  log.style.setProperty('--cap-zh', Math.round(fontSize * 1.4) + 'px');  // spec 比例 zh34/en24≈1.4
+  localStorage.setItem('ll_font', fontSize);
+}
+applyFont();
+
+// —— 条目19：LAN token —— 服务端 /api/* 与 /ws 校验 token（127.0.0.1 本机豁免）。
+// 手机首次访问 http://<ip>:8787/?token=xxx（或在弹窗粘贴一次）→ localStorage 记住。
+const TOKEN_KEY = 'll_token';
+const qsToken = new URLSearchParams(location.search).get('token');
+if (qsToken) { try { localStorage.setItem(TOKEN_KEY, qsToken); } catch (e) {} }
+let LL_TOKEN = '';
+try { LL_TOKEN = qsToken || localStorage.getItem(TOKEN_KEY) || ''; }
+catch (e) { LL_TOKEN = qsToken || ''; }
+if (qsToken) history.replaceState(null, '', location.pathname);  // 洗掉地址栏 token
+function apiURL(path) {
+  return LL_TOKEN
+    ? path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(LL_TOKEN)
+    : path;
+}
+let askingToken = false;
+function askForToken() {
+  if (askingToken) return;
+  askingToken = true;
+  const t = prompt('需要访问 token：服务首次启动时已在控制台打印（也见 config.json 的 auth_token）');
+  askingToken = false;
+  if (t && t.trim()) {
+    LL_TOKEN = t.trim();
+    try { localStorage.setItem(TOKEN_KEY, LL_TOKEN); } catch (e) {}
+    location.reload();
+  }
+}
+async function jfetch(path, opts) {
+  const r = await fetch(apiURL(path), opts);
+  if (r.status === 403) { askForToken(); return null; }  // token 缺失/失效 → 粘贴一次并刷新
+  return await r.json();
+}
+
+// —— 条目9：字幕历史回看 ——
+// ① 裁剪上限 200→1000（常量；调回 200 即旧行为）；③ partial（条目12 预留）不计入裁剪计数
+// ② 上滑即暂停吸底回看历史；离底 >80px 出现「回到最新」，点击回底恢复吸底
+// ④ patchZh 落空（段落已被裁剪）→ footer 计数 + WS 上行 ui_metrics 并入 /api/status
+const MAX_ENTRIES = 1000;
+let stickBottom = true;   // 吸底：新字幕自动滚动；用户上滑回看时暂停
+let zhDropped = 0;        // 因历史裁剪未显示的翻译条数（含「（翻译失败）」占位行）
+let wsSock = null;        // connect() 赋值；ui_metrics 上行用
+const btnLatest = $('btnLatest');
+let programmaticScroll = false;   // 字幕平滑滚动期间，不算「用户上滑」（防按钮闪烁）
+function scrollToBottom(instant) {
+  if (instant) log.scrollTo({ top: log.scrollHeight, behavior: 'instant' });  // 「回到最新」：立即到位
+  else { programmaticScroll = true; log.scrollTop = log.scrollHeight; }        // 字幕跟随：保持平滑
+}
+btnLatest.onclick = () => {
+  stickBottom = true;
+  btnLatest.classList.remove('on');
+  scrollToBottom(true);
+};
+log.addEventListener('scroll', () => {
+  const dist = log.scrollHeight - log.scrollTop - log.clientHeight;
+  if (programmaticScroll) {
+    if (dist < 5) programmaticScroll = false;  // 平滑滚动到点后解除屏蔽
+    return;
+  }
+  stickBottom = dist < 80;
+  btnLatest.classList.toggle('on', !stickBottom);
+});
+function updateZhDropped() {
+  const el = $('zhDropped');
+  if (zhDropped > 0) el.textContent = `${zhDropped} 条翻译因历史裁剪未显示`;
+  el.hidden = zhDropped === 0;
+}
+function reportUiMetrics() {
+  try { wsSock && wsSock.send(JSON.stringify({ type: 'ui_metrics', zh_dropped: zhDropped })); }
+  catch (e) {}  // WS 未就绪：onopen 时会重发累计值
+}
+
+// —— p2-7（B2）历史行渐隐 ——
+// 当前句（#log 最后一个子元素，可能是 .partial）**上方最近 N 行**加 .fade；
+// N 来自 status.fade_lines（0/1/2，设置页可调，轮询 2s 内生效）。
+// 只加/撤类：条目仍在 DOM 里、仍进 1000 条向上回看，裁剪与吸底逻辑一概不动。
+// 每次重算前先撤掉上一轮的类（数组记着，避免全量 querySelectorAll 扫 1000 条）。
+let fadedEls = [];
+let lastFadeLines = null;
+function applyFade() {
+  for (const el of fadedEls) el.classList.remove('fade');
+  fadedEls = [];
+  const n = Number((status_ || {}).fade_lines) || 0;
+  if (!n) return;
+  const kids = log.children;          // 活的 HTMLCollection（含 .partial 预览行）
+  const last = kids.length - 1;       // 最后一条 = 当前句，它自己不淡化
+  for (let i = Math.max(0, last - n); i < last; i++) {
+    const el = kids[i];
+    if (!el) continue;
+    el.classList.add('fade');
+    fadedEls.push(el);
+  }
+}
+
+// —— p3-2：术语高亮（gold-dim 底 + gold 字）——
+// 数据源 GET /api/glossary/terms（只含**当前生效**的词条，与翻译/识别 prompt 同源）。
+// 缓存失效：/api/status 的 glossary_rev 变化即重拉——服务端每次现算修订号，前端比对。
+// 性能（ask：每次渲染 O(词条数)、<100 条可接受）：构建正则 O(词条数)，且**只在词条
+// 变化时重建一次**；每次渲染只是对一行文本做一遍正则扫描 O(文本长度)。
+let GLOSS = { rev: '', enRe: null, zhRe: null, count: 0 };
+let glossFetching = false;
+
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function buildGlossRegexes(terms) {
+  const ens = [], zhs = [];
+  const seenEn = new Set(), seenZh = new Set();
+  for (const t of (terms || [])) {
+    const en = ((t && t.en) || '').trim(), zh = ((t && t.zh) || '').trim();
+    if (en && !seenEn.has(en.toLowerCase())) { seenEn.add(en.toLowerCase()); ens.push(en); }
+    if (zh && !seenZh.has(zh)) { seenZh.add(zh); zhs.push(zh); }
+  }
+  const byLen = (a, b) => b.length - a.length;   // 长词条优先：否则 attention 会把
+                                                 // attention mechanism 切碎
+  let enRe = null, zhRe = null;
+  try {
+    if (ens.length) {
+      // 词边界用 lookaround 而非 \b：术语可能以非单词字符收尾（C++ / F# / 3D），
+      // \b 在那些位置不成立。两侧排除字母/数字/下划线；i = 术语大小写不敏感命中。
+      enRe = new RegExp('(?<![A-Za-z0-9_])(?:'
+        + ens.sort(byLen).map(escapeRe).join('|') + ')(?![A-Za-z0-9_])', 'gi');
+    }
+  } catch (e) { enRe = null; }   // 正则构造失败一律降级为「不高亮」，绝不让字幕停摆
+  try {
+    // 中文无词边界概念，直接子串匹配（长译名优先，避免短译名切碎长译名）
+    if (zhs.length) zhRe = new RegExp(zhs.sort(byLen).map(escapeRe).join('|'), 'g');
+  } catch (e) { zhRe = null; }
+  return { enRe, zhRe, count: ens.length };
+}
+
+function highlightTerms(el, text, kind) {
+  // kind: 'en' | 'zh'。全部走 DOM 节点（createTextNode/span），**绝不拼 innerHTML**
+  // ——原文来自识别、译文来自翻译接口，拼 HTML 就是注入面（与既有 textContent 口径一致）。
+  el.textContent = '';
+  if (!text) return;
+  const src = kind === 'en' ? GLOSS.enRe : GLOSS.zhRe;
+  if (!src) { el.textContent = text; return; }        // 无词条：零开销纯文本路径
+  // 每次调用造一个正则副本：共享实例的 lastIndex 会被上一次 exec 留下状态，
+  // 这里虽然同步执行不会交错，但副本能免疫以后有人把它改成异步/重入。
+  const re = new RegExp(src.source, src.flags);
+  let last = 0, m, hits = 0;
+  const frag = document.createDocumentFragment();
+  while ((m = re.exec(text)) !== null) {
+    if (!m[0]) { re.lastIndex++; continue; }          // 零长匹配防死循环
+    if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const s = document.createElement('span');
+    s.className = 'term';
+    s.textContent = m[0];                             // 文本原样，只有样式变了
+    frag.appendChild(s);
+    last = m.index + m[0].length;
+    hits++;
+  }
+  if (!hits) { el.textContent = text; return; }       // 无命中：不留多余节点
+  if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+  el.appendChild(frag);
+}
+
+function rehighlightAll() {
+  // 词表变化后把**已渲染**的字幕按新词表重刷（否则「加了词条但屏幕上那条没亮」）。
+  // textContent 就是原文——高亮只插入同文本的 span，不改变内容，故可无损重建。
+  // 遍历 O(条目数 × 文本长度)，只在 rev 变化那一下发生，不在每帧。
+  log.querySelectorAll('.entry .en').forEach(
+    (el) => highlightTerms(el, el.textContent, 'en'));
+  log.querySelectorAll('.entry .zh:not(.err)').forEach(   // 翻译失败提示不算译文
+    (el) => highlightTerms(el, el.textContent, 'zh'));
+}
+
+async function refreshGlossaryTerms() {
+  if (glossFetching) return;                          // 2s 轮询 + 写盘后立刻刷新会撞车
+  glossFetching = true;
+  try {
+    const d = await jfetch('/api/glossary/terms');
+    if (!d || !d.ok) return;
+    const built = buildGlossRegexes(d.terms);
+    GLOSS = { rev: d.rev || '', enRe: built.enRe, zhRe: built.zhRe, count: built.count };
+    rehighlightAll();
+  } catch (e) {
+    // 高亮是呈现增强：拉不到就保持上一份词表，绝不打断字幕
+  } finally { glossFetching = false; }
+}
+
+function addEntry(en, zh, ts, seg) {
+  const ph = $('ph'); if (ph) ph.remove();
   const div = document.createElement('div');
   div.className = 'entry';
+  div.dataset.seg = seg;
   div.innerHTML = `<div class="ts">${ts}</div><div class="en"></div>` +
                   (zh ? `<div class="zh"></div>` : '');
-  div.querySelector('.en').textContent = en;
-  if (zh) div.querySelector('.zh').textContent = zh;
+  highlightTerms(div.querySelector('.en'), en, 'en');       // p3-2：术语高亮
+  if (zh) highlightTerms(div.querySelector('.zh'), zh, 'zh');
   log.appendChild(div);
-  // 保留最近 200 条防卡顿
-  while (log.children.length > 200) log.removeChild(log.firstChild);
-  log.scrollTop = log.scrollHeight;
+  // 条目9①：裁剪上限 1000（原 200）；partial 不计入计数（选择器排除，条目12 预留）
+  while (log.querySelectorAll('.entry:not(.partial)').length > MAX_ENTRIES) {
+    const oldest = log.querySelector('.entry:not(.partial)');
+    if (!oldest) break;
+    oldest.remove();
+  }
+  applyFade();   // p2-7：新条目入列 → 渐隐窗口整体上移一格
+  if (stickBottom && !document.body.classList.contains('settings-on')) {
+    scrollToBottom(false);  // 条目9②：回看中不强制吸底；p1-review：设置视图下
+                            // #log 不可见——滚动不会产生事件清 programmaticScroll
+                            // 标志，跳过（返回上课态时由 viewSettings 重新贴底）
+  }
 }
+
+function patchZh(seg, zh, err) {  // 中文按 seg 精确补到对应段落；err=翻译失败（灰色）
+  const e = log.querySelector(`.entry[data-seg="${seg}"]`);
+  if (e && !e.querySelector('.zh')) {
+    const d = document.createElement('div');
+    d.className = err ? 'zh err' : 'zh';
+    if (err) d.textContent = zh;                     // 失败提示不是译文，不高亮
+    else highlightTerms(d, zh, 'zh');                // p3-2：术语高亮
+    e.appendChild(d);
+  } else if (!e) {
+    // 条目9④：段落已被裁剪（或未收到 EN）——落空计数可见化，含「（翻译失败）」占位行
+    zhDropped += 1;
+    updateZhDropped();
+    reportUiMetrics();
+  }
+}
+
+// —— 条目12：流式 partial 呈现 + 延迟指示 ——
+// ③ partial 灰色斜体 +「…」游标；同一 key 原位更新（流式层每段一个 key）；
+//    final 到达即删预览行并正常入列——「原位替换恢复配色」
+// ④ partial 是 .entry.partial，裁剪选择器 :not(.partial) 天然豁免——不进 1000 条计数
+// ② 「延迟 ≈ N s」= 最近 final 的 audio_ts（服务端采集墙钟秒，条目12① payload 增量）
+//    与本地时钟差——含识别+翻译+广播全程与跨设备时钟误差，标 ≈ 仅近似参考
+let partialEl = null, partialKey = null;
+function showPartial(m) {
+  if (!m.text) return;
+  const ph = $('ph'); if (ph) ph.remove();
+  if (!partialEl || partialKey !== m.key) {   // key 变化 = 流式层重置（final/热切换）→ 换新行
+    clearPartial();
+    partialEl = document.createElement('div');
+    partialEl.className = 'entry partial';
+    partialEl.innerHTML = '<div class="ts"></div><div class="en"></div>';
+    partialEl.querySelector('.ts').textContent = m.ts || '';
+    log.appendChild(partialEl);
+    partialKey = m.key;
+  }
+  highlightTerms(partialEl.querySelector('.en'), m.text, 'en');   // p3-2：草稿行也高亮
+  applyFade();   // p2-7：partial 成为「当前句」→ 它上面那几行转渐隐
+  if (stickBottom) scrollToBottom(false);     // 条目9②：回看中不强制吸底（partial 仍追加于底部）
+}
+function clearPartial() {
+  if (partialEl) { partialEl.remove(); partialEl = null; partialKey = null; }
+  applyFade();   // p2-7：预览行消失 → 渐隐窗口跟着回退一格
+}
+let lastAudioTs = null;   // 最近 final 的音频采集墙钟秒（audio_ts）；无 final 时延迟指示隐藏
+setInterval(() => {
+  const el = $('latency');
+  if (lastAudioTs == null) { el.hidden = true; return; }
+  const lat = Math.max(0, Date.now() / 1000 - lastAudioTs);  // 时钟偏差钳非负
+  el.textContent = `延迟 ≈ ${lat > 999 ? '999+' : lat.toFixed(0)} s`;
+  el.hidden = false;
+}, 1000);
 
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => { dot.classList.add('on'); };
+  const ws = new WebSocket(`${proto}://${location.host}${apiURL('/ws')}`);
+  wsSock = ws;
+  ws.onopen = () => {
+    dot.classList.remove('paused'); dot.classList.add('on');
+    reportUiMetrics();  // 条目9④：重连后同步累计落空数
+  };
   ws.onclose = () => {
     dot.classList.remove('on');
     setTimeout(connect, 2000);   // 断线自动重连
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.en && m.en !== last) {
-      last = m.en;
-      addEntry(m.en, m.zh, m.ts);
-      count.textContent = 'SEGMENTS ' + m.segments;
-    } else if (m.zh && m.zh !== last) {
-      // 翻译后补：更新最后一条的中文
-      const entries = log.querySelectorAll('.entry');
-      const e = entries[entries.length - 1];
-      if (e && !e.querySelector('.zh')) {
-        const zhDiv = document.createElement('div');
-        zhDiv.className = 'zh';
-        zhDiv.textContent = m.zh;
-        e.appendChild(zhDiv);
+    if (m.type === 'partial') { showPartial(m); return; }  // 条目12③：预览行（final 覆盖）
+    // p2-1：课程表变化（另一窗口改课/切课）→ 刷新侧栏与课程卡
+    if (m.type === 'courses') {
+      COURSES = { ...m, courses: m.courses || [] };
+      renderCourseSidebar(); renderCourseCard();
+      return;
+    }
+    // p2-4：模型缓存变化（另一窗口下载/删除）→ 刷新模型列表
+    if (m.type === 'models') {
+      MODELS = { ...MODELS, ...m };
+      renderModelRows();
+      return;
+    }
+    if (m.en && m.seg !== lastSeg) {
+      clearPartial();                                      // 条目12③：final 原位替换 partial
+      lastSeg = m.seg;
+      if (typeof m.audio_ts === 'number') lastAudioTs = m.audio_ts;  // 条目12②：延迟指示数据源
+      addEntry(m.en, m.zh, m.ts, m.seg);
+    } else if (m.zh) {
+      patchZh(m.seg, m.zh, m.err);
+    }
+    // p1-review 修复④⑤：向导③判定/配对（与主字幕并行，互不干扰）——
+    // wizAccepts = en 非空且 audio_ts ≥ 进入③的墙钟（-0.5s 容差）；
+    // zh patch：仅当 seg 与已判定的段一致才补显（精确配对，修串段）
+    if (wiz.open && wiz.step === 3) {
+      if (wizAccepts(m)) {
+        wizNoteFinal(m.en, m.seg);
+      } else if (m.zh && m.seg === wiz.seg) {
+        wizNoteZh(m.zh, m.err);
       }
-      count.textContent = 'SEGMENTS ' + m.segments;
     }
   };
 }
 connect();
+refreshCourses();   // p2-1：启动即拉课程表（侧栏/课程卡开箱有数据，不等进设置）
+refreshGlossaryTerms();  // p3-2：启动即拉生效词条（不等首次 2s 轮询就位）
+
+async function post(path) {
+  try { return await jfetch(path, { method: 'POST' }); }
+  catch (e) { return null; }
+}
+
+// —— 条目8⑤：错误中英映射表 + 统一展示（横幅=持续错误态，toast=瞬态反馈）——
+// 后端错误串（asr/translate/mic）与 /api/config 的 error 都过 friendlyError：
+// 命中关键词给一句可行动的中文；后端本身就是中文的（非法 model/切换进行中）原样展示；
+// 英文堆栈类走兜底（截断原文），绝不吞掉不看。数组保持 JSON 兼容（tests/test_error_map.py 解析回归）。
+// 注意顺序：cublas/cudnn 必须在 cuda 之前（错误串常同时含多个词，specific 优先）。
+const ERROR_MAP = [
+  ["cublas", "GPU 库（cuBLAS）缺失或损坏——点「切小模型重试」改用 CPU，或重装 NVIDIA 运行库后重启服务"],
+  ["cudnn", "GPU 库（cuDNN）缺失——点「切小模型重试」改用 CPU，或重装 NVIDIA 运行库后重启服务"],
+  ["cuda", "GPU 初始化失败（CUDA）——点「切小模型重试」改用 CPU；检查显卡驱动后可再切回"],
+  ["memory", "显存不足——点「切小模型重试」换小模型，或关闭其他占显存的程序（游戏/浏览器硬件加速）"],
+  ["download", "模型下载失败——检查网络连接（首次使用需联网下载模型）后重试"],
+  ["portaudio", "麦克风打开失败——可能被 Teams/Zoom 等占用，关闭后自动恢复；也可在系统设置换输入设备"]
+];
+const ERROR_FALLBACK_PREFIX = "服务错误：";
+function friendlyError(raw) {
+  const s = String(raw || '');
+  const low = s.toLowerCase();
+  for (const [key, msg] of ERROR_MAP) {
+    if (key && low.includes(key)) return msg;
+  }
+  if (/[\u4e00-\u9fff]/.test(s)) return s;  // 后端中文错误本身可读
+  return ERROR_FALLBACK_PREFIX + s.slice(0, 120);  // 兜底：截断原文，不吞错
+}
+
+let toastTimer = null;
+function showToast(msg, kind) {
+  const t = $('toast');
+  t.textContent = msg;
+  // p1-6：kind='ok' 走 CSS 类（成功绿）；其余沿用内联令牌边框（err/warn）
+  t.className = kind === 'ok' ? 'ok' : '';
+  t.style.borderColor = kind === 'ok' ? ''
+    : kind === 'err'
+      ? 'color-mix(in srgb, var(--err) 45%, transparent)'
+      : 'color-mix(in srgb, var(--warn) 45%, transparent)';
+  t.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.style.display = 'none'; }, 4000);
+}
+
+function showErrorBanner(msg, withRetry) {
+  $('errMsg').textContent = msg;
+  $('btnRetrySmall').style.display = withRetry ? '' : 'none';
+  $('errBanner').classList.add('on');
+}
+function hideErrorBanner() { $('errBanner').classList.remove('on'); }
+$('errClose').onclick = hideErrorBanner;
+// 「切小模型重试」（条目8⑤）：CPU base int8 —— GPU/显存故障最可行的退路
+$('btnRetrySmall').onclick = async () => {
+  try {
+    const r = await jfetch('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'base', device: 'cpu', compute_type: 'int8' }),
+    });
+    showToast(r && r.ok ? '已发起切换（CPU base），请看进度条' : friendlyError((r && r.error) || '切换失败'),
+              r && r.ok ? 'ok' : 'err');
+  } catch (e) { showToast('切换失败：服务无响应', 'err'); }
+};
+
+$('btnPause').onclick = () => post(status_.paused ? '/api/resume' : '/api/pause');
+$('btnExport').onclick = () => { location.href = apiURL('/api/notes'); };
+$('btnClear').onclick = () => {
+  clearPartial();
+  log.innerHTML = '<div class="placeholder" id="ph">已清屏（笔记文件仍在记录）</div>';
+};
+$('btnFull').onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(() => {});
+};
+$('btnCollapse').onclick = () => {
+  document.body.classList.toggle('collapsed');
+  localStorage.setItem('ll_collapsed', document.body.classList.contains('collapsed') ? '1' : '');
+};
+if (localStorage.getItem('ll_collapsed') === '1') document.body.classList.add('collapsed');
+$('btnFontPlus').onclick = () => { fontSize += 2; applyFont(); };
+$('btnFontMinus').onclick = () => { fontSize -= 2; applyFont(); };
+
+const selModel = $('selModel');
+let modelBusy = false;
+selModel.onchange = async () => {
+  if (modelBusy) { syncModel(); return; }
+  modelBusy = true;
+  let accepted = false;   // 成功受理才交给轮询收尾复位；其余路径 finally 必复位
+  try {
+    $('chipDevice').textContent = '切换中…';
+    let r = null;
+    try {
+      r = await jfetch('/api/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: selModel.value }),
+      });
+    } catch (e) {}
+    if (!r || r.ok === false) {   // 后端拒绝（切换进行中/非法值/400）：回滚下拉 + toast 提示
+      const msg = friendlyError((r && r.error) || '切换失败（服务无响应）');
+      $('chipDevice').textContent = msg;
+      showToast(msg, 'err');      // chipDevice 2s 内会被轮询覆盖，toast 保证用户看到
+      syncModel();                // 条目8①：回滚下拉到当前生效模型
+      return;                     // chipDevice 的 warn 态由 pollStatus 按 asr 状态接管
+    }
+    accepted = true;
+    // 立即高频轮询，进度条第一时间动起来；就绪后回到 2s 正常节奏
+    const t0 = Date.now();
+    const iv = setInterval(async () => {
+      await pollStatus();
+      if (!status_.load || Date.now() - t0 > 180000) {
+        clearInterval(iv);
+        modelBusy = false;
+      }
+    }, 500);
+  } finally {
+    if (!accepted) modelBusy = false;  // 条目8①：失败/异常路径 finally 必复位，不卡暂停键
+  }
+};
+
+function syncModel() { selModel.value = status_.model || selModel.value; }
+
+// —— 条目13④：识别语言热切换下拉 —— POST lang 即生效（服务端改 asr.language，无需
+// 重建模型）并持久化 config.json；失败 toast + 回滚下拉到服务端当前值（syncLang）。
+// auto 策略见服务端 asr.transcribe：长段(>3s)才采纳检测结果，短段沿用上一段。
+let langBusy = false;
+const selLang = $('selLang');
+selLang.onchange = async () => {
+  if (langBusy) { syncLang(); return; }
+  langBusy = true;
+  try {
+    const r = await jfetch('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lang: selLang.value }),
+    });
+    if (!r || r.ok === false) showToast(friendlyError((r && r.error) || '语言切换失败'), 'err');
+  } catch (e) { showToast('语言切换失败：服务无响应', 'err'); }
+  finally { langBusy = false; syncLang(); }   // 无论成败，下拉对齐服务端当前生效值
+};
+function syncLang() { if (status_.lang) selLang.value = status_.lang; }
+
+// —— 条目15⑤：麦克风设备下拉 —— GET /api/devices 填充（服务端已过滤 max_input_channels>0，
+// ★ 标系统默认）；选择 POST input_device（null=重置跟随系统默认）。失败 toast +
+// 重新拉取对齐服务端（同 selLang 模式）。textContent 填充防设备名注入 HTML。
+let deviceBusy = false;
+const selDevice = $('selDevice');
+async function loadDevices() {
+  try {
+    const r = await jfetch('/api/devices');
+    const cur = (r.current === null || r.current === undefined) ? '' : String(r.current);
+    selDevice.innerHTML = '';
+    const optDefault = document.createElement('option');
+    optDefault.value = '';
+    optDefault.textContent = '麦克风：跟随系统默认';
+    selDevice.appendChild(optDefault);
+    for (const d of (r.devices || [])) {
+      const o = document.createElement('option');
+      o.value = String(d.index);
+      o.textContent = (d.default ? '★ ' : '') + d.name + `（${d.inputs} 进）`;
+      selDevice.appendChild(o);
+    }
+    selDevice.value = cur;
+    if (selDevice.value !== cur) selDevice.value = '';  // 当前设备不在列表（已拔）→ 回默认
+  } catch (e) {}   // 枚举失败保留下拉现状（服务端 /api/devices 自带 error 降级）
+}
+selDevice.onchange = async () => {
+  if (deviceBusy) { loadDevices(); return; }
+  deviceBusy = true;
+  try {
+    const val = selDevice.value === '' ? null : parseInt(selDevice.value, 10);
+    const r = await jfetch('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input_device: val }),
+    });
+    if (!r || r.ok === false)
+      showToast(friendlyError((r && r.error) || '设备切换失败'), 'err');
+  } catch (e) { showToast('设备切换失败：服务无响应', 'err'); }
+  finally { deviceBusy = false; await loadDevices(); }   // 无论成败，下拉对齐服务端
+};
+loadDevices();
+
+// 轮询：状态徽章 + 电平条 + 暂停态 + 显存
+let status_ = {};
+async function pollStatus() {
+  try {
+    status_ = await jfetch('/api/status');
+    if (!status_) return;   // 403 已触发 token 弹窗；其余由 catch 吞掉本轮
+    const paused = !!status_.paused;
+    document.body.classList.toggle('paused', paused);
+    dot.classList.toggle('paused', paused);
+    $('btnPause').textContent = paused ? '▶ 继续' : '⏸ 暂停';
+    $('btnPause').classList.toggle('warn', paused);
+    $('btnPause').disabled = modelBusy;
+
+    // p3-2：术语修订号变了（改词条/切课程/mtime 热重载都算）→ 丢弃高亮缓存重拉，
+    // 并把已渲染字幕按新词表重刷。首次进入 rev 为空串也会命中一次 → 开箱即高亮。
+    if ((status_.glossary_rev || '') !== GLOSS.rev) refreshGlossaryTerms();
+
+    const devTxt = status_.device === 'cuda' ? 'GPU' : 'CPU';
+    $('chipDevice').textContent = status_.model
+      ? `${devTxt}·${status_.model}${status_.asr === 'ready' ? '' : ' · ' + status_.asr}` : '…';
+    $('chipDevice').classList.toggle('warn', status_.asr !== 'ready');
+    $('chipTranslate').textContent = 'translate: ' + (status_.translate || 'init');
+    $('chipSeg').textContent = 'SEGMENTS ' + (status_.segments || 0);
+
+    // 积压徽章：有积压才显示，>2 段黄色警示（后端 >5 段会自动追赶丢弃）
+    const bl = status_.backlog || 0;
+    const chipBl = $('chipBacklog');
+    chipBl.hidden = bl === 0;
+    chipBl.textContent = `积压 ${bl} 段`;
+    chipBl.classList.toggle('warn', bl > 2);
+
+    const v = status_.vad || {};
+    let pct = 0;
+    if (v.vad === 'silero') pct = Math.min(100, (v.level || 0) * 100);
+    else if (v.threshold) pct = Math.min(100, (v.level || 0) / v.threshold * 50);
+    $('lvlBar').style.width = pct + '%';
+
+    // 麦克风健康（watchdog 上报）：ok 绿灰常规，error 红色警示
+    const mic = String(status_.mic || '…');
+    const micErr = mic.startsWith('error');
+    const micEl = $('micState');
+    micEl.textContent = micErr ? '⚠ ' + mic : 'mic ' + mic;
+    micEl.classList.toggle('micerr', micErr);
+
+    // —— 条目8⑤：错误状态统一横幅 —— 优先级 asr > mic > translate；恢复即自动隐藏
+    const asrTxt = String(status_.asr || '');
+    if (asrTxt.startsWith('error')) showErrorBanner(friendlyError(asrTxt), true);
+    else if (micErr) showErrorBanner(friendlyError(mic), false);
+    else if (String(status_.translate || '').startsWith('error'))
+      showErrorBanner(friendlyError(status_.translate), false);
+    else hideErrorBanner();
+
+    $('footStatus').textContent =
+      `[${v.vad || '…'}] ${v.level ?? '…'}${paused ? ' ⏸已暂停' : ''}` +
+      `${status_.vram ? ' ｜ vram ' + status_.vram : ''}`;
+
+    // 模型加载进度条：有 load 数据就显示，条纹动画表示仍在动
+    const ld = status_.load;
+    $('loadwrap').classList.toggle('on', !!ld);
+    if (ld) {
+      $('loadfill').style.width = (ld.pct || 0) + '%';
+      $('loadstage').textContent = `${ld.pct}% · ${ld.stage}`;
+    }
+
+    if (!modelBusy) syncModel();
+    if (!langBusy) syncLang();   // 条目13④：下拉对齐服务端当前生效语言
+
+    if (status_.version) $('aboutVer').textContent = 'v' + status_.version;  // p1-3
+    if (document.body.classList.contains('settings-on')) updateSettingsLive();  // p1-6
+    trackNoteTasks();      // p2-2：摘要/卡组任务收尾 → 刷新笔记库徽章
+    trackModelDownload();  // p2-4：模型下载收尾 → 刷新列表并提示结果
+    // p2-7：渐隐条数变了（设置页改的）→ 立刻重算，不必等下一句字幕到来
+    if (status_.fade_lines !== lastFadeLines) {
+      lastFadeLines = status_.fade_lines;
+      applyFade();
+    }
+  } catch (e) {}
+}
+setInterval(pollStatus, 2000);
+pollStatus();
+
+// —— p3-5 评审修复（F5）：模态框键盘可达 ——
+// 修前实测（真 Chrome，打开关于弹窗后逐项读）：焦点**不进入弹窗**（activeElement 仍是
+// #btnAbout）、Escape 不关闭（#aboutMask 仍 on）、#aboutBox 无 role/aria-modal（全文档
+// [role]/[aria-*] 计数为 0）、Tab 还能走到遮罩后面的按钮上（btnNotes/btnSettings/
+// btnLatest 共 4 个停靠点，而 #aboutClose 在其后）。关于弹窗与首启向导共用同一实现。
+// 三条规矩：
+//   · 打开：记住来源焦点 → 显示 → 标 role=dialog/aria-modal → 焦点移入弹窗第一个控件
+//          → 背景（遮罩以外的 body 顶层元素）加 inert（Tab 再也到不了后面）
+//   · 关闭：隐藏 → 撤 inert → 焦点**归还来源**（否则键盘用户关掉弹窗后不知身在何处）
+//   · Escape：关闭最上层弹窗；向导走 wizardFinish()（等同「跳过向导」，语义一致）
+let _modalOpener = null;
+
+function _setBackgroundInert(on) {
+  for (const el of document.body.children) {
+    if (el.tagName === 'SCRIPT' || el.id === 'aboutMask' || el.id === 'wizardMask') continue;
+    if (on) el.setAttribute('inert', '');
+    else el.removeAttribute('inert');
+  }
+}
+
+function openModal(mask) {
+  if (document.contains(document.activeElement)) _modalOpener = document.activeElement;
+  mask.classList.add('on');
+  const box = mask.firstElementChild;
+  if (box) {
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    // 第一个可聚焦控件（关于页 = ✕ 关闭；向导 = 当前步的按钮）
+    const first = box.querySelector(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled])');
+    (first || box).focus();
+  }
+  _setBackgroundInert(true);
+}
+
+function closeModal(mask) {
+  mask.classList.remove('on');
+  _setBackgroundInert(false);
+  const back = _modalOpener;
+  _modalOpener = null;
+  if (back && document.contains(back) && back.focus) back.focus();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const mask = [$('aboutMask'), $('wizardMask')]
+    .find((m) => m && m.classList.contains('on'));
+  if (!mask) return;
+  e.preventDefault();
+  if (mask.id === 'wizardMask') wizardFinish();   // 与「跳过向导」同一语义（写标记）
+  else closeModal(mask);
+});
+
+// —— p1-3：关于弹窗（版本 / 合规红线 / 隐私透明页入口）——
+const aboutMask = $('aboutMask');
+$('btnAbout').onclick = () => openModal(aboutMask);
+$('aboutClose').onclick = () => closeModal(aboutMask);
+aboutMask.addEventListener('click', (e) => {
+  if (e.target === aboutMask) closeModal(aboutMask);   // 点遮罩关闭
+});
+
+// —— p1-4：工具条浮现（§7.1/§5-3）——鼠标靠近顶部（≤90px）显示，3s 无动作隐藏；
+// 暂停/错误态由 CSS（body.paused / body:has(#errBanner.on)）强制显示，触屏设备常显
+// （media hover:none）。纯新增逻辑，不触碰 WS/轮询/回看/错误横幅。
+let tbTimer = null;
+function tbShow() {
+  document.body.classList.add('tb-show');
+  clearTimeout(tbTimer);
+}
+function tbHideLater(ms) {
+  clearTimeout(tbTimer);
+  tbTimer = setTimeout(() => document.body.classList.remove('tb-show'), ms);
+}
+document.addEventListener('mousemove', (e) => {
+  if (document.body.classList.contains('collapsed')) return;  // 用户 ▾ 收起：不浮现
+  if (e.clientY <= 90) {
+    tbShow();
+    tbHideLater(3000);
+  }
+});
+// p1-review 修复②：停在工具条自身（按钮中心 y≈98，超出 90 浮现阈值）时保活——
+// mouseenter 取消隐藏计时、mouseleave 重新计时；否则 3s 后 opacity→0 且
+// pointer-events:none，悬停其上的点击落空（验收：悬停按钮 5s 后仍可点击）
+for (const el of [document.querySelector('header'), $('toolbar')]) {
+  el.addEventListener('mouseenter', () => {
+    if (!document.body.classList.contains('collapsed')) tbShow();
+  });
+  el.addEventListener('mouseleave', () => tbHideLater(3000));
+}
+
+// —— p1-5 首启向导（3 步）：first_run_done=false 时弹出；完成/跳过写 true；
+// key 经 /api/first-run/apikey 热接入（后端写 .env + 热重建 translator）。——
+const wiz = { open: false, step: 1, heard: 0, timer: null, spoke: false,
+              ts0: 0, seg: null };  // ts0/seg：③的 WS 判定基线（p1-review 修复④⑤）
+
+function maskKey(k) {  // 掩码回显：只露前 5 后 4
+  return k.length > 11 ? k.slice(0, 5) + '****' + k.slice(-4) : '****';
+}
+function wizGoto(n) {
+  wiz.step = n;
+  for (const p of [1, 2, 3]) $('wizPane' + p).hidden = p !== n;
+  document.querySelectorAll('.wizStep').forEach(el => {
+    const s = +el.dataset.step;
+    el.classList.toggle('cur', s === n);
+    el.classList.toggle('done', s < n);
+  });
+  if (n === 3) {
+    // p1-review 修复④⑤：判定基线 = 进入本步的墙钟 ts0——由 WS final 的 audio_ts
+    // （该句音频的采集时刻）与 ts0 比较。轮询口径（segments 快照）会把第①步
+    // 滞后的那句话误判为"第③步说了话"（假通过），audio_ts 精确到"什么时候说的"。
+    wiz.ts0 = Date.now() / 1000;
+    wiz.spoke = false;
+    wiz.seg = null;
+    $('wizCap').textContent = '等待字幕……';
+    $('wizDone').disabled = true;
+    $('wizHeard2').classList.remove('on');
+  }
+}
+function wizRenderMicErr(s) {
+  // p1-review 修复③：向导全屏遮住 #errBanner——采集器/识别故障时必须在本面板
+  // 说清原因（否则用户只见电平条恒 0 不知为何）；恢复即收（watchdog 自愈后继续）。
+  // 抽成函数：可被 headless 断言（打桩 status 直接调用）。
+  const micS = String(s.mic || ''), asrS = String(s.asr || '');
+  const errEl = $('wizMicErr');
+  if (micS.startsWith('error') || asrS.startsWith('error')) {
+    errEl.hidden = false;
+    errEl.style.color = 'var(--err)';
+    errEl.textContent = '⚠ ' + friendlyError(asrS.startsWith('error') ? asrS : micS)
+      + '（可先「跳过向导」，修复后用设置页/关于页的「重开首启向导」再来）';
+  } else {
+    errEl.hidden = true;
+  }
+}
+function wizAccepts(m) {
+  // p1-review 修复④的判定口径（抽函数便于 headless 断言）：final 消息、en 非空、
+  // 且 audio_ts（该句音频的采集墙钟秒）≥ 进入③的墙钟 - 0.5s 时钟抖动容差。
+  // 轮询口径的旧判据会把第①步滞后的那句话误判成「第③步说了话」。
+  return !!(m && m.en && typeof m.audio_ts === 'number'
+            && m.audio_ts >= wiz.ts0 - 0.5);
+}
+function wizNoteFinal(en, seg) {
+  // WS 判定通过（final 的 audio_ts ≥ 进入③的墙钟，排除①的话晚到）
+  if (wiz.spoke) return;  // 已判定：后续句子不重复触发（展示保持第一句）
+  wiz.spoke = true;
+  wiz.seg = seg;          // 译文按此 seg 精确配对（修复⑤：不再把 last_zh 贴错段）
+  const cap = $('wizCap');
+  cap.textContent = '';
+  const enEl = document.createElement('span');
+  enEl.textContent = '听到你说：' + en;
+  cap.appendChild(enEl);
+  $('wizHeard2').classList.add('on');
+  $('wizDone').disabled = false;
+  $('wizLoad').textContent = '';
+}
+function wizNoteZh(zh, err) {
+  if (!wiz.spoke || wiz.seg === null) return;
+  const cap = $('wizCap');
+  const zhEl = document.createElement('span');
+  zhEl.style.color = err ? 'var(--text-2)' : 'var(--gold)';
+  zhEl.textContent = ' ｜ 译文：' + zh;
+  cap.appendChild(zhEl);
+}
+function wizardFinish() {
+  clearInterval(wiz.timer); wiz.timer = null; wiz.open = false;
+  // p3-5 评审修复（F5）：走 closeModal（撤 inert + 焦点归还来源），而不是只摘 class
+  closeModal($('wizardMask'));
+  jfetch('/api/config', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ first_run_done: true }) });
+}
+function wizardPoll() {  // 500ms 轻轮询：①电平/『能听到你』判定 ③模型就绪与字幕捕获
+  clearInterval(wiz.timer);
+  wiz.timer = setInterval(async () => {
+    if (!wiz.open) return;
+    let s; try { s = await jfetch('/api/status'); } catch (e) { return; }
+    if (!s) return;
+    if (wiz.step === 1) {
+      const v = s.vad || {};
+      const pct = v.vad === 'silero' ? Math.min(100, (v.level || 0) * 100)
+        : (v.threshold ? Math.min(100, (v.level || 0) / v.threshold * 50) : 0);
+      $('wizLvlBar').style.width = pct + '%';
+      wizRenderMicErr(s);  // p1-review 修复③：故障原因必须说清（抽函数便于验证）
+      // 『能听到你』：连续两拍（≈1s）后端 VAD 触发（speaking）即判定通过
+      if (v.speaking) wiz.heard++; else wiz.heard = Math.max(0, wiz.heard - 1);
+      if (wiz.heard >= 2) {
+        $('wizHeard').classList.add('on');
+        $('wizNext1').disabled = false;
+      }
+    }
+    if (wiz.step === 3) {
+      const ld = s.load;
+      $('wizLoad').textContent = ld ? `模型加载中 ${ld.pct}% · ${ld.stage}`
+        : (String(s.asr || '').startsWith('ready') ? '' : `模型状态：${s.asr}`);
+      // p1-review 修复④：通过判定改由 WS（audio_ts 口径，见 ws.onmessage）——
+      // 此处只做故障提示：实时通道未连接时明确说清，否则用户对着麦干等
+      if (!wiz.spoke && (!wsSock || wsSock.readyState !== 1)) {
+        $('wizCap').textContent = '（实时通道未连接——检查服务是否正常，稍候自动重连）';
+      } else if (!wiz.spoke && String(s.asr || '').startsWith('error')) {
+        $('wizCap').textContent = '（识别器异常：' + friendlyError(String(s.asr))
+          + '）';
+      }
+    }
+  }, 500);
+}
+(async () => {  // 首启判定：config 无 first_run_done 标记（默认 false）→ 全屏弹出
+  try {
+    const cfg = await jfetch('/api/config');
+    if (cfg && cfg.first_run_done === false) {
+      wiz.open = true;
+      openModal($('wizardMask'));   // p3-5 评审修复（F5）：走统一入口（焦点/aria/inert）
+      wizGoto(1);
+      wizardPoll();
+    }
+  } catch (e) {}
+})();
+$('wizNext1').onclick = () => wizGoto(2);
+$('wizQuit1').onclick = $('wizQuit2').onclick = $('wizQuit3').onclick = wizardFinish;
+$('wizDone').onclick = wizardFinish;
+$('wizKey').addEventListener('input', () => { $('wizNext2').disabled = !$('wizKey').value.trim(); });
+$('wizKeyEye').onclick = () => {  // 掩码回显切换
+  const k = $('wizKey'); k.type = k.type === 'password' ? 'text' : 'password';
+};
+$('wizNext2').onclick = async () => {
+  const key = $('wizKey').value.trim();
+  if (!key) return;
+  $('wizNext2').disabled = true;
+  const r = await jfetch('/api/first-run/apikey', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: key }) });
+  $('wizNext2').disabled = false;
+  const msg = $('wizKeyMsg'); msg.hidden = false;
+  if (r && r.ok) {
+    msg.textContent = '✓ 已保存（' + maskKey(key) + '），中文翻译已启用';
+    wizGoto(3);
+  } else {
+    msg.style.color = 'var(--err)';
+    msg.textContent = (r && r.error) || '保存失败';
+  }
+};
+$('wizSkipKey').onclick = () => wizGoto(3);  // 纯英文字幕模式：不写 key
+async function reopenWizard() {  // p1-5/p1-6：清标记后刷新，向导即重新弹出
+  await jfetch('/api/config', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ first_run_done: false }) });
+  location.reload();
+}
+$('aboutRewizard').onclick = (e) => { e.preventDefault(); reopenWizard(); };
+
+// —— p1-6 工作台骨架 + 设置页 ——
+// 数据流：控件初值/当前态 ← /api/config（白名单键，auth_token 不在内）+ /api/security
+// （布尔/来源枚举，凭据字符永不回传）；改动 → POST /api/config 或专用端点。
+let SETCFG = {};   // /api/config 快照（渲染控件当前值）
+let SEC = {};      // /api/security 快照（auth_enabled / token_set / key_set / key_source）
+
+// 工作台视图切换。两层状态，勿混：
+//   settings-on     = 工作台是否打开（p1-6 既有 CSS 契约，上课态元素靠它隐藏）；
+//   view-notes/-settings = 工作台内「笔记库（§七-2）」与「设置（§七-3）」两块主区。
+function viewSettings(on) { openWorkbench(on ? 'settings' : null); }
+function openWorkbench(view) {
+  document.body.classList.toggle('settings-on', !!view);
+  document.body.classList.toggle('view-notes', view === 'notes');
+  document.body.classList.toggle('view-glossary', view === 'glossary');
+  document.body.classList.toggle('view-settings', view === 'settings');
+  $('navNotes').classList.toggle('cur', view === 'notes');
+  $('navGlossary').classList.toggle('cur', view === 'glossary');
+  $('navSettings').classList.toggle('cur', view === 'settings');
+  if (view === 'notes') {
+    refreshNotes();
+    refreshCourses();          // 课程徽章/筛选项与侧栏同步
+  } else if (view === 'glossary') {
+    refreshGlossary();
+  } else if (view === 'settings') {
+    refreshSettings();
+  } else {
+    // p1-review 修复⑧：返回上课态时重置回看机制——工作台期间（#log display:none）
+    // 可能残留 programmaticScroll 标志（滚动事件无法清除它），不清会吞掉下一次
+    // 上滑；顺带贴底显示最新字幕并复位「回到最新」按钮
+    programmaticScroll = false;
+    stickBottom = true;
+    btnLatest.classList.remove('on');
+    scrollToBottom(true);
+  }
+}
+$('btnNotes').onclick = () => openWorkbench('notes');
+$('btnSettings').onclick = () => openWorkbench('settings');
+$('navLesson').onclick = () => openWorkbench(null);
+// 侧栏两个入口必须**切换视图**（openWorkbench 内含各自的 refresh，重复点即重拉）。
+// 注意：p1-6 时这两个按钮是「已在当前视图 → 只重拉」，加出第二个视图后那个语义
+// 会让「笔记库 ↔ 设置」点不动——实测踩过，勿改回。
+$('navNotes').onclick = () => openWorkbench('notes');
+$('navGlossary').onclick = () => openWorkbench('glossary');
+$('navSettings').onclick = () => openWorkbench('settings');
+
+// —— p2-1 课程管理（courses.json ↔ /api/courses）——
+// 侧栏课程列表（§7.2）与设置页课程卡（§7.3）共用同一份 COURSES 快照。
+// 渲染一律走 textContent（课程名是用户输入，绝不拼 innerHTML）。
+let COURSES = { courses: [], active: null, active_name: '未分类',
+                uncategorized: '未分类', palette: [] };
+
+// —— p3-5（B12）：加载态 vs 空状态 ——
+// 空状态文案是「**确实没有数据**」的断言。只要还没成功拉到过一次，这个断言就无从
+// 谈起——所以判据只有一个：LOADED[key]。
+//   !LOADED[key]          → 「载入中…」（我们不知道有没有；慢网/手机端能挂好几秒）
+//   LOADED && 长度为空     → 真正的空状态文案
+//   LOADED && 有数据       → 正常渲染
+// 刻意不引入 LOADING 标志：第一版写成「LOADING && !LOADED」，结果设置页那条路
+// （openWorkbench → refreshSettings → 先等 /api/config 再 refreshCourses）在课程
+// 请求**还没发起**时就会渲染出「还没有课程」——一个当时无从成立的断言。以「成功过
+// 没有」为唯一判据，这个缝就不存在了。
+// 代价：请求失败（非空即错）时不会改口成空状态，界面停在「载入中…」+ 一条错误
+// toast；这对用户是更诚实的表达——我们确实没拿到数据。
+const LOADED = { courses: false, notes: false, glossary: false, models: false };
+
+function emptySlot(box, cls, key, emptyText) {
+  const e = document.createElement('div');
+  e.className = cls;
+  // 占位/加载文案一律 --text-3（design-spec §2「占位、禁用」角色），字号走各容器
+  // 既有的 --ui-small/--ui-body（§三），不另造样式。
+  e.textContent = LOADED[key] ? emptyText : '载入中…';
+  box.appendChild(e);
+  return e;
+}
+
+async function refreshCourses() {
+  if (!LOADED.courses) renderCourseSidebar();   // 先把「载入中…」画出来
+  const r = await jfetch('/api/courses');
+  if (r && r.ok) { COURSES = r; LOADED.courses = true; renderCourseSidebar(); renderCourseCard(); }
+  return r;
+}
+
+function renderCourseSidebar() {
+  const box = $('sbCourses');
+  box.innerHTML = '';
+  const item = (id, name, color, notes, cur) => {
+    const b = document.createElement('button');
+    b.className = 'sbCourse' + (cur ? ' cur' : '');
+    b.title = cur ? `当前课程：${name}` : `设为当前课程：${name}`;
+    const d = document.createElement('span');
+    d.className = 'cdot';
+    d.style.background = color;
+    const n = document.createElement('span');
+    n.className = 'cname';
+    n.textContent = name;
+    b.append(d, n);
+    if (notes) {
+      const c = document.createElement('span');
+      c.className = 'cnum';
+      c.textContent = String(notes);
+      c.title = `${notes} 篇笔记`;
+      b.appendChild(c);
+    }
+    b.onclick = () => setActiveCourse(id);
+    return b;
+  };
+  // 「未分类」恒在首位 = active:null 的默认态（不选课照常上课）
+  box.appendChild(item(null, COURSES.uncategorized || '未分类', 'var(--text-3)',
+                       0, !COURSES.active));
+  for (const c of COURSES.courses) {
+    box.appendChild(item(c.id, c.name, c.color, c.notes, COURSES.active === c.id));
+  }
+  if (!COURSES.courses.length) {
+    emptySlot(box, 'sbEmpty', 'courses',
+              '还没有课程；点右上 ＋ 新建，或在设置页添加。');   // p3-5：区分载入中
+  }
+}
+
+async function setActiveCourse(id) {
+  const r = await jfetch('/api/courses/active', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ active: id }) });
+  if (!r || !r.ok) { showToast((r && r.error) || '切换课程失败', 'err'); return; }
+  const extra = r.note === 'marked' ? '（笔记已插入切换标记）' : '';
+  showToast(`当前课程：${r.active_name}${extra}`, 'ok');
+  await refreshCourses();
+}
+
+function renderCourseCard() {
+  const box = $('courseRows');
+  box.innerHTML = '';
+  if (!COURSES.courses.length) {
+    const e = document.createElement('div');
+    e.className = 'cHint';
+    e.textContent = '还没有课程。在下方填名称即可新建；不建课程也能照常上课（归「未分类」）。';
+    box.appendChild(e);
+    return;
+  }
+  for (const c of COURSES.courses) box.appendChild(courseRow(c));
+}
+
+function courseRow(c) {
+  const row = document.createElement('div');
+  row.className = 'cRow';
+  const sw = document.createElement('div');
+  sw.className = 'cSw';
+  for (const col of COURSES.palette) {
+    const b = document.createElement('button');
+    b.className = 'cSwDot' + (col === c.color ? ' cur' : '');
+    b.style.background = col;
+    b.title = col;
+    b.onclick = () => saveCourse(c.id, { color: col });
+    sw.appendChild(b);
+  }
+  const name = document.createElement('input');
+  name.type = 'text';
+  name.value = c.name;
+  name.maxLength = 60;
+  name.title = '课程名（失焦保存）';
+  name.onchange = () => saveCourse(c.id, { name: name.value });
+  const gl = document.createElement('input');
+  gl.type = 'text';
+  gl.value = c.glossary || '';
+  gl.placeholder = '术语表 glossary/CS.md（可空）';
+  gl.title = '术语表路径，相对项目根目录（失焦保存）';
+  gl.onchange = () => saveCourse(c.id, { glossary: gl.value });
+  const del = document.createElement('button');
+  del.className = 'cDel';
+  del.textContent = '删除';
+  del.onclick = () => delCourse(c);
+  row.append(sw, name, gl, del);
+  return row;
+}
+
+async function saveCourse(id, fields) {
+  const r = await jfetch('/api/courses/' + encodeURIComponent(id), {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields) });
+  if (!r || !r.ok) {
+    showToast((r && r.error) || '保存失败', 'err');
+    await refreshCourses();   // 回滚输入框到服务端真实值
+    return;
+  }
+  showToast(r.notes_retagged ? `已保存（同步 ${r.notes_retagged} 篇笔记）` : '已保存', 'ok');
+  await refreshCourses();
+}
+
+async function delCourse(c) {
+  if (!confirm(`删除课程「${c.name}」？\n笔记文件会保留，仅失去分组归属。`)) return;
+  const r = await jfetch('/api/courses/' + encodeURIComponent(c.id), { method: 'DELETE' });
+  if (!r || !r.ok) { showToast((r && r.error) || '删除失败', 'err'); return; }
+  showToast(`已删除「${c.name}」`, 'ok');
+  await refreshCourses();
+}
+
+async function createCourse(name, glossary) {
+  const body = { name };
+  if (glossary) body.glossary = glossary;
+  const r = await jfetch('/api/courses', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body) });
+  if (!r || !r.ok) { showToast((r && r.error) || '新建失败', 'err'); return false; }
+  showToast(`已新建「${r.course.name}」`, 'ok');
+  await refreshCourses();
+  return true;
+}
+
+$('courseAdd').onclick = async () => {
+  const name = $('courseNewName').value.trim();
+  if (!name) { showToast('请先填课程名', 'err'); return; }
+  if (await createCourse(name, $('courseNewGloss').value.trim())) {
+    $('courseNewName').value = '';
+    $('courseNewGloss').value = '';
+  }
+};
+$('sbCourseAdd').onclick = async () => {
+  const name = (prompt('新课程名称（如：计算机科学导论）') || '').trim();
+  if (name) await createCourse(name, '');
+};
+
+// —— p2-2 笔记库（§七-2）——
+// 数据源 /api/notes/list（transcripts/ 真文件，无独立索引）；点条目 →
+// /api/notes/preview 解析 EN|ZH 行对。渲染一律 textContent（笔记正文是用户
+// 内容，绝不拼 innerHTML），与课程列表同款纪律。
+let NB = { notes: [], query: '', course: '', current: null, sel: null };
+let nbTimer = null;
+// 摘要/卡组是后台任务：记下上一次轮询看到的状态，只在 running→终态**跃迁**时
+// 刷新列表（否则每 2s 重扫全部笔记纯浪费）。
+let nbTaskState = { summary: null, deck: null };
+
+function trackNoteTasks() {
+  if (!document.body.classList.contains('view-notes')) return;
+  let changed = false;
+  for (const key of ['summary', 'deck']) {
+    const st = ((status_ || {})[key] || {}).state || 'idle';
+    if (nbTaskState[key] === 'running' && st !== 'running') changed = true;
+    nbTaskState[key] = st;
+  }
+  if (changed) {
+    const sel = NB.sel;
+    refreshNotes().then(() => { if (sel && NB.sel === sel) openNote(sel); });
+  }
+}
+
+async function refreshNotes() {
+  const p = new URLSearchParams();
+  if (NB.query) p.set('q', NB.query);
+  if (NB.course) p.set('course', NB.course);
+  const qs = p.toString();
+  if (!LOADED.notes) renderNoteList();          // p3-5：首屏先画「载入中…」
+  const r = await jfetch('/api/notes/list' + (qs ? '?' + qs : ''));
+  if (!r || !r.ok) { renderNoteList(); showToast((r && r.error) || '读取笔记列表失败', 'err'); return; }
+  NB.notes = r.notes || [];
+  NB.current = r.current;
+  // 当前选中项被筛选掉 → 清空预览（否则右侧会留着不在列表里的笔记）
+  if (NB.sel && !NB.notes.some(n => n.name === NB.sel)) { NB.sel = null; }
+  LOADED.notes = true;
+  renderNoteList();
+  renderCourseFilter();
+  if (!NB.sel) renderPreviewEmpty();
+}
+
+function renderCourseFilter() {
+  const sel = $('nbCourseFilter');
+  const names = new Set();
+  for (const c of (COURSES.courses || [])) names.add(c.name);
+  for (const n of NB.notes) names.add(n.course);
+  names.add(COURSES.uncategorized || '未分类');
+  if (NB.course) names.add(NB.course);      // 当前筛选值必须可选，否则切不回去
+  sel.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部课程';
+  sel.appendChild(all);
+  for (const n of [...names].sort()) {
+    const o = document.createElement('option');
+    o.value = n;
+    o.textContent = n;
+    sel.appendChild(o);
+  }
+  sel.value = NB.course;
+}
+
+function renderNoteList() {
+  const box = $('nbList');
+  box.innerHTML = '';
+  $('nbCount').textContent = NB.notes.length ? `${NB.notes.length} 篇` : '';
+  if (!NB.notes.length) {
+    emptySlot(box, 'nbEmpty', 'notes',
+              (NB.query || NB.course)
+                ? '没有匹配的笔记。换个关键词或清掉课程筛选。'
+                : '还没有笔记。上一节课后会自动出现在这里。');   // p3-5：区分载入中
+    return;
+  }
+  for (const n of NB.notes) box.appendChild(noteRow(n));
+}
+
+function nbFlag(label, on) {
+  const s = document.createElement('span');
+  s.className = 'nbFlag' + (on ? '' : ' no');
+  s.textContent = label + (on ? '✓' : '·');
+  s.title = label + (on ? '：已生成' : '：还没有');
+  return s;
+}
+
+function noteRow(n) {
+  const b = document.createElement('button');
+  b.className = 'nbRow' + (NB.sel === n.name ? ' cur' : '');
+  b.title = n.name + (n.name === NB.current ? '（正在记录）' : '');
+  const top = document.createElement('div');
+  top.className = 'nbRowTop';
+  const d = document.createElement('span');
+  d.className = 'nbDate';
+  d.textContent = n.date;
+  const c = document.createElement('span');
+  c.className = 'nbChip';
+  c.textContent = n.course;
+  c.title = '课程：' + n.course;
+  const f = document.createElement('span');
+  f.className = 'nbFlags';
+  f.append(nbFlag('摘要', n.has_summary), nbFlag('卡组', n.has_deck));
+  top.append(d, c, f);
+  const first = document.createElement('div');
+  first.className = 'nbFirst';
+  first.textContent = n.first_en || n.first_zh || '（无内容）';
+  b.append(top, first);
+  b.onclick = () => openNote(n.name);
+  return b;
+}
+
+function renderPreviewEmpty() {
+  const box = $('nbPreview');
+  box.innerHTML = '';
+  const e = document.createElement('div');
+  e.className = 'nbEmpty';
+  e.textContent = '← 选一篇笔记查看 EN|ZH 对照';
+  box.appendChild(e);
+}
+
+async function openNote(name) {
+  NB.sel = name;
+  renderNoteList();
+  const r = await jfetch('/api/notes/preview?name=' + encodeURIComponent(name));
+  if (!r || !r.ok) { showToast((r && r.error) || '读取笔记失败', 'err'); return; }
+  renderPreview(r);
+}
+
+function nbCell(cls, text) {
+  const s = document.createElement('span');
+  s.className = cls;
+  s.textContent = text;
+  return s;
+}
+
+function renderPreview(d) {
+  const box = $('nbPreview');
+  box.innerHTML = '';
+  const ph = document.createElement('div');
+  ph.className = 'nbPH';
+  const h = document.createElement('h2');
+  h.textContent = d.date;
+  const chip = document.createElement('span');
+  chip.className = 'nbChip';
+  chip.textContent = d.course;
+  const stat = document.createElement('span');
+  stat.className = 'nbCount';
+  stat.textContent = `${d.segments} 段 · 已译 ${d.translated}`;
+  ph.append(h, chip, stat);
+  const sp = document.createElement('span');
+  sp.style.flex = '1';
+  ph.appendChild(sp);
+  // 顶部操作（§七-2）：摘要 / 卡组 / 导出 —— 均作用于**当前这篇**（name 参数化）
+  const bSum = document.createElement('button');
+  bSum.textContent = '摘要';
+  bSum.title = '对这篇生成课后 AI 摘要（后台任务）';
+  bSum.onclick = () => runNoteTask('摘要', 'summary', '/api/notes/summarize', d.name);
+  const bDeck = document.createElement('button');
+  bDeck.textContent = '卡组';
+  bDeck.title = '从这篇的摘要生成 Anki 卡组（需先有摘要）';
+  bDeck.onclick = () => runNoteTask('卡组', 'deck', '/api/notes/deck', d.name);
+  // p2-3 导出中心：格式下拉 + 导出按钮（md / SRT 字幕 / PDF / Word）
+  const fmtSel = document.createElement('select');
+  fmtSel.className = 'nbFmt';
+  fmtSel.title = '导出格式';
+  for (const [v, label] of [['md', 'Markdown'], ['srt', 'SRT 字幕'],
+                            ['pdf', 'PDF'], ['docx', 'Word']]) {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = label;
+    fmtSel.appendChild(o);
+  }
+  fmtSel.value = NB.fmt || 'md';
+  fmtSel.onchange = () => { NB.fmt = fmtSel.value; };
+  const bExp = document.createElement('button');
+  bExp.textContent = '导出';
+  bExp.title = '按左侧格式下载这篇笔记';
+  bExp.onclick = () => downloadNote(d.name, fmtSel.value, bExp);
+  ph.append(bSum, bDeck, fmtSel, bExp);
+  const head = document.createElement('div');
+  head.className = 'nbHead';
+  head.append(nbCell('nbTs', '时间'), nbCell('nbCol', '英文原文'),
+              nbCell('nbCol', '中文译文'));
+  box.append(ph, head);
+  if (!d.pairs.length) {
+    const e = document.createElement('div');
+    e.className = 'nbEmpty';
+    e.textContent = '这篇笔记还没有字幕内容。';
+    box.appendChild(e);
+    return;
+  }
+  for (const p of d.pairs) {
+    const row = document.createElement('div');
+    row.className = 'nbPair';
+    const zh = document.createElement('div');
+    zh.className = 'nbCell ' + (p.zh ? 'zh' : 'none');
+    zh.textContent = p.zh || '（未翻译）';
+    row.append(nbCell('nbTs', p.ts), nbCell('nbCell en', p.en), zh);
+    box.appendChild(row);
+  }
+}
+
+async function runNoteTask(label, key, path, name) {
+  const r = await jfetch(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }) });
+  if (!r || !r.ok) { showToast((r && r.error) || `${label}失败`, 'err'); return; }
+  nbTaskState[key] = 'running';   // 乐观置位：两次轮询之间就跑完也能被跃迁检测到
+  showToast(`${label}已开始（后台进行，完成后列表徽章会自动更新）`, 'ok');
+}
+
+// p2-3 导出：走 fetch + blob，**不用 location.href** —— 后者失败时只会把用户丢到
+// 一个纯文本错误页（浏览器直接渲染 JSON），拿不到「用户可见的错误」。这里失败读
+// 响应体的 error 字段弹 toast，成功才触发下载。
+function exportFilename(r, name, fmt) {
+  const cd = r.headers.get('content-disposition') || '';
+  const m = /filename="([^"]+)"/.exec(cd);
+  return m ? m[1] : `${name.replace(/\.md$/, '')}.${fmt}`;
+}
+
+async function downloadNote(name, fmt, btn) {
+  const url = '/api/notes/export?fmt=' + encodeURIComponent(fmt) +
+              '&name=' + encodeURIComponent(name);
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(apiURL(url));
+    if (!r.ok) {
+      let msg = `导出失败（HTTP ${r.status}）`;
+      try {
+        const j = await r.json();
+        if (j && j.error) msg = j.error;
+      } catch (e) { /* 非 JSON 错误体：保留默认文案 */ }
+      showToast(msg, 'err');
+      return;
+    }
+    const blob = await r.blob();
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = exportFilename(r, name, fmt);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 5000);
+    showToast(`已导出 ${fmt.toUpperCase()}（${Math.round(blob.size / 1024)} KB）`, 'ok');
+  } catch (e) {
+    showToast('导出失败：' + e, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 检索输入防抖 250ms（每敲一下都全量扫 57 篇没必要）；回车立即检索
+$('nbSearch').oninput = () => {
+  clearTimeout(nbTimer);
+  nbTimer = setTimeout(() => { NB.query = $('nbSearch').value.trim(); refreshNotes(); }, 250);
+};
+$('nbSearch').onkeydown = (e) => {
+  if (e.key === 'Enter') {
+    clearTimeout(nbTimer);
+    NB.query = $('nbSearch').value.trim();
+    refreshNotes();
+  }
+};
+$('nbCourseFilter').onchange = () => {
+  NB.course = $('nbCourseFilter').value;
+  refreshNotes();
+};
+
+// —— p2-4 模型管理器（§七-3 设置页）——
+// 数据源 GET /api/models（纯读本地缓存，不联网）；下载进度复用 status_.load
+// 进度条，终态/错误看 status_.model_dl。渲染一律 textContent。
+let MODELS = { models: [], cache_dir: '', downloading: null,
+               total_size_h: '', offline: false, dl: {} };
+let modelDlState = null;   // 上一次轮询看到的下载状态（跃迁检测）
+let lastLiveModel = null;  // 上一次轮询看到的当前模型（变了就刷「使用中」标记）
+
+async function refreshModels() {
+  if (!LOADED.models) renderModelRows();        // p3-5：首屏先画「载入中…」
+  const r = await jfetch('/api/models');
+  if (r && r.ok) { MODELS = r; LOADED.models = true; renderModelRows(); }
+  else renderModelRows();
+  return r;
+}
+
+function renderModelRows() {
+  const box = $('modelRows');
+  box.innerHTML = '';
+  // p3-5：模型列表此前既无加载态也无空状态——拉取慢或失败时卡片里是一片空白。
+  // 注意：/api/models 成功时**恒返回全部白名单模型**（models.list_models 遍历
+  // PLANNED_MODELS），所以这里拉到空只可能是「还没回来」或「请求失败」，
+  // 不能写成「已全部缓存」那种与事实不符的文案。
+  if (!MODELS.models.length) {
+    emptySlot(box, 'listEmpty', 'models',
+              '模型列表暂时取不到——稍后重试，或看 logs/ 里的服务日志。');
+  }
+  for (const m of MODELS.models) box.appendChild(modelRow(m));
+  $('modelCacheInfo').textContent = MODELS.cache_dir
+    ? `缓存目录：${MODELS.cache_dir} · 共占用 ${MODELS.total_size_h}`
+      + (MODELS.offline ? ' · 离线模式（不联网下载）' : '')
+    : '';
+  // 下载终态的持久提示（评审2）：toast 只活 4s，刷新页面就没了；把错误落在卡片上，
+  // 用户回到设置页永远能看到「上次为什么没下成」。
+  const dl = MODELS.dl || {};
+  const note = $('modelDlNote');
+  if (dl.state === 'error' && dl.error) {
+    note.innerHTML = '';
+    const s = document.createElement('span');
+    s.className = 'err';
+    s.textContent = `模型下载失败（${dl.name || '—'}）：${dl.error}`;
+    note.appendChild(s);
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+    note.textContent = '';
+  }
+}
+
+function modelRow(m) {
+  const row = document.createElement('div');
+  row.className = 'mRow';
+  const name = document.createElement('span');
+  name.className = 'mName';
+  name.textContent = m.name;
+  name.title = m.repo;
+  const state = document.createElement('span');
+  state.className = 'mState' + (m.cached ? ' ok' : (m.partial ? ' warn' : ''));
+  state.textContent = m.cached ? '已下载' : (m.partial ? '不完整' : '未下载');
+  const size = document.createElement('span');
+  size.className = 'mSize';
+  size.textContent = m.size ? m.size_h : '—';
+  row.append(name, state, size);
+  if (MODELS.downloading === m.name) {
+    const busy = document.createElement('span');
+    busy.className = 'mBusy';
+    busy.textContent = '下载中…';
+    row.appendChild(busy);
+    return row;
+  }
+  if (!m.cached) {
+    const b = document.createElement('button');
+    b.textContent = m.partial ? '续传' : '下载';
+    b.title = `下载 ${m.repo} 到本地缓存`;
+    b.onclick = () => downloadModel(m.name, b);
+    row.appendChild(b);
+    if (m.partial) {
+      // 半成品同样占磁盘（medium 半截实测 3.0MB，完整模型上 GB）。旧版对半成品
+      // 只给「续传」、不给删除入口，磁盘满的用户只能反复续传、无法从界面腾空间。
+      // API 层本来就可删，这里把入口补上。（评审2）
+      const d = document.createElement('button');
+      d.className = 'danger';
+      d.textContent = '删除';
+      d.title = '删除这份不完整的缓存，释放磁盘';
+      d.disabled = m.active;
+      d.onclick = () => deleteModel(m, d);
+      row.appendChild(d);
+    }
+  } else {
+    const b = document.createElement('button');
+    b.className = 'danger';
+    b.textContent = '删除';
+    if (m.active) {
+      b.disabled = true;
+      b.title = '模型使用中，不能删除（请先切到别的模型）';
+    } else if (m.bundled) {
+      b.title = '删除本地缓存（随包内置的副本不受影响）';
+    } else {
+      b.title = '删除本地缓存，释放磁盘';
+    }
+    b.onclick = () => deleteModel(m, b);
+    row.appendChild(b);
+  }
+  return row;
+}
+
+async function downloadModel(name, btn) {
+  if (btn) btn.disabled = true;
+  const r = await jfetch('/api/models/download', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }) });
+  if (!r || !r.ok) {
+    showToast((r && r.error) || '下载失败', 'err');
+    if (btn) btn.disabled = false;
+    return;
+  }
+  showToast(r.already ? `${name} 已在本地缓存`
+                      : `${name} 开始下载（进度见上方进度条）`, 'ok');
+  await refreshModels();
+}
+
+async function deleteModel(m, btn) {
+  if (!confirm(`删除模型「${m.name}」的本地缓存？\n将释放约 ${m.size_h}；`
+               + `下次使用需重新下载。`)) return;
+  if (btn) btn.disabled = true;
+  const r = await jfetch('/api/models/' + encodeURIComponent(m.name),
+                         { method: 'DELETE' });
+  if (!r || !r.ok) {
+    showToast((r && r.error) || '删除失败', 'err');
+    if (btn) btn.disabled = false;
+    return;
+  }
+  showToast(`已删除 ${m.name}，释放 ${r.freed_h}`, 'ok');
+  await refreshModels();
+}
+
+// 下载是后台任务：只在 running→终态**跃迁**时刷新并提示（否则每 2s 重拉纯浪费）
+function trackModelDownload() {
+  if (!document.body.classList.contains('view-settings')) return;
+  const dl = (status_ || {}).model_dl || {};
+  const st = dl.state || 'idle';
+  if (modelDlState === 'running' && st !== 'running') {
+    refreshModels();
+    if (st === 'done') showToast(`模型下载完成：${dl.name}`, 'ok');
+    else if (st === 'error') showToast(`模型下载失败：${dl.error || '原因未知'}`, 'err');
+  }
+  modelDlState = st;
+}
+
+// —— p2-5（B4）分句调优 ——
+// [配置键, 输入框 id, 标签, 是否整数]。**整数键必须 Math.round 后再发**：后端对
+// silence_ms/backlog_* 按 int 收（700.0 这种 float 会被判非法），前端不圆整就会
+// 出现「输入框里明明是 700 却被拒」的怪事。
+const SEG_FIELDS = [
+  ['silence_ms', 'setSilenceMs', '静音断句', true],
+  ['max_seg_s', 'setMaxSeg', '软上限', false],
+  ['hard_cut_s', 'setHardCut', '硬切上限', false],
+  ['backlog_drop', 'setBacklogDrop', '积压阈值', true],
+  ['backlog_keep', 'setBacklogKeep', '积压保留', true],
+];
+
+function renderSeg() {
+  for (const [k, id] of SEG_FIELDS) {
+    if (SETCFG[k] !== undefined && SETCFG[k] !== null) $(id).value = SETCFG[k];
+  }
+  // 「当前生效」行：输入框可能正被编辑，这行始终反映服务端真实值
+  $('segState').textContent =
+    `当前生效：静音 ${SETCFG.silence_ms}ms · 软上限 ${SETCFG.max_seg_s}s · `
+    + `硬切 ${SETCFG.hard_cut_s}s · 积压 ${SETCFG.backlog_drop}/${SETCFG.backlog_keep}`;
+}
+
+for (const [k, id, label, isInt] of SEG_FIELDS) {
+  $(id).onchange = (e) => {
+    const raw = e.target.valueAsNumber;
+    if (!Number.isFinite(raw)) {          // 空/非法输入 → 就地回滚，不发请求
+      e.target.value = SETCFG[k];
+      showToast(`${label} 需要一个数字`, 'err');
+      return;
+    }
+    const v = isInt ? Math.round(raw) : raw;
+    if (v === SETCFG[k]) { e.target.value = v; return; }   // 没变就别打扰后端
+    cfgSet({ [k]: v }, label);   // cfgSet 成功/失败都会 refreshSettings 回填控件
+  };
+}
+
+$('btnSegReset').onclick = async () => {
+  if (!confirm('把分句调优的五个参数恢复成内置默认值？')) return;
+  const r = await jfetch('/api/config/segmentation/reset', { method: 'POST' });
+  if (!r || !r.ok) {
+    showToast(friendlyError((r && r.error) || '恢复默认失败'), 'err');
+    return;
+  }
+  const n = Object.keys(r.changed || {}).length;
+  showToast(n ? `已恢复默认（改动 ${n} 项）` : '当前已是默认值', 'ok');
+  await refreshSettings();
+};
+
+// —— p2-6（B8）术语库 ——
+// 数据源 GET /api/glossary（文件 + 词条 + 生效状态 + 课程引用）；写操作走
+// POST /api/glossary，只发**裸文件名**（后端限定 glossary/ 下的 .md）。
+// 渲染一律 textContent（词条是用户输入）。
+let GL = { files: [], sel: null, limits: {}, translate_ready: false };
+
+async function refreshGlossary() {
+  if (!LOADED.glossary) renderGlossary();       // p3-5：首屏先画「载入中…」
+  const r = await jfetch('/api/glossary');
+  if (r && r.ok) {
+    GL = r;
+    // 保持用户选中的文件；它没了（被删/改名）才回落到第一个
+    if (!GL.sel || !GL.files.some(f => f.name === GL.sel)) {
+      GL.sel = GL.files.length ? GL.files[0].name : null;
+    }
+    LOADED.glossary = true;
+    renderGlossary();
+  } else {
+    // 失败时 LOADED 保持 false → 元信息仍显示「载入中…」+ 一条错误 toast。
+    // 这是刻意的（见 emptySlot 注释）：我们确实没拿到数据，不该改口说「还没有
+    // 术语表文件」——那会让人以为去建一个文件就能好，而实际是请求失败了。
+    renderGlossary();
+  }
+  return r;
+}
+
+function glFile() {
+  return GL.files.find(f => f.name === GL.sel) || null;
+}
+
+function renderGlossary() {
+  const sel = $('glFileSel');
+  sel.innerHTML = '';
+  for (const f of GL.files) {
+    const o = document.createElement('option');
+    o.value = f.name;
+    o.textContent = `${f.name}（${f.count} 条${f.active ? ' · 生效中' : ''}）`;
+    sel.appendChild(o);
+  }
+  if (GL.sel) sel.value = GL.sel;
+  sel.disabled = GL.files.length === 0;
+
+  const f = glFile();
+  const bits = [];
+  if (f) {
+    bits.push(`${f.count} 条`);
+    if (f.used_by.length) bits.push(`课程：${f.used_by.join('、')}`);
+    if (f.active) bits.push('正在生效');
+  } else {
+    // p3-5：首屏未拉到前显示「载入中…」——此时断言「还没有术语表文件」是误导
+    bits.push(LOADED.glossary ? '还没有术语表文件' : '载入中…');
+  }
+  $('glMeta').textContent = bits.join(' · ');
+  $('glState').textContent = !GL.translate_ready
+    ? '翻译未启用（无 DEEPSEEK_API_KEY）——术语表仍可编辑，配置 key 后生效'
+    : (f && f.active
+        ? '该文件正在生效：保存即热重载（翻译 + 识别两侧同步）'
+        : '该文件当前未生效：把课程术语表指向它，或启动时用 --glossary 传入');
+
+  const box = $('glRows');
+  box.innerHTML = '';
+  if (!f) return;
+  if (!f.entries.length) {
+    const e = document.createElement('div');
+    e.className = 'glEmpty';
+    e.textContent = '这份术语表还是空的——在下面添加第一条。';
+    box.appendChild(e);
+    return;
+  }
+  for (const entry of f.entries) box.appendChild(glRow(entry));
+}
+
+function glRow(entry) {
+  const row = document.createElement('div');
+  row.className = 'glRow';
+  const en = document.createElement('input');
+  en.type = 'text';
+  en.value = entry.en;
+  en.maxLength = GL.limits.max_field || 200;
+  en.title = '英文术语（失焦保存）';
+  const zh = document.createElement('input');
+  zh.type = 'text';
+  zh.value = entry.zh;
+  zh.maxLength = GL.limits.max_field || 200;
+  zh.title = '中文译名（失焦保存）';
+  const save = () => {
+    const nen = en.value.trim();
+    const nzh = zh.value.trim();
+    if (nen === entry.en && nzh === entry.zh) return;      // 没改就别打扰后端
+    glPost({ file: GL.sel, op: 'update', old_en: entry.en, en: nen, zh: nzh },
+           '更新词条');
+  };
+  en.onchange = save;
+  zh.onchange = save;
+  const del = document.createElement('button');
+  del.textContent = '删除';
+  del.title = '从术语表里删掉这条';
+  del.onclick = async () => {
+    if (!confirm(`删除词条「${entry.en}」？`)) return;
+    await glPost({ file: GL.sel, op: 'delete', en: entry.en }, '删除词条');
+  };
+  row.append(en, zh, del);
+  return row;
+}
+
+async function glPost(payload, label, select) {
+  const r = await jfetch('/api/glossary', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload) });
+  if (!r || !r.ok) {
+    showToast((r && r.error) || `${label}失败`, 'err');
+    await refreshGlossary();          // 回滚控件到服务端真实值
+    return null;
+  }
+  if (select) GL.sel = select;
+  showToast(r.reloaded ? `${label}已保存 · 已热重载生效` : `${label}已保存`, 'ok');
+  await refreshGlossary();
+  refreshGlossaryTerms();   // p3-2：改完词条立刻重刷高亮（不等下一轮 2s 轮询）
+  return r;
+}
+
+$('glFileSel').onchange = (e) => {
+  GL.sel = e.target.value;
+  renderGlossary();
+};
+$('glAdd').onclick = async () => {
+  const en = $('glNewEn').value.trim();
+  const zh = $('glNewZh').value.trim();
+  if (!en || !zh) { showToast('英文术语与中文译名都要填', 'err'); return; }
+  const r = await glPost({ file: GL.sel, op: 'add', en, zh }, '添加词条');
+  if (r) { $('glNewEn').value = ''; $('glNewZh').value = ''; }
+};
+$('glNewFile').onclick = async () => {
+  const name = (prompt('新建术语表文件名（如 CS101.md）') || '').trim();
+  if (!name) return;
+  await glPost({ file: name, op: 'create' }, '新建文件', name);
+};
+
+async function refreshSettings() {
+  const cfg = await jfetch('/api/config');
+  if (cfg) SETCFG = cfg;
+  const sec = await jfetch('/api/security');
+  if (sec) Object.assign(SEC, sec);  // 合并而非替换：保留 SEC.newToken（刚生成的明文）
+  renderSettings();
+  updateSettingsLive();
+  await refreshCourses();   // p2-1：课程卡与侧栏列表同源快照
+  await refreshModels();    // p2-4：模型管理器真实缓存状态
+  renderSeg();              // p2-5：分句调优控件回填（同一份 SETCFG 快照）
+  await refreshAutostart();  // p3-3：开机自启（每次进设置页现读注册表真实状态）
+}
+function renderSettings() {
+  if (SETCFG.model) $('setModelSel').value = SETCFG.model;
+  if (SETCFG.source) $('setSourceSel').value = SETCFG.source;
+  if (SETCFG.lang) $('setLangSel').value = SETCFG.lang;
+  // p2-7：0 是合法取值，不能用 `if (SETCFG.fade_lines)` 判（0 会被当没设）
+  if (SETCFG.fade_lines !== undefined && SETCFG.fade_lines !== null) {
+    $('setFadeSel').value = String(SETCFG.fade_lines);
+  }
+  $('setStreamChk').checked = !!SETCFG.streaming;
+  $('setFloatChk').checked = !!SETCFG.floating_bar;   // p1-7：B1 悬浮条显隐
+  // p3-1：热键开关与键位（服务端存的是规范形，回填即规范形——用户输入的大写/
+  // 别名写法在保存后会被规范化，属预期）
+  $('setHotkeysChk').checked = SETCFG.hotkeys_enabled !== false;
+  if (SETCFG.hotkey_pause) $('setHotkeyPause').value = SETCFG.hotkey_pause;
+  if (SETCFG.hotkey_float) $('setHotkeyFloat').value = SETCFG.hotkey_float;
+  $('setAuthChk').checked = !!SEC.auth_enabled;
+  $('setTokenState').innerHTML = SEC.auth_token_set
+    ? 'LAN token：已启用 · <span class="ok">••••••••</span>'
+      + '（固定掩码占位，原文只在生成时显示一次）'
+    : 'LAN token：<span class="warn">未生成</span>（点「重新生成」创建）';
+  $('setKeyState').innerHTML = SEC.key_set
+    ? '当前：<span class="ok">已配置</span>（来源：'
+      + (SEC.key_source === 'env' ? '系统环境变量（优先于 .env）' : '.env 文件')
+      + '）—— 值不回传，如需核对请查对应文件'
+    : '当前：<span class="warn">未配置</span> —— 纯英文字幕模式（不翻译）';
+}
+function updateSettingsLive() {  // 由 pollStatus 每 2s 调（仅 settings-on 时）
+  const s = status_ || {};
+  const dev = s.device === 'cuda' ? 'GPU' : 'CPU';
+  const load = s.load ? `（加载中 ${s.load.pct}% · ${s.load.stage}）` : '';
+  $('setModelCur').textContent = s.model ? `${dev} · ${s.model} · ${s.compute_type || '—'}${load}` : '…';
+  // p2-4：当前模型变了（切换完成）→ 模型管理器的「使用中」标记要跟着走
+  if (s.model !== lastLiveModel) { lastLiveModel = s.model; refreshModels(); }
+  const asr = String(s.asr || '');
+  $('setAsrState').innerHTML = asr.startsWith('error')
+    ? `<span class="err">${asr}</span>`
+    : asr === 'ready' ? '<span class="ok">识别就绪</span>' : `<span class="warn">${asr}</span>`;
+  renderHotkeyState(s.hotkeys);   // p3-1：全局快捷键状态/降级原因
+  $('sbVer').textContent = 'v' + (s.version || '—');
+}
+
+// —— p3-3：开机自启 ——
+// 状态**只认服务端回读的注册表**（AUTOSTART 由 GET /api/autostart 刷新），本地不置
+// 标记：手工删掉启动项后重开设置页/切回设置视图就如实变回未勾选。
+// 刻意**不进 2s 轮询**——每 2 秒读一次注册表是无谓的折腾；进设置页与点开关时读，
+// 那正是「我看到的这一刻」的真实值。
+let AUTOSTART = null;
+async function refreshAutostart() {
+  const d = await jfetch('/api/autostart');
+  if (d) { AUTOSTART = d; renderAutostart(); }
+}
+function renderAutostart() {
+  const chk = $('setAutostartChk');
+  const el = $('setAutostartState');
+  if (!chk || !el) return;
+  const d = AUTOSTART || {};
+  chk.checked = !!d.enabled;          // 未启用/读失败都回到未勾选（真实态）
+  el.textContent = '';
+  const head = document.createElement('span');
+  const rest = document.createElement('span');
+  if (d.ok === false) {
+    // 读失败（非 Windows / 权限 / 策略）：**不能显示成「未启用」**——那会让人以为
+    // 一切正常。原因来自后端，用 textContent 拼（错误文本可能含 < >，不拼 HTML）。
+    head.className = 'err';
+    head.textContent = '状态读取失败';
+    rest.textContent = `（${d.error || '未知原因'}）`;
+  } else if (d.enabled && d.matches) {
+    head.className = 'ok';
+    head.textContent = '已启用';
+    rest.textContent = `：开机进托盘 — ${d.command || ''}`;
+  } else if (d.enabled) {
+    // 开着但指向旧命令（换过项目位置/重建过 venv 的典型残留）——说清楚，并给出
+    // 唯一有效动作：再保存一次把它改写成当前路径。
+    head.className = 'warn';
+    head.textContent = '已启用，但指向的命令与当前不一致';
+    rest.textContent = `（${d.warning || ''}；重新勾选一次即可改写成当前路径）`;
+  } else {
+    head.textContent = '未启用';
+  }
+  el.appendChild(head);
+  el.appendChild(rest);
+}
+async function setAutostart(want) {
+  const d = await jfetch('/api/autostart', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: want }) });
+  if (!d) { showToast('开机自启设置失败：服务无响应', 'err'); await refreshAutostart(); return; }
+  AUTOSTART = d;                       // 服务端返回的是**回读后的真实状态**
+  renderAutostart();                   // 失败时勾选框会自己弹回真实态（不假成功）
+  if (d.ok) showToast(want ? '已开启开机自启（开机进托盘）' : '已关闭开机自启', 'ok');
+  else showToast(`开机自启${want ? '开启' : '关闭'}失败：${d.error || '未知原因'}`, 'err');
+}
+
+function renderHotkeyState(hk) {
+  // p3-1：状态行——active/降级原因。**用 textContent 拼**而非 innerHTML：理由
+  // 里带的是后端异常文本（可能含 < >），拼进 innerHTML 就是一个注入面。
+  const el = $('setHotkeyState');
+  if (!el) return;
+  hk = hk || {};
+  const label = document.createElement('span');
+  const rest = document.createTextNode('');
+  el.textContent = '';
+  if (hk.enabled === false) {
+    label.className = 'warn';
+    label.textContent = '已关闭';
+    rest.textContent = '——仅托盘菜单可操作（勾选上方开关可重新启用）';
+  } else if (hk.active) {
+    label.className = 'ok';
+    label.textContent = '已生效';
+    const b = hk.bindings || {};
+    const lb = hk.labels || {};
+    rest.textContent = `：${lb.toggle_pause || '暂停'} = ${b.toggle_pause || '—'}`
+      + `，${lb.toggle_float || '悬浮条'} = ${b.toggle_float || '—'}`;
+  } else {
+    label.className = 'warn';
+    label.textContent = '注册失败——已降级为仅托盘操作';
+    rest.textContent = `（原因：${hk.reason || '未知'}）`;
+  }
+  el.appendChild(label);
+  el.appendChild(rest);
+}
+
+async function cfgSet(patch, label) {  // 设置页统一保存出口（全走 /api/config 白名单）
+  try {
+    const r = await jfetch('/api/config', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+    if (r && r.ok) {
+      const note = 'streaming' in patch ? '（重启服务后生效）' : '';
+      showToast(`${label} 已保存${note}`, 'ok');
+      await refreshSettings();
+    } else {
+      showToast(friendlyError((r && r.error) || '保存失败'), 'err');
+      await refreshSettings();  // 回滚控件到服务端真实值
+    }
+  } catch (e) {
+    showToast(`${label} 保存失败：服务无响应`, 'err');
+  }
+}
+$('setModelSel').onchange = (e) => {
+  if (e.target.value !== SETCFG.model) cfgSet({ model: e.target.value }, '识别模型');
+};
+$('setSourceSel').onchange = (e) => {
+  if (e.target.value !== SETCFG.source) cfgSet({ source: e.target.value }, '音源');
+};
+$('setLangSel').onchange = (e) => {
+  if (e.target.value !== SETCFG.lang) cfgSet({ lang: e.target.value }, '识别语言');
+};
+$('setStreamChk').onchange = (e) => cfgSet({ streaming: e.target.checked }, '流式字幕');
+$('setFadeSel').onchange = (e) =>
+  cfgSet({ fade_lines: Number(e.target.value) }, '历史行渐隐');   // p2-7（B2）
+$('setFloatChk').onchange = (e) =>  // p1-7：B1 悬浮条显隐（桌面壳 1s 内同步窗口）
+  cfgSet({ floating_bar: e.target.checked }, '悬浮字幕条');
+// p3-1（B12）全局快捷键：开关 + 两个键位。键位只在失焦/回车时提交（逐字符提交会
+// 把 "ctrl+alt+l" 的每个中间态都打成 400 红 toast）；非法值由后端白名单拒绝并
+// 回滚控件到服务端真值（cfgSet 的两个分支都 refreshSettings）。
+$('setHotkeysChk').onchange = (e) =>
+  cfgSet({ hotkeys_enabled: e.target.checked }, '全局快捷键');
+$('setHotkeyPause').onchange = (e) => {
+  if (e.target.value.trim() !== SETCFG.hotkey_pause) {
+    cfgSet({ hotkey_pause: e.target.value.trim() }, '暂停/恢复快捷键');
+  }
+};
+$('setHotkeyFloat').onchange = (e) => {
+  if (e.target.value.trim() !== SETCFG.hotkey_float) {
+    cfgSet({ hotkey_float: e.target.value.trim() }, '悬浮条快捷键');
+  }
+};
+['setHotkeyPause', 'setHotkeyFloat'].forEach((id) => {
+  $(id).onkeydown = (e) => { if (e.key === 'Enter') $(id).blur(); };  // 回车=提交
+});
+$('setAuthChk').onchange = (e) =>
+  cfgSet({ auth_enabled: e.target.checked }, 'LAN 鉴权');
+$('setAutostartChk').onchange = (e) => setAutostart(e.target.checked);   // p3-3
+
+$('btnRegen').onclick = async () => {  // 安全：重新生成 token（新值仅此一次明文）
+  if (!confirm('重新生成 LAN token？\n新值只显示这一次；已配对的手机/设备需要重新粘贴。')) return;
+  const r = await jfetch('/api/security/token/regenerate', { method: 'POST' });
+  if (r && r.ok) {
+    SEC.newToken = r.token;
+    $('tokOut').value = r.token;
+    $('tokOut').hidden = false;
+    $('btnCopyTok').disabled = false;
+    showToast('新 token 已生成——请点「复制」并保存（离开本页后不再显示）', 'ok');
+    await refreshSettings();
+  } else {
+    showToast(friendlyError((r && r.error) || '生成失败'), 'err');
+  }
+};
+$('btnCopyTok').onclick = async () => {
+  const tok = $('tokOut').value || SEC.newToken;  // 以输入框为准：视图内不丢，刷新即失效
+  if (!tok) { showToast('请先点「重新生成 token」再复制', 'warn'); return; }
+  try {
+    await navigator.clipboard.writeText(tok);
+    showToast('已复制到剪贴板——手机访问时粘贴一次即可', 'ok');
+  } catch (e) {
+    const el = $('tokOut'); el.hidden = false; el.select();
+    showToast('自动复制失败——已选中文本，请手动 Ctrl+C', 'warn');
+  }
+};
+
+$('btnKeyChange').onclick = () => {  // API key 更换（复用首启向导的热接入端点）
+  const row = $('keyEditRow');
+  row.hidden = !row.hidden;
+  if (!row.hidden) $('setKeyInput').focus();
+};
+$('btnKeyCancel').onclick = () => { $('keyEditRow').hidden = true; $('setKeyInput').value = ''; };
+$('btnKeySave').onclick = async () => {
+  const key = $('setKeyInput').value.trim();
+  if (!key) return;
+  $('btnKeySave').disabled = true;
+  const r = await jfetch('/api/first-run/apikey', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: key }) });
+  $('btnKeySave').disabled = false;
+  if (r && r.ok) {
+    $('setKeyInput').value = '';   // 不回显、不留存输入框
+    $('keyEditRow').hidden = true;
+    showToast('API key 已更新（写入 .env，翻译器已热重建）', 'ok');
+    await refreshSettings();
+  } else {
+    showToast(friendlyError((r && r.error) || '保存失败'), 'err');
+  }
+};
+$('btnRewizardSet').onclick = () => reopenWizard();  // p1-5 平移入口：设置页重开向导
 </script>
 </body>
 </html>

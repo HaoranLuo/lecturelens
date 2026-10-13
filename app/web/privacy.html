@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LectureLens — 隐私透明页（数据去向）</title>
+<style>
+  /* 令牌 = docs/design-spec.md §2（本页为 p1-3 新页面，直接按令牌表落地） */
+  :root { --bg:#0B0E13; --surface:#12161D; --surface-2:#171C24; --border:#232B35;
+          --text-1:#E8EEF5; --text-2:#93A1B0; --gold:#FFD97A; --ok:#5FD08A; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text-1);
+         font-family:'Microsoft YaHei','PingFang SC',sans-serif;
+         min-height:100vh; padding:40px 18px; }
+  .wrap { max-width:720px; margin:0 auto; }
+  h1 { font-size:22px; margin-bottom:4px; }
+  h1 .gold { color:var(--gold); }
+  .sub { color:var(--text-2); font-size:13px; margin-bottom:24px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:12px;
+          padding:16px 18px; margin-bottom:14px; }
+  .card h2 { font-size:15px; margin-bottom:6px; }
+  .card h2 .tag { font-size:12px; font-weight:400; color:var(--ok); margin-left:8px; }
+  .card p { font-size:13px; line-height:1.8; color:var(--text-2); }
+  .card p b { color:var(--text-1); font-weight:600; }
+  .redline { border-color:#4a3d1c; }
+  .redline h2 { color:var(--gold); }
+  footer { margin-top:22px; color:var(--text-2); font-size:12px; line-height:1.8; }
+  a { color:var(--gold); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>隐私<span class="gold">透明页</span> —— 数据去向一页说清</h1>
+  <p class="sub">LectureLens 课堂实时字幕翻译 · 本页为静态声明，不含任何接口数据</p>
+
+  <div class="card">
+    <h2>🎙 音频<span class="tag">不出电脑</span></h2>
+    <p>麦克风 / 系统声音的<b>采集、分句、语音识别全部在本机完成</b>（faster-whisper
+       本地推理）。音频从不离开这台电脑，无上传、无云端转写。</p>
+  </div>
+
+  <div class="card">
+    <h2>📝 文字<span class="tag">发 DeepSeek</span></h2>
+    <p>只有<b>识别后的英文文本</b>经 HTTPS 发送到 DeepSeek API，用于翻译、课后摘要
+       与 Anki 卡组生成。请求不携带音频、不携带身份信息；API Key 只存在本机
+       （环境变量 / .env，不进 git）。</p>
+  </div>
+
+  <!-- 评审员2 修复（F4）：原页面只列三条去向，漏了 LAN 模式这条真实的出网路径。
+       事实来源：main.py:2631 `uvicorn.run(app, host="0.0.0.0", ...)`（--server-only），
+       desktop.py:218 `uvicorn.Config(..., host="127.0.0.1", ...)`（桌面模式）；README.md
+       的 LAN 用法与 token 说明。 -->
+  <div class="card">
+    <h2>📶 局域网<span class="tag">仅 --server-only 模式</span></h2>
+    <p>默认的<b>桌面模式只监听 127.0.0.1</b>，字幕不出本机。用 <b>--server-only</b>
+       开 LAN 模式时服务监听 <b>0.0.0.0</b>：同一 WiFi 内<b>持 token 的设备</b>可以
+       读到字幕文本（识别原文 + 中文译文），供手机当第二块屏。<br>
+       两点须知：① 传输是<b>明文 HTTP（无 TLS）</b>——同一网段的被动监听者理论上能看到
+       内容，故只在可信网络里开；② token 是唯一门禁，首启已打印、设置页「安全」卡可重新
+       生成；<b>关掉 LAN 鉴权则同 WiFi 任何人都能看字幕</b>。嫌风险就别开 LAN 模式。</p>
+  </div>
+
+  <div class="card">
+    <h2>💾 笔记<span class="tag">在本地</span></h2>
+    <p>双语课堂笔记、摘要、卡组全部写在程序目录的 <b>transcripts/</b> 下，
+       不进 git、不上传；日志在 logs/（API key 经脱敏过滤不落盘）。</p>
+  </div>
+
+  <!-- 评审员2 修复（F3）：原文写「不公开分发」并挂在「永久」之下，两处都与仓库
+       权威口径冲突。README.md:3 原话是「不收费、不注册公司、不分发，商业化决策
+       推迟至毕业后」；「不分发」是否含朋友装机是 docs/upgrade-plan.md §3.3-1 的
+       待用户裁决点——页面不该替用户选定一支。 -->
+  <div class="card redline">
+    <h2>⚖ 合规红线</h2>
+    <p>本项目<b>免费自用 + 朋友</b>：不收费、不注册公司、<b>不分发</b>（Student visa
+       禁 self-employment）；<b>商业化决策推迟至毕业后</b>。<br>
+       「不分发」的边界<b>待本人裁决</b>：若含「朋友装机」则打包/分发相关条目挂起，
+       若仅指不公开分发则按计划执行（docs/upgrade-plan.md §3.3-1）。<br>
+       <b>课堂音频仅限本人学习用途，笔记不外传。</b></p>
+  </div>
+
+  <footer>
+    本页是「隐私透明页」的最小版（p1-3 关于页指向）；完整版（设置页入口、逐项开关说明）见升级计划 B9，待后续上线。<br>
+    <a href="/">← 返回字幕页</a>
+  </footer>
+</div>
+</body>
+</html>
