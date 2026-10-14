@@ -277,14 +277,25 @@ def rename_in_notes(dir_path: Path, old: str, new: str) -> int:
 
     必要性：笔记归属按**课程名**记录，改名后不回溯就会让历史笔记永远挂在旧名下
     （按名统计漏掉它们）。只替换头部那**一行**（note_course 命中的那行），正文与
-    课程切换标记一律不动；行尾符号（\\n / \\r\\n）按原样保留。"""
+    课程切换标记一律不动；行尾符号（\\n / \\r\\n）按原样保留。
+
+    B14 起还被 **DELETE /api/courses/{id}** 复用（删课程 = 该课历史笔记归「未分类」），
+    于是一次要改多篇——所以这里改成**逐字节保真**的读写（read_bytes / write_bytes）：
+    Path.read_text/write_text 走通用换行，会把 LF 文件在 Windows 上整体翻成 CRLF，
+    且读回来的 \\r\\n 在写回时会被再翻一次成 \\r\\r\\n（上面那句「行尾按原样保留」在
+    旧实现下只对全 CRLF 文件勉强成立）。口径与 notes.set_course 一致：只动命中那一行，
+    其余字节原样吐回。"""
     n = 0
     d = Path(dir_path)
     if not d.is_dir() or not old or not new or old == new:
         return 0
     for f in d.glob("lecture_*.md"):
+        # 只认本目录**直属**的 lecture_*.md（父目录必须就是 d）。路径不来自任何用户
+        # 输入：d = 服务端的 transcripts 目录常量，文件名由 glob 模式限定。
+        if f.parent != d:
+            continue
         try:
-            text = f.read_text(encoding="utf-8")
+            text = f.read_bytes().decode("utf-8")     # 字节级读：不做换行翻译
         except Exception:
             continue
         if note_course(text) != old:
@@ -302,7 +313,7 @@ def rename_in_notes(dir_path: Path, old: str, new: str) -> int:
         eol = "\r\n" if lines[hit].endswith("\r\n") else "\n"
         lines[hit] = f"{COURSE_HEADER_PREFIX}{new}{eol}"
         try:
-            f.write_text("".join(lines), encoding="utf-8")
+            f.write_bytes("".join(lines).encode("utf-8"))   # 字节级写：只改命中那一行
             n += 1
         except Exception:
             continue

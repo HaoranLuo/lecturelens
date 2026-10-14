@@ -27,6 +27,9 @@
 7) 流式（条目11/12）：[7a] TTS 句子按 0.5s 块喂真模型流式管线——partial 首字早于整句可用、
    committed 命中 KEYS、final meta 带采集时间戳、word_timestamps 耗时增幅记录在案；
    [7b] --streaming 服务级子用例——status.streaming 布线 + WS 稳定 + 暂停/恢复
+8)  D1 打包契约：打包入口=桌面壳 / 版本注入 branding.APP_VERSION（exe 属性）/ 桌面壳
+   依赖收集清单↔构建后抽查清单一一对应 / 必需产物含 float.html+privacy.html / 随包模型
+   默认 small（不跑 PyInstaller——分钟级构建归 scripts/build_exe.py 实跑）
 全部通过 exit 0；任何一步失败 exit 1。"""
 import argparse
 import asyncio
@@ -34,6 +37,7 @@ import contextlib
 import json
 import os
 import queue
+import re
 import shutil
 import socket
 import subprocess
@@ -585,6 +589,41 @@ def test_server(port: int = 8799) -> None:
                all(k in html for k in ("btnLan", "lanMask", "lanQr", "/api/lan-qr",
                                        "ws_clients", "#t=", "手机同屏", "setLanChk")),
                "按钮 + 面板 + 取数端点 + 设备数 + hash token 入口齐备")
+        # 波次一 A1：全选套装也必须真的在**服务端发出去的页面**里——三态全选（含半选态
+        # indeterminate）/ 反选按钮 / Ctrl+A 与「切筛选即清空」两条接线。浏览器里的实际
+        # 点选行为不进自动化（本仓无 JS 运行器，见 tests/test_note_select_all.py 抬头）：
+        # 此处只保证「页面里确实带着这套控件与接线」，行为由真机手测覆盖。
+        record("波次一 A1 全选套装在页面里（三态全选/反选/Ctrl+A/筛选清空）",
+               all(k in html for k in ("nbSelAll", "nbBatchInvert", "nbBatchHint",
+                                       "indeterminate", "pickAllVisible", "clearNotePick",
+                                       "view-notes")),
+               "工具条三态全选 + 反选 + Ctrl+A 闸门 + 筛选硬清空齐备")
+        # B14：课程管理卡同样必须真的在**服务端发出去的页面**里——标题/统计/查看笔记
+        # 跳转/删除确认的那句承诺（服务端行为由上面 B14 段真服务往返覆盖）。
+        record("B14 课程管理卡在页面里（统计/查看笔记/删除确认写归属）",
+               all(k in html for k in ("课程管理", "cStat", "条术语", "cOpen", "查看笔记",
+                                       "openCourseNotes", "篇笔记将归入", "courseRows")),
+               "标题 + 统计 + 跳转 + 删除确认文案齐备")
+        # A2：批量打标签的按钮与面板（服务端行为见下面 §8 之后的 A2 真服务往返）
+        record("A2 批量打标签面板在页面里（按钮/chips/自定义/方向/应用）",
+               all(k in html for k in ("nbBatchTag", "nbTagBar", "nbTagModeSel",
+                                       "nbTagChips", "nbTagNew", "nbTagApply",
+                                       "/api/notes/tags/batch", "closeNbTagPanel")),
+               "按钮 + 面板 + 模式选择 + chips + 自定义输入 + batch 端点齐备")
+        # A3：批量导出 zip 的按钮与接线（服务端行为见下面 §3 段之后的 A3 真服务往返）
+        record("A3 批量导出按钮在页面里（导出所选/落盘给打开文件夹）",
+               all(k in html for k in ("nbBatchZip", "导出所选", "exportPickedZip",
+                                       "/api/notes/export/batch", "exportFilename(r, '笔记导出'")),
+               "按钮 + 端点 + 两种模式的反馈齐备")
+        # B12：设置页五分区标签页（五格 + 卡片挂 data-set-tab + 记住上次分区 + 深链入口）
+        record("B12 设置分区标签页在页面里（五格/记住上次/深链）",
+               all(k in html for k in ('id="setTabs"', 'id="setTab-lesson"',
+                                       'id="setTab-notes"', 'id="setTab-link"',
+                                       'id="setTab-look"', 'id="setTab-system"',
+                                       'data-set-tab="lesson"', 'data-set-tab="notes"',
+                                       "ll_settings_tab", "lanGoSet",
+                                       "openWorkbench('settings', { tab: 'link' })")),
+               "五格 + 卡片分区标记 + localStorage 键 + 深链入口齐备")
         # 条目19：ws_handshake_ok 改带 token 版 + 新增 ws_handshake_rejected
         record("WebSocket 握手（带 token）", ws_handshake_ok(port, token))
         rej_ok, rej_line = ws_handshake_rejected(port)
@@ -898,6 +937,68 @@ def test_server(port: int = 8799) -> None:
                f"active={c_after.get('active')} · 课程数 "
                f"{len(c_after.get('courses') or [])}（原 {len(courses0.get('courses') or [])}）")
 
+        # —— B14 课程管理重做：统计字段 + 删课回溯历史笔记归属 ——
+        # ① 统计：/api/courses 每行带 notes / terms（术语条数=读该课术语表真文件），
+        #    临时建一份术语表与一篇笔记，核对两个数各自对上；
+        # ② 删课承诺：DELETE 后该课历史笔记头里的课名必须变成「未分类」（设置页删除
+        #    确认框写的就是这句「N 篇笔记将归入未分类」），且正文一字不丢。
+        b14_course = f"smoke-课程管理-{int(time.time())}"
+        b14_note = "lecture_19990101_0008.md"
+        b14_gloss = f"smoke-b14-{int(time.time())}.md"
+        b14_gpath = ROOT / "glossary" / b14_gloss
+        b14_npath = ROOT / "transcripts" / b14_note
+        b14_ok = False
+        try:
+            (ROOT / "glossary").mkdir(parents=True, exist_ok=True)
+            b14_gpath.write_text("# smoke 临时术语表\nalpha = 甲\nbeta = 乙\n",
+                                 encoding="utf-8")
+            b14_npath.write_text(
+                f"# 双语课堂笔记 19990101_0008\n\n"
+                "> LectureLens 自动生成（EN 原文 / ZH 翻译）\n"
+                f"> 课程：{b14_course}\n\n---\n\n- `10:00:00` b14 smoke line\n",
+                encoding="utf-8")
+            r_c = httpx.post(f"{base}/api/courses", timeout=5, headers=H,
+                             json={"name": b14_course, "glossary": f"glossary/{b14_gloss}"})
+            b14_id = ((r_c.json().get("course") or {}).get("id")
+                      if r_c.status_code == 200 else None)
+            row = next((c for c in httpx.get(f"{base}/api/courses", timeout=5,
+                                             headers=H).json()["courses"]
+                        if c.get("name") == b14_course), {})
+            record("B14 课程统计（N 篇笔记 · M 条术语）",
+                   bool(b14_id) and row.get("notes") == 1 and row.get("terms") == 2
+                   and row.get("glossary_missing") is False,
+                   f"notes={row.get('notes')} · terms={row.get('terms')} · "
+                   f"missing={row.get('glossary_missing')}")
+            r_del = httpx.delete(f"{base}/api/courses/{b14_id}", timeout=5, headers=H)
+            body = r_del.json() if r_del.status_code == 200 else {}
+            txt = httpx.get(f"{base}/api/notes/file", timeout=5, headers=H,
+                            params={"name": b14_note}).text
+            record("B14 删课程 → 历史笔记归入「未分类」（确认框的那句承诺）",
+                   r_del.status_code == 200 and body.get("retagged") == 1
+                   and "> 课程：未分类" in txt and "> 课程：" + b14_course not in txt
+                   and "b14 smoke line" in txt,
+                   f"HTTP {r_del.status_code} · retagged={body.get('retagged')} · "
+                   f"正文保留={'b14 smoke line' in txt}")
+            b14_ok = True
+        finally:
+            with contextlib.suppress(Exception):
+                b14_npath.unlink()
+            with contextlib.suppress(Exception):
+                b14_gpath.unlink()
+            if not b14_ok:                      # 中途失败也别把临时课程留在表里
+                with contextlib.suppress(Exception):
+                    cid = next((c["id"] for c in httpx.get(f"{base}/api/courses", timeout=5,
+                                                           headers=H).json()["courses"]
+                                if c.get("name") == b14_course), None)
+                    if cid:
+                        httpx.delete(f"{base}/api/courses/{cid}", timeout=5, headers=H)
+        record("B14 测试零残留（临时笔记 + 术语表 + 课程）",
+               not b14_npath.exists() and not b14_gpath.exists()
+               and all(c.get("name") != b14_course
+                       for c in httpx.get(f"{base}/api/courses", timeout=5,
+                                          headers=H).json()["courses"]),
+               "三件都清干净")
+
         # —— 条目②（§2 课后改归属）：笔记头课程行的定稿改写 + 批量 + 往返 ——
         # 真服务上跑完整往返：两篇临时笔记（本进程直接落盘，服务只按名字认库内文件）
         # → 单篇改写 → 改回「未分类」→ 批量两篇 → 再批量改回 → 400 文案 → WS 'notes'
@@ -1171,6 +1272,54 @@ def test_server(port: int = 8799) -> None:
                not tag_path.exists(), "临时笔记已删" if not tag_path.exists()
                else f"残留 {tag_note}")
 
+        # —— A2 批量打标签：一次给两篇加一组标签 → 读回（以文件为准）→ 再移除一条 ——
+        # 与 §8 的单篇链分开成两块：这里验的是**批量**语义（整单校验 + 逐篇合并 + 计数
+        # + 单次广播）。读回一律走 /api/notes/file（服务端读盘），不看响应体自说自话。
+        btag_notes = ["lecture_19990101_0009.md", "lecture_19990101_0010.md"]
+        try:
+            for i, name in enumerate(btag_notes):
+                (ROOT / "transcripts" / name).write_text(
+                    f"# 双语课堂笔记 19990101_00{9 + i:02d}\n\n"
+                    "> LectureLens 自动生成（EN 原文 / ZH 翻译）\n"
+                    "> 课程：未分类\n\n---\n\n- `10:00:00` batch tag smoke line\n",
+                    encoding="utf-8")
+            r_bt = httpx.post(f"{base}/api/notes/tags/batch", timeout=10, headers=H,
+                              json={"files": btag_notes, "tags": ["重点", "smoke批"]})
+            bt = r_bt.json() if r_bt.status_code == 200 else {}
+            txts = [httpx.get(f"{base}/api/notes/file", timeout=5, headers=H,
+                              params={"name": n}).text for n in btag_notes]
+            record("A2 批量打标签（两篇一次加上 → 读回以文件为准）",
+                   r_bt.status_code == 200 and bt.get("changed") == 2
+                   and bt.get("failed") == []
+                   and all("> 标签：#重点 #smoke批" in t for t in txts),
+                   f"changed={bt.get('changed')} · tags={bt.get('tags')}")
+            r_bt2 = httpx.post(f"{base}/api/notes/tags/batch", timeout=10, headers=H,
+                               json={"files": btag_notes, "tags": ["smoke批"],
+                                     "mode": "remove"})
+            bt2 = r_bt2.json() if r_bt2.status_code == 200 else {}
+            t2 = httpx.get(f"{base}/api/notes/file", timeout=5, headers=H,
+                           params={"name": btag_notes[0]}).text
+            t_other = httpx.get(f"{base}/api/notes/file", timeout=5, headers=H,
+                                params={"name": btag_notes[1]}).text
+            r_bt3 = httpx.post(f"{base}/api/notes/tags/batch", timeout=10, headers=H,
+                               json={"files": [btag_notes[0], "lecture_19990101_9999.md"],
+                                     "tags": ["重点"]})
+            record("A2 批量移除 + 整单校验（一篇不存在 → 400 且不半批写入）",
+                   bt2.get("changed") == 2 and "> 标签：#重点" in t2
+                   and "smoke批" not in t2
+                   and r_bt3.status_code == 400
+                   and "笔记不存在" in (r_bt3.json().get("error") or "")
+                   and "> 标签：#重点" in t_other,     # 400 那次没动任何文件
+                   f"remove changed={bt2.get('changed')} · "
+                   f"整单 400 HTTP {r_bt3.status_code}")
+        finally:
+            for n in btag_notes:
+                with contextlib.suppress(Exception):
+                    (ROOT / "transcripts" / n).unlink()
+        bt_left = [n for n in btag_notes if (ROOT / "transcripts" / n).exists()]
+        record("A2 测试零残留（临时笔记）", not bt_left,
+               "临时笔记已删" if not bt_left else f"残留 {bt_left}")
+
         # —— 条目③（§3 导出位置自选 + 文件名）：落盘往返 + 清回后仍走浏览器下载 ——
         # 真服务上跑完整链：设 export_dir（临时目录，成功即自动建目录）→ 导出 md 断言
         # JSON {ok, path} 与盘上文件（名 = {课程}_{日期}.md）→ 同名再导得 -2（绝不覆盖）
@@ -1213,6 +1362,74 @@ def test_server(port: int = 8799) -> None:
                    r_exp2.get("name") == want_name[:-3] + "-2.md"
                    and exp_path.is_file() and Path(r_exp2.get("path") or "").is_file(),
                    f"{want_name} → {r_exp2.get('name')}")
+            # B1：课程非空 → 落进 <导出目录>/<课程名>/ 子目录（"对应的笔记本"的物理版）。
+            # 断言用服务端回的 path 反推父目录，而不是只看文件名——回归时能立刻看出
+            # 「文件跑回根目录平铺」这类退化。收尾由 ex_dir 的 rmtree 一并清掉（含子目录）。
+            record("B1 导出落进课程子目录（<导出目录>/<课程名>/）",
+                   exp_path.parent == ex_dir / ex_course and exp_path.parent.is_dir()
+                   and not (ex_dir / want_name).exists(),
+                   f"{exp_path.parent.name}/{exp_path.name}")
+            # B1：课程为空（未分类）→ 仍落导出根目录，不凭空建「未分类」文件夹
+            (ROOT / "transcripts" / ex_note).write_text(
+                f"# 双语课堂笔记 {ex_stamp}\n\n"
+                "> LectureLens 自动生成（EN 原文 / ZH 翻译）\n"
+                "> 课程：未分类\n\n---\n\n- `10:00:00` export smoke line\n",
+                encoding="utf-8")
+            r_exp3 = httpx.get(f"{base}/api/notes/export", timeout=15, headers=H,
+                               params={"name": ex_note, "fmt": "md"})
+            exp3 = r_exp3.json() if r_exp3.status_code == 200 else {}
+            p3 = Path(exp3.get("path") or "")
+            record("B1 课程为空 → 仍落导出根目录（不建「未分类」文件夹）",
+                   r_exp3.status_code == 200 and p3.parent == ex_dir and p3.is_file()
+                   and not (ex_dir / "未分类").exists(),
+                   f"{p3.name} · 根目录子项={sorted(q.name for q in ex_dir.iterdir())}")
+            # —— A3 批量导出 zip：真服务打包 → 包可解 → 条目数/条目名/内容断言 ——
+            # 两篇**同课同日**的笔记 → 条目名必然重名，正好连 **包内避让** 一起验
+            # （否则解压时后者盖前者，用户静默少文件）。ex_note 的课程在前一条 B1
+            # 子用例里被改成了「未分类」，这里先写回 ex_course，两篇才真的同名。
+            b3_note = "lecture_19990101_0011.md"
+            try:
+                (ROOT / "transcripts" / ex_note).write_text(
+                    f"# 双语课堂笔记 {ex_stamp}\n\n"
+                    "> LectureLens 自动生成（EN 原文 / ZH 翻译）\n"
+                    f"> 课程：{ex_course}\n\n---\n\n- `10:00:00` export smoke line\n",
+                    encoding="utf-8")
+                (ROOT / "transcripts" / b3_note).write_text(
+                    "# 双语课堂笔记 19990101_0011\n\n"
+                    "> LectureLens 自动生成（EN 原文 / ZH 翻译）\n"
+                    f"> 课程：{ex_course}\n\n---\n\n- `10:00:00` zip smoke line二\n",
+                    encoding="utf-8")
+                r_zip = httpx.post(f"{base}/api/notes/export/batch", timeout=30, headers=H,
+                                   json={"files": [ex_note, b3_note], "fmt": "md"})
+                zj = r_zip.json() if r_zip.status_code == 200 else {}
+                zpath = Path(zj.get("path") or "")
+                import zipfile as zipfile_mod     # noqa: PLC0415 —— 与其余段同款延迟导入
+                names: list = []
+                inner: dict = {}
+                if zpath.is_file():
+                    with zipfile_mod.ZipFile(zpath) as zf:
+                        names = zf.namelist()
+                        inner = {n: zf.read(n).decode("utf-8") for n in names}
+                want_entries = [f"{ex_course}_19990101.md",
+                                f"{ex_course}_19990101-2.md"]      # 同课同日 → -2 避让
+                record("A3 批量导出 zip（落盘 → 可解 → 条目名避让/内容对得上）",
+                       r_zip.status_code == 200 and zj.get("count") == 2
+                       and zpath.is_file() and zpath.parent == ex_dir
+                       and names == want_entries
+                       and any("export smoke line" in t for t in inner.values())
+                       and any("zip smoke line二" in t for t in inner.values()),
+                       f"count={zj.get('count')} · {zj.get('name')} · 条目={names}")
+                r_zip_empty = httpx.post(f"{base}/api/notes/export/batch", timeout=10,
+                                         headers=H, json={"files": []})
+                record("A3 空选 400（不空转、不产出空包）",
+                       r_zip_empty.status_code == 400
+                       and "不能为空" in (r_zip_empty.json().get("error") or ""),
+                       f"HTTP {r_zip_empty.status_code}")
+            finally:
+                with contextlib.suppress(Exception):
+                    (ROOT / "transcripts" / b3_note).unlink()
+            record("A3 测试零残留（临时笔记）",
+                   not (ROOT / "transcripts" / b3_note).exists(), "临时笔记已删")
             r_clash = httpx.post(f"{base}/api/config", timeout=5, headers=H,
                                  json={"export_dir": str(ex_dir / "a<b")})
             record("§3 非法导出位置 400（非法字符，配置零污染）",
@@ -1387,11 +1604,20 @@ def test_server(port: int = 8799) -> None:
                     {"error": f"HTTP {r_end.status_code}"}
             except Exception as e:                    # noqa: BLE001 —— 如实记失败
                 endj = {"error": f"{type(e).__name__}: {e}"}
+            # B1：有课程归属 → 落 <导出目录>/<课程名>/（未分类 → 仍落根）。期望目录用
+            # **服务端同一个** exportdir.clean_component 算，避免两边清洗规则各写一份。
+            import exportdir as exportdir_mod      # noqa: PLC0415 —— 与其余段同款延迟导入
+            cur_course = next((n.get("course") for n in cur.get("notes") or []
+                               if n.get("name") == cur.get("current")), None)
+            sub = (exportdir_mod.clean_component(cur_course)
+                   if not exportdir_mod.course_is_empty(cur_course) else "")
+            want_dir = (ng_dir / sub) if sub else ng_dir
+            end_path = Path(endj.get("path") or "")
             record("§5 步骤③ 导出当前笔记（§3 落盘 JSON {ok, path}）",
-                   endj.get("ok") is True
-                   and Path(endj.get("path") or "").is_file()
-                   and Path(endj.get("path") or ".").parent == ng_dir,
-                   f"{endj.get('name') or endj.get('error')} · {endj.get('bytes')} 字节")
+                   endj.get("ok") is True and end_path.is_file()
+                   and end_path.parent == want_dir,
+                   f"{endj.get('name') or endj.get('error')} · {endj.get('bytes')} 字节 · "
+                   f"落点={(sub or '(导出根目录)')}")
             record("§5 二次确认开关在 config 里可读（默认 true）",
                    cfg_end.get("class_end_confirm") is True,
                    f"class_end_confirm={cfg_end.get('class_end_confirm')}")
@@ -1409,6 +1635,44 @@ def test_server(port: int = 8799) -> None:
                and httpx.get(f"{base}/api/config", timeout=10,
                              headers=H).json().get("export_dir") == ng_prev,
                f"export_dir={ng_prev!r}")
+
+        # —— D2（分发工程）：模型下载语义与镜像开关在真服务上的契约 ——
+        # (a)(b)(c) 的纯逻辑/源码级断言在 tests/test_hf_env.py；这里验三件只有真服务
+        # 才有的东西：① /api/config 与 /api/models 的字段（含 offline/mirror 两个**事实**
+        # 字段要与本进程环境一致——frozen 不再影响它们）② hf_mirror 布尔往返（写盘即存）
+        # ③ 非布尔一律 400（绝不把字符串当 endpoint 用）。收尾按值还原（§3 export_dir 同款）。
+        dm_cfg = httpx.get(f"{base}/api/config", timeout=5, headers=H).json()
+        dm_mod = httpx.get(f"{base}/api/models", timeout=15, headers=H).json()
+        dm_prev = dm_cfg.get("hf_mirror")
+        want_offline = os.environ.get("HF_HUB_OFFLINE") == "1"
+        want_mirror = os.environ.get("HF_ENDPOINT") == "https://hf-mirror.com"
+        record("D2 /api/config 含 hf_mirror；/api/models 的 offline/mirror 与进程环境一致",
+               isinstance(dm_prev, bool)
+               and dm_mod.get("offline") is want_offline
+               and dm_mod.get("mirror") is want_mirror,
+               f"hf_mirror={dm_prev} · offline={dm_mod.get('offline')}"
+               f"（env={want_offline}）· mirror={dm_mod.get('mirror')}（env={want_mirror}）")
+        try:
+            r_on = httpx.post(f"{base}/api/config", timeout=5, headers=H,
+                              json={"hf_mirror": True})
+            got = httpx.get(f"{base}/api/config", timeout=5,
+                            headers=H).json().get("hf_mirror")
+            record("D2 hf_mirror 布尔键往返（写 true → 读回 true）",
+                   r_on.status_code == 200 and got is True,
+                   f"HTTP {r_on.status_code} · hf_mirror={got}")
+            r_bad = httpx.post(f"{base}/api/config", timeout=5, headers=H,
+                               json={"hf_mirror": "https://evil.example"})
+            bad = r_bad.json() if r_bad.status_code != 200 else {}
+            record("D2 hf_mirror 只收布尔（URL/字符串一律 400，绝不当时端点用）",
+                   r_bad.status_code == 400 and "hf_mirror" in (bad.get("error") or ""),
+                   f"HTTP {r_bad.status_code}")
+        finally:
+            httpx.post(f"{base}/api/config", timeout=5, headers=H,
+                       json={"hf_mirror": bool(dm_prev)})
+        now_m = httpx.get(f"{base}/api/config", timeout=5,
+                          headers=H).json().get("hf_mirror")
+        record("D2 hf_mirror 收尾还原（值回到 smoke 开始前）",
+               now_m == bool(dm_prev), f"hf_mirror {dm_prev!r} → {now_m!r}")
     finally:
         httpx.get, httpx.post = _orig_get, _orig_post   # 还原（别影响后面的段）
         proc.terminate()
@@ -1671,6 +1935,248 @@ def test_streaming_server(port: int = 8798) -> None:
                "端口已释放" if not leftover else "⚠ 端口仍在监听")
 
 
+# ---------------------------------------------------------------- 8. 打包契约（D1）
+def test_build_contract() -> None:
+    """[8] 打包契约（D1 分发工程）：这些是"打包版能不能开窗"的硬前提，秒级可验——
+    **不跑 PyInstaller**（分钟级，归 scripts/build_exe.py 实跑 + D3 产物探针），只断言
+    脚本与版本口径没被改坏：
+    ① 打包入口 = app/desktop.py（自启命令写的 --minimized 只有它认）；
+    ② 版本注入 = branding.APP_VERSION，生成物是合法 VSVersionInfo（exe 属性带 1.0.0）；
+    ③ 桌面壳依赖（webview/pythonnet/clr_loader/pystray/PIL/qrcode/keyboard/fpdf/
+       docx/genanki/pyaudiowpatch）的收集清单与构建后抽查清单一一对应；
+    ④ 必需产物含 float.html/privacy.html，随包模型默认 small。"""
+    print("\n[8] 打包契约（D1：入口/版本注入/桌面壳依赖/产物断言）")
+    problems: list[str] = []
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import build_exe as be
+
+        import branding
+        from PyInstaller.utils.win32.versioninfo import (
+            load_version_info_from_text_file,
+        )
+    except Exception as e:
+        record("打包契约（D1）", False, f"导入失败 {type(e).__name__}: {e}")
+        return
+
+    # ① 入口：自启命令（frozen 分支 = "<exe>" --minimized）指向的就是这个入口
+    args = be.pyinstaller_args(False)
+    if args[-1] != str(be.ROOT / "app" / "desktop.py"):
+        problems.append(f"打包入口不是桌面壳: {args[-1]}")
+
+    # ② 版本注入：exe 属性里的 FileVersion/ProductVersion
+    version = branding.APP_VERSION
+    try:
+        if not all(ord(c) < 128 for c in be.version_info_text(version)):
+            problems.append("版本资源文件含非 ASCII 字符（跨机器 codepage 会乱码）")
+        with tempfile.TemporaryDirectory() as td:   # 写临时目录：不碰真实构建产物
+            vf = be.write_version_file(version, Path(td) / "version_info.txt")
+            info = load_version_info_from_text_file(str(vf))
+        strings = {s.name: s.val
+                   for table in info.kids[0].kids for s in table.kids}
+        if strings.get("FileVersion") != version or strings.get("ProductVersion") != version:
+            problems.append(f"版本资源不是 {version}: {strings.get('FileVersion')!r}")
+    except Exception as e:
+        problems.append(f"版本文件不可用 {type(e).__name__}: {e}")
+
+    # ③ 收集清单 ↔ 构建后抽查清单一一对应（漏收 = 打包版没窗口壳/托盘/二维码）
+    collect_all = {args[i + 1] for i, a in enumerate(args) if a == "--collect-all"}
+    packages = {pkg for pkg, _why in be.DESKTOP_SHELL_PACKAGES}
+    missing = sorted(packages - collect_all)
+    if missing:
+        problems.append(f"未显式收集: {missing}")
+    checked = {pkg for pkg, _label, _pat in be.DESKTOP_SHELL_ARTIFACTS}
+    if checked != packages:
+        problems.append(f"抽查清单与收集清单不一致: {sorted(checked ^ packages)}")
+
+    # ④ 产物断言（web 页）+ 随包模型默认 small
+    for page in ("_internal/web/float.html", "_internal/web/privacy.html"):
+        if page not in be.REQUIRED_DIST_FILES:
+            problems.append(f"必需产物缺 {page}")
+    if be.BUNDLE_MODEL != "small" or be.parse_args([]).bundle_model != "small":
+        problems.append(f"随包模型默认不是 small: {be.BUNDLE_MODEL}")
+    # ⑤ D3 评审修复①：用户数据/密钥清单必须覆盖**运行期所有 ROOT 锚定的写盘物**
+    # （评审2 实测：glossary 与 courses.json 曾在清单外，而它们与 .env 同源——
+    # 「在打包目录里建过术语表/课程」就会混进分发目录）。
+    for name in (".env", "config.json", "courses.json", "transcripts",
+                 "logs", "glossary", "desktop.lock"):
+        if name not in be.FORBIDDEN_DIST_ENTRIES:
+            problems.append(f"禁用清单缺 {name}")
+    if ".log" not in be.FORBIDDEN_DIST_SUFFIXES:
+        problems.append("禁用后缀缺 .log")
+
+    record("打包契约（D1）", not problems,
+           "；".join(problems) or f"入口/版本 {version}/依赖 {len(packages)} 件/产物断言齐备")
+
+
+def test_installer_contract() -> None:
+    """[9] 安装包契约（D4 分发工程）：秒级、离线，**不跑 ISCC**（编译分钟级，归
+    scripts/verify_installer.py 实跑 + 真装真卸 + SHA256）。
+
+    只钉"被顺手改坏会出大事"的那几条：
+    ① 每用户安装：PrivilegesRequired=lowest + DefaultDirName={localappdata}\\LectureLens
+       （撞 Program Files 就回到权限坑，D2 明确不支持）；
+    ② **卸载不得删用户数据**：这是本组最要紧的一条——[UninstallDelete] 里出现
+       transcripts/logs/glossary/config.json，或整目录删 {app}，就会把用户一学期的
+       笔记一起抹掉，且不可逆；
+    ③ 产物名口径 dist/installer/LectureLens-<版本>-setup.exe，版本取自 exe 版本资源
+       （Windows 固定版本信息恒四段，须裁成三段语义版本）；
+    ④ 随包「新手指引.txt」存在、是 UTF-8、且覆盖 SmartScreen/防火墙/向导/扫码四要点。
+
+    注：断言前**先剥 `;` 注释**——.iss 里有一段专门解释"为什么故意不写
+    [UninstallDelete]"的注释，里面必然出现那些词；不剥注释就等于让说明文字
+    把断言喂饱（tests/test_verify_installer.py 同款处理，两处口径一致）。
+    """
+    print("\n[9] 安装包契约（D4：每用户安装/卸载保留数据/产物名/新手指引）")
+    problems: list[str] = []
+    iss = ROOT / "installer" / "lecturelens.iss"
+    guide = ROOT / "installer" / "新手指引.txt"
+    if not iss.is_file():
+        record("安装包契约（D4）", False, f"缺 {iss.relative_to(ROOT)}")
+        return
+
+    raw = iss.read_text(encoding="utf-8")
+    # 剥注释后的"有效脚本"——断言只认代码，不认说明文字
+    code = "\n".join(ln for ln in raw.splitlines() if not ln.strip().startswith(";"))
+
+    # ① 每用户安装
+    if not re.search(r"^PrivilegesRequired=lowest$", code, re.M):
+        problems.append("PrivilegesRequired 不是 lowest")
+    if not re.search(r"^DefaultDirName=\{localappdata\}\\LectureLens$", code, re.M):
+        problems.append("DefaultDirName 不是 {localappdata}\\LectureLens")
+    if "Program Files" in code:
+        problems.append("出现 Program Files（全机安装，D2 不支持）")
+
+    # ② 卸载不得删用户数据
+    m = re.search(r"^\[UninstallDelete\](.*?)(?=^\[|\Z)", code, re.S | re.M)
+    unsec = m.group(1) if m else ""
+    for name in ("transcripts", "logs", "glossary", "config.json"):
+        if name in unsec:
+            problems.append(f"[UninstallDelete] 触及用户数据 {name}")
+    if re.search(r'Name:\s*"\{app\}\\?"', unsec):
+        problems.append("[UninstallDelete] 整目录删 {app}（会连笔记一起删）")
+
+    # ③ 产物名 + 版本来源
+    if not re.search(r"^OutputBaseFilename=LectureLens-\{#MyAppVersion\}-setup$", code, re.M):
+        problems.append("OutputBaseFilename 口径不符")
+    if "GetVersionNumbersString(" not in code:
+        problems.append("版本未取自 exe 版本资源（应 GetVersionNumbersString）")
+    if re.search(r'#define\s+MyAppVersion\s+"', code):
+        problems.append("版本号被硬编码（破坏单一来源）")
+    if 'Copy(Ver4, Len(Ver4) - 1, 2) == ".0"' not in code:
+        problems.append("缺四段→三段版本裁剪守卫")
+    # ⑤ 评审修复：四条卸载收尾消息都要覆盖且写明数据保留
+    #    （漏 UninstalledAndNeedsRestart → 「程序还开着就卸载」这条高频路径上
+    #     用户只看到英文原文、也不知道笔记被保留了）
+    m2 = re.search(r"^\[Messages\](.*?)(?=^\[|\Z)", code, re.S | re.M)
+    msgs = m2.group(1) if m2 else ""
+    for name in ("ConfirmUninstall", "UninstalledAll",
+                 "UninstalledMost", "UninstalledAndNeedsRestart"):
+        line = next((ln for ln in msgs.splitlines() if ln.startswith(name + "=")), "")
+        if not line:
+            problems.append(f"[Messages] 未覆盖 {name}")
+        elif "保留" not in line:
+            problems.append(f"{name} 未写明数据已保留")
+    # ⑥ 评审修复：TEST_VERSION 是测试专用钩子，必须条件编译且发版仍取自 exe 版本资源
+    if "#ifdef TEST_VERSION" not in code:
+        problems.append("缺 TEST_VERSION 条件编译（旧版测试包无从生成）")
+    elif code.index("#ifdef TEST_VERSION") > code.index("GetVersionNumbersString("):
+        problems.append("TEST_VERSION 分支位置不对（发版版本来源可能被劫持）")
+
+    # ⑦ 新手指引：存在 + UTF-8 + 四要点
+    if not guide.is_file():
+        problems.append("缺 installer/新手指引.txt")
+    else:
+        try:
+            gt = guide.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as e:
+            problems.append(f"新手指引不是 UTF-8: {e}")
+            gt = ""
+        for need, why in (("仍要运行", "SmartScreen 指引"),
+                          ("防火墙", "防火墙弹窗说明"),
+                          ("向导", "首启三步向导"),
+                          ("扫码", "手机同屏扫码")):
+            if need not in gt:
+                problems.append(f"新手指引缺{why}（{need}）")
+
+    record("安装包契约（D4）", not problems,
+           "；".join(problems) or "每用户安装/卸载保留数据/产物名口径/新手指引四要点齐备")
+
+
+def test_distribution_guide_contract() -> None:
+    """[10] 分发指南契约（D5）：秒级、离线。
+
+    文档最容易坏的方式不是写错字，而是**悄悄说谎**——代码里加了自动更新、安装包
+    换了名字/哈希、仓库口径变了，而指南还停在旧说法，朋友照着做就踩空。故这里钉：
+    ① 指南存在且是 UTF-8；
+    ② 五块内容齐（三渠道对比 / 发版 SOP / 首次使用 / 可复制文案 / FAQ）；
+    ③ **诚实边界三条如实写明**：私有可见性、未签名、无自动更新（D5 原话
+       「只写真实能力……不要承诺不存在的能力」）；
+    ④ **文档↔代码对齐**：指南说"没有自动更新"，代码里就真没有；
+    ⑤ **文档↔产物对齐**：指南里贴的安装包名与 SHA256 与 dist/installer 下真产物一致
+       （产物不存在则跳过该条，不误报）。
+    """
+    print("\n[10] 分发指南契约（D5：三渠道/SOP/首次使用/文案/FAQ + 诚实边界）")
+    problems: list[str] = []
+    guide = ROOT / "docs" / "distribution-guide.md"
+    if not guide.is_file():
+        record("分发指南契约（D5）", False, f"缺 {guide.relative_to(ROOT)}")
+        return
+    raw = guide.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        record("分发指南契约（D5）", False, f"不是 UTF-8: {e}")
+        return
+    if raw.startswith(b"\xef\xbb\xbf"):
+        problems.append("指南带了 BOM")
+
+    # ② 五块内容
+    for need, why in (("GitHub Release", "渠道对比"), ("网盘", "渠道对比"),
+                      ("gh release create", "发版 SOP"),
+                      ("SmartScreen", "首次使用指引"), ("仍要运行", "首次使用指引"),
+                      ("```text", "可复制文案块"),
+                      ("常见问题", "FAQ")):
+        if need not in text:
+            problems.append(f"缺{why}（{need}）")
+
+    # ③ 诚实边界
+    if "私有" not in text:
+        problems.append("未写明仓库私有（Release 仅 collaborator 可见）")
+    if "代码签名" not in text:
+        problems.append("未写明没有代码签名")
+    if "自动更新" not in text:
+        problems.append("未写明没有自动更新")
+    if "不公开分发" not in text and "刻意不做" not in text:
+        problems.append("未守住「不公开分发」口径")
+
+    # ④ 文档↔代码对齐：说了没有自动更新，代码里就得真没有
+    hits = []
+    for p in sorted((ROOT / "app").rglob("*.py")):
+        body = p.read_text(encoding="utf-8", errors="replace")
+        for kw in ("auto_update", "check_for_update", "updater_url", "自动更新"):
+            if kw in body:
+                hits.append(f"{p.name}:{kw}")
+    if hits:
+        problems.append(f"代码已有自动更新机制，指南口径需同步：{hits}")
+
+    # ⑤ 文档↔产物对齐（产物不存在则跳过）
+    cands = sorted((ROOT / "dist" / "installer").glob("LectureLens-*-setup.exe"),
+                   key=lambda q: q.stat().st_mtime)
+    if cands:
+        setup = cands[-1]
+        if setup.name not in text:
+            problems.append(f"指南未提到当前安装包名 {setup.name}")
+        sha = setup.with_name(setup.name + ".sha256")
+        if sha.is_file():
+            want = sha.read_text(encoding="utf-8").split()[0].lower()
+            if want not in text.lower():
+                problems.append("指南里的 SHA256 与产物 .sha256 不一致")
+
+    record("分发指南契约（D5）", not problems,
+           "；".join(problems) or "三渠道/SOP/首次使用/文案/FAQ 齐备 + 诚实边界与产物对齐")
+
+
 # ----------------------------------------------------------------
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -1701,6 +2207,10 @@ def main() -> None:
             test_server()
         test_streaming_core()   # [7a] 条目11/12：真模型流式管线（TTS + CPU small）
         test_streaming_server()  # [7b] 条目12：--streaming 服务级布线（子进程）
+
+    test_build_contract()   # [8] D1：打包契约（秒级；--vad-only 也跑——它不依赖模型）
+    test_installer_contract()  # [9] D4：安装包契约（秒级离线；同上，--vad-only 也跑）
+    test_distribution_guide_contract()  # [10] D5：分发指南契约（同上）
 
     print("\n========== 结果汇总 ==========")
     for name, ok, note in RESULTS:

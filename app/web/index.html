@@ -332,6 +332,17 @@
   .cDel:hover { border-color:color-mix(in srgb, var(--err) 45%, transparent);
                 color:var(--err); }
   .cHint { font-size:var(--ui-small); color:var(--text-3); padding:4px 0; }
+  /* —— B14：课程管理行 = 色点 | 课程名 | 统计 | 术语表 | 操作 ——
+     统计走 §三 辅助说明档（--ui-small/--text-2 + 等宽数字，同 .nbCount/.cnum 口径）；
+     「查看笔记」按 §六 次要档（--surface-2 底 + 1px border，悬停 border-strong）；
+     整行可点=跳笔记库筛该课（只加 cursor 提示，不新造悬停底色/动效——§5 之外一律瞬时）。 */
+  .cStat { flex:none; font-size:var(--ui-small); color:var(--text-2);
+           font-family:Consolas,monospace; white-space:nowrap; }
+  .cOpen { background:var(--surface-2); color:var(--text-1);
+           border:1px solid var(--border); border-radius:8px; height:32px;
+           padding:0 12px; cursor:pointer; font-size:var(--ui-small); flex:none; }
+  .cOpen:hover { border-color:var(--border-strong); }
+  .cRow.cGo { cursor:pointer; }
 
   /* —— p2-4 模型管理器（§七-3）：每行 = 名称 | 缓存状态 | 占用 | 操作 ——
      令牌全走 §二/§三；状态色沿用 §六 语义（ok 绿 / warn 黄），不加新色。 */
@@ -442,8 +453,19 @@
   #viewNotes, #viewGlossary, #viewSettings { display:none; }
   body.view-notes #viewNotes { display:block; }
   body.view-glossary #viewGlossary { display:block; }
+  /* —— B12：设置页五分区标签页 ——
+     tab 条复用 .tagChip/.tagChip.on 本体（选中态 = gold-dim 底 + gold 字，§六 口径，
+     不新造色值）；卡片**不挪位**：各自挂 data-set-tab，只有当前分区的显示。
+     尺寸沿用 §六（按钮高 32px / 工具条紧凑档 28px），无动效（§5 之外一律瞬时）。 */
+  .setTabs { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px; }
+  .setTabs .tagChip { height:28px; font-size:var(--ui-body); padding:0 14px; }
+  #viewSettings .card[data-set-tab] { display:none; }
+  #viewSettings .card[data-set-tab].setOn { display:block; }
   body.view-settings #viewSettings { display:block; }
-  .nbBar { display:flex; align-items:center; gap:8px; margin-bottom:16px; max-width:1180px; }
+  /* A1：工具条可换行——全选/反选使这一行更长（≈620px 内容），窄窗口下宁可折行也
+     不能让控件被裁到屏幕外（换行只在装不下时发生，桌面宽度下与原来一模一样）。 */
+  .nbBar { display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+           margin-bottom:16px; max-width:1180px; }
   .nbBar input[type=search], .nbBar select, .nbBar button {
     background:var(--surface-2); color:var(--text-1); border:1px solid var(--border);
     border-radius:8px; padding:4px 12px; font-size:var(--ui-body); height:32px;
@@ -492,6 +514,39 @@
                     font-size:var(--ui-small); cursor:pointer; }
   .nbBatch button:hover:not(:disabled) { border-color:var(--border-strong); }
   .nbBatch button:disabled { opacity:.45; cursor:not-allowed; }
+  /* —— 波次一 A1：工具条三态全选 + 反选 ——
+     全选框与行内勾选同款（.nbPick：16px + accent-color:var(--gold)）——三态里的
+     「半选」用浏览器原生 indeterminate 小横杠，同样吃 accent-color（仍是 §六
+     金色选中态口径）；反选按钮吃 .nbBar button 的次级样式。不新造色值、不加动效
+     （§5 三个动效之外一律瞬时）。 */
+  .nbBar .nbPickAll { height:32px; }
+  .nbBar .nbPickAll input { cursor:pointer; }
+  /* 批量条的说明文案沿用 .nbBatch span（--ui-small / --text-2，§三 辅助说明档），
+     不另设色值；三态里「半选」的语义写在 JS（indeterminate）。 */
+  /* —— A2：批量打标签的小面板 ——
+     配方与批量条同款（--surface-2 底 + 1px border + 8px 圆角 + 8px 内距），但**不复用
+     .nbBatch 类名**：那条规则里的 `.nbBatch button{…}` 会盖掉 chips 的 999 圆角/24px
+     高度（.tagChip 优先级更低），面板里就会长出一排方 chip。按钮规则一律写成
+     `> button`（只吃面板自己的两个动作按钮，chips 在 #nbTagChips 里不受影响）。
+     chip 选中态仍是 .tagChip.on 的 gold-dim/gold（§六）；无新色值、无动效。 */
+  .nbTagBar { display:none; align-items:center; gap:8px; flex-wrap:wrap;
+              margin-bottom:8px; padding:8px 12px; background:var(--surface-2);
+              border:1px solid var(--border); border-radius:8px; max-width:1180px; }
+  .nbTagBar.on { display:flex; }
+  .nbTagBar select { background:var(--surface-2); color:var(--text-1);
+                     border:1px solid var(--border); border-radius:8px; height:28px;
+                     padding:0 8px; font-size:var(--ui-small); cursor:pointer; flex:none; }
+  .nbTagBar .tagRow { margin-bottom:0; flex:1; min-width:200px; }
+  .nbTagBar input { flex:1; min-width:150px; background:var(--surface-2);
+                    color:var(--text-1); border:1px solid var(--border);
+                    border-radius:8px; padding:4px 12px; font-size:var(--ui-body);
+                    height:28px; }
+  .nbTagBar input:focus { outline:none;
+                          border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .nbTagBar > button { background:var(--surface); color:var(--text-1);
+                       border:1px solid var(--border); border-radius:8px; height:28px;
+                       padding:0 12px; font-size:var(--ui-small); cursor:pointer; flex:none; }
+  .nbTagBar > button:hover { border-color:var(--border-strong); }
   /* —— §8 标签：chips（选中态走 §六 金色语义）、行内徽章、预览行、工具条快捷面板 ——
      只加状态与布局，不新增色值（全部语义令牌）、不加动效（§5 三个动效之外一律瞬时）。 */
   .tagChip { display:inline-flex; align-items:center; gap:4px; height:24px; padding:0 10px;
@@ -946,17 +1001,45 @@ footer span { white-space:nowrap; }
         <select id="nbTagFilter" title="按标签筛选（与课程筛选、检索叠加）">
           <option value="">全部标签</option>
         </select>
+        <!-- A1：三态全选（空 / 半选 / 全选，作用域 = 当前筛选后的可见列表）+ 反选。
+             放在工具条而不是批量条里——批量条「已选 ≥1 篇才显示」，而全选框必须在
+             一篇都没选时就能用（否则没法开始多选）。Ctrl+A 同义（仅笔记库视图）。 -->
+        <label class="nbPick nbPickAll" title="全选 / 取消全选当前列表（半选 = 只勾了一部分）">
+          <input type="checkbox" id="nbSelAll" aria-label="全选当前列表的笔记" disabled>
+        </label>
+        <button id="nbBatchInvert" title="反选：当前列表里已勾选的取消、没勾的勾上"
+                disabled>反选</button>
         <span class="nbCount" id="nbCount"></span>
         <button id="nbTrashBtn" title="回收站：软删除的笔记在这里，可恢复 / 彻底删除 / 清空">🗑 回收站</button>
       </div>
-      <!-- §2 批量条：行首勾选 ≥1 篇才出现（多选只作用于**当前列表可见项**，
-           筛选/检索变化时选择集自动收敛）。批量操作走 /api/notes/course/batch。 -->
+      <!-- §2 批量条：行首勾选 ≥1 篇才出现（多选只作用于**当前列表可见项**）。
+           A1 口径：切换检索/课程/标签筛选 = **清空**选择（不是收敛）——宁可让用户
+           重勾，也不留「看不见的选中」被下一次批量删除带走；故此处明写这条规矩。 -->
       <div class="nbBatch" id="nbBatch">
         <span id="nbBatchText">已选 0 篇</span>
+        <span class="nbBatchHint" id="nbBatchHint"
+              title="切换课程 / 标签筛选或改动检索词都会清空选择——防止「看不见的选中」被误删；重新勾选即可">· 切换筛选 / 检索会清空选择</span>
         <span class="sp"></span>
+        <button id="nbBatchTag" title="给选中的笔记一次加上 / 去掉一组标签（A2）">🏷 打标签</button>
+        <button id="nbBatchZip" title="把选中的笔记打包成一个 zip（Markdown；设了导出位置就落盘，否则浏览器下载）">导出所选</button>
         <button id="nbBatchMove" title="把选中的笔记一起改到同一课程（改写笔记头课程行）">移动到…</button>
         <button id="nbBatchDelete" title="把选中的笔记一起移入回收站（可恢复）">删除</button>
         <button id="nbBatchClear" title="取消所有勾选">清空选择</button>
+      </div>
+      <!-- A2 批量打标签的小面板（与批量条同级）：预设 chips 来自服务端（列表每次刷新
+           带来现值）+ 自定义输入 + 方向（添加/移除）→ 一次应用到所选。面板与选择同生
+           共死：选择一被清空（切筛选/移动/删除/应用完成）就自动收起。 -->
+      <div class="nbTagBar" id="nbTagBar">
+        <select id="nbTagModeSel"
+                title="添加 = 给这些笔记补上标签；移除 = 从这些笔记去掉标签">
+          <option value="add">添加</option>
+          <option value="remove">移除</option>
+        </select>
+        <span class="tagRow" id="nbTagChips"></span>
+        <input type="text" id="nbTagNew" maxlength="16" autocomplete="off"
+               placeholder="自定义标签（回车加入本次）">
+        <button id="nbTagApply" title="把这组标签应用到所选笔记（逐篇合并，失败会如实列出）">应用</button>
+        <button id="nbTagCancel" title="收起面板（不改动任何笔记）">取消</button>
       </div>
       <div class="nbSplit">
         <div class="nbList" id="nbList"></div>
@@ -1002,12 +1085,27 @@ footer span { white-space:nowrap; }
     <h1>设置</h1>
     <p class="sub">全部即时保存（config.json 白名单键）；标 ⚠ 的改动重启服务后生效</p>
 
-    <div class="card">
-      <h2>课程</h2>
-      <p class="desc">课程决定<b>笔记归属</b>（写入笔记头 `&gt; 课程：…`）与<b>术语表绑定</b>；
-        未选课程时记为「未分类」。术语表填相对项目根目录的 .md 路径（如
-        <b>glossary/CS.md</b>），选中该课后自动注入翻译与识别 prompt。<br>
-        改动即时生效；改名会同步已写笔记的课程名，删除课程不会删笔记。</p>
+    <!-- B12：五分区标签页。tab 条复用 .tagChip/.tagChip.on（选中态 gold-dim/gold，§六）；
+         卡片本身**不挪位**，各自挂 data-set-tab，由 CSS 按当前分区显隐（结构零搬迁）。
+         分区记在 localStorage（键 ll_settings_tab），下次打开设置页回到上次那格；
+         openWorkbench('settings', {tab}) 可深链直达（手机同屏面板的「去设置」走它）。 -->
+    <div class="setTabs" id="setTabs" role="tablist" aria-label="设置分区">
+      <button class="tagChip" id="setTab-lesson" data-tab="lesson" role="tab">🎙 上课</button>
+      <button class="tagChip" id="setTab-notes" data-tab="notes" role="tab">📝 笔记</button>
+      <button class="tagChip" id="setTab-link" data-tab="link" role="tab">📶 连接</button>
+      <button class="tagChip" id="setTab-look" data-tab="look" role="tab">🎨 外观</button>
+      <button class="tagChip" id="setTab-system" data-tab="system" role="tab">⚙ 系统</button>
+    </div>
+
+    <div class="card" data-set-tab="notes">
+      <h2>课程管理</h2>
+      <p class="desc">这里只管课程本身：<b>改名</b> / <b>换色</b> / <b>绑定术语表</b> /
+        <b>删除</b>，每行显示统计（N 篇笔记 · M 条术语）。<b>点课程行（或「查看笔记」）
+        → 到笔记库筛出该课的笔记</b>。<br>
+        「选当前课程」不在这里——它在<b>上课的地方</b>：字幕页工具条「课程」下拉、
+        笔记库左侧课程列表（点条目 = 设为当前，记入笔记头并挂上该课术语表）。<br>
+        术语表填相对项目根目录的 .md 路径（如 <b>glossary/CS.md</b>）。改动即时生效；
+        改名会把已写笔记头里的旧课名一并同步；删除课程只改归属、<b>绝不删笔记</b>。</p>
       <div id="courseRows"></div>
       <div class="row" style="margin-top:12px">
         <input type="text" id="courseNewName" maxlength="60" placeholder="新课程名称">
@@ -1016,7 +1114,7 @@ footer span { white-space:nowrap; }
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-set-tab="lesson">
       <h2>识别模型</h2>
       <p class="desc">当前态：<span id="setModelCur" class="stateline" style="display:inline">…</span><br>
         切换会立即重建识别器（首次使用某档需下载，可能分钟级；期间字幕暂停）。</p>
@@ -1045,9 +1143,19 @@ footer span { white-space:nowrap; }
            否则失败后只剩一个无解释的「不完整」。（评审2） -->
       <p class="stateline" id="modelDlNote" hidden></p>
       <p class="stateline" id="modelCacheInfo"></p>
+      <!-- D2（分发工程）：模型下载镜像开关。**只认这一条预设镜像**（服务端只存布尔键，
+           镜像地址是后端源码常量，不接受任何 URL 输入）；HF 的 endpoint 在库导入时
+           读进常量，所以改写这个键只是存盘，**重启应用**才真的换源。 -->
+      <p class="desc">模型下载默认走官方 huggingface.co；国内网络慢可改用 hf-mirror.com
+        镜像加速（<b>改完要重启应用才换源</b>；只此一个预设镜像，不接受自定义地址）。</p>
+      <div class="row" style="margin-top:8px">
+        <label class="chk"><input type="checkbox" id="setHfMirrorChk">
+          国内网络加速：模型下载走 hf-mirror.com 镜像</label>
+      </div>
+      <p class="stateline" id="setHfMirrorState">…</p>
     </div>
 
-    <div class="card">
+    <div class="card" data-set-tab="lesson">
       <h2>音源</h2>
       <p class="desc">麦克风 = 教室现场收音；系统声音 = WASAPI 内录（Zoom/视频课，强制 silero VAD）。</p>
       <div class="row">
@@ -1058,7 +1166,7 @@ footer span { white-space:nowrap; }
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-set-tab="lesson">
       <h2>识别语言</h2>
       <p class="desc">热切换即生效（无需重建模型）。自动检测在长段才采纳结果，短段沿用上一段。</p>
       <div class="row">
@@ -1079,7 +1187,7 @@ footer span { white-space:nowrap; }
     <!-- p2-5（B4）高级·分句调优（§七-3 分区卡片）：控制「一句话什么时候算说完」。
          前三个键改后重建采集器；积压阈值 asr_loop 每轮现读、即时生效。
          默认值不在前端硬编码——「恢复默认」走后端 /api/config/segmentation/reset。 -->
-    <div class="card">
+    <div class="card" data-set-tab="lesson">
       <h2>高级 · 分句调优</h2>
       <p class="desc">控制「一句话什么时候算说完」。<b>静音断句 / 软上限 / 硬切上限</b>
         改动会重建采集器（正在说的那一段会丢，建议开课前调）；
@@ -1113,7 +1221,7 @@ footer span { white-space:nowrap; }
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-set-tab="lesson">
       <h2>流式字幕 <span class="stateline" style="display:inline">⚠ 重启后生效</span></h2>
       <p class="desc">开启后先出灰色斜体草稿（partial）、定稿后转正——延迟更低，CPU 占用略增。</p>
       <div class="row">
@@ -1121,7 +1229,7 @@ footer span { white-space:nowrap; }
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-set-tab="look">
       <h2>字幕显示 <span class="stateline" style="display:inline">B2 · 历史行渐隐</span></h2>
       <p class="desc">上课时把<b>当前句上方的最近几行</b>做渐隐（半透明 + 缩小），
         视线自然落在最新一句上。<br>
@@ -1137,7 +1245,7 @@ footer span { white-space:nowrap; }
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-set-tab="look">
       <h2>悬浮字幕条 <span class="stateline" style="display:inline">B1 · 桌面版</span></h2>
       <p class="desc">第二块屏场景：独立的无边框置顶小窗，只显示最新一句中英字幕，
         可拖动到任意位置；<b>主窗最小化时它仍显示</b>。
@@ -1152,7 +1260,7 @@ footer span { white-space:nowrap; }
          （hotkeys.combo_problem），非法值 400 + toast，控件回滚到服务端真值；
          注册失败（被占用/权限）在这里显示降级原因——用户看不到日志，
          状态行是「为什么按了没反应」的唯一出口。 -->
-    <div class="card">
+    <div class="card" data-set-tab="system">
       <h2>全局快捷键 <span class="stateline" style="display:inline">B12 · 桌面版</span></h2>
       <p class="desc">全局生效：<b>任何窗口聚焦时</b>都能用，不用先切回本应用。<br>
         格式 <b>ctrl+alt+l</b>：修饰键 ctrl/alt/shift/win <b>至少一个</b> + 主键一个
@@ -1180,7 +1288,7 @@ footer span { white-space:nowrap; }
     <!-- p3-3（B12）开机自启：开关的事实源是 HKCU 的 Run 注册表项**本身**，不是本地
          标记——手工删掉启动项后重开设置页就如实变回未勾选；写入/删除失败在状态行
          里显示原因（权限/策略拦截），不静默假成功。 -->
-    <div class="card">
+    <div class="card" data-set-tab="system">
       <h2>开机自启 <span class="stateline" style="display:inline">B12 · 桌面版</span></h2>
       <p class="desc">开机后自动在<b>托盘</b>待命（不弹主窗；按快捷键或点托盘图标即可
         唤起，<b>Ctrl+Alt+L / Ctrl+Alt+S</b> 全局可用）。<br>
@@ -1197,7 +1305,7 @@ footer span { white-space:nowrap; }
     <!-- §7 手机同屏：与字幕页「📱 手机同屏」面板**同一个开关**（config.lan_enabled）。
          改键只写配置；换绑监听地址要重启——文案与状态行都按 /api/lan-qr 的事实说，
          绝不写「立即生效」（服务端 restart_required 是唯一判据）。 -->
-    <div class="card">
+    <div class="card" data-set-tab="link">
       <h2>手机同屏 <span class="stateline" style="display:inline">§7 · 同一 WiFi</span></h2>
       <p class="desc">打开后同一 WiFi 的<b>手机扫码即可当第二块屏</b>（字幕以<b>明文
         HTTP</b> 提供给持 token 的设备——只在可信网络里开）。<br>
@@ -1211,7 +1319,7 @@ footer span { white-space:nowrap; }
       <p class="stateline" id="setLanState">…</p>
     </div>
 
-    <div class="card">
+    <div class="card" data-set-tab="link">
       <h2>安全</h2>
       <p class="desc">LAN 访问 token：手机等非本机设备首次访问需粘贴一次（页面会记住）。
         <b>服务端从不回传 token 原文</b>——下面是固定掩码占位。</p>
@@ -1227,7 +1335,7 @@ footer span { white-space:nowrap; }
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-set-tab="lesson">
       <h2>DeepSeek API key</h2>
       <p class="desc">用于中文翻译 / 课后摘要 / Anki 卡组；只存本机 <b>.env</b>（不进 git）。
         未配置 = 纯英文字幕模式。</p>
@@ -1249,7 +1357,7 @@ footer span { white-space:nowrap; }
         手动输入绝对路径 + 「打开文件夹」（/api/export/open 仅本机 127.0.0.1 可用）。 -->
     <!-- §5 下课归档：工具条「下课」按钮的三步流程与二次确认开关。
          开关写 config.class_end_confirm（白名单布尔键）；关掉后点「下课」立即开始。 -->
-    <div class="card">
+    <div class="card" data-set-tab="notes">
       <h2>下课归档 <span class="stateline" style="display:inline">§5</span></h2>
       <p class="desc">字幕页工具条「🎓 下课」一键收尾，依次做三件事，<b>单步失败不
         中断后续</b>，结果逐条列在面板里：<br>
@@ -1263,12 +1371,16 @@ footer span { white-space:nowrap; }
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-set-tab="notes">
       <h2>导出 <span class="stateline" style="display:inline">§3 · 导出位置</span></h2>
       <p class="desc">选一个文件夹后，<b>导出</b>（笔记库行 / 预览页的「导出」按钮）
         会把产物<b>直接写到那里</b>，不再弹浏览器下载。<br>
         文件名统一为 <b>课程_日期.扩展名</b>（如 <b>数学_20261013.pdf</b>；没有课程
         归属的笔记维持原名），同名文件不会被覆盖（自动加 <b>-2</b>）。<br>
+        <b>有课程归属的笔记会按课程分子文件夹（B1）</b>：落点是
+        <b>导出目录 / 课程名 /</b>（如 <b>机器学习/机器学习_20261013.md</b>）——
+        「对应的笔记本」的物理版，Obsidian / 同步盘直接可用；课程名为空或「未分类」
+        的笔记仍落在你选的目录根下。<br>
         不设置 / 点「改回浏览器下载」= 维持现在的浏览器下载行为。</p>
       <p class="stateline" id="setExportState">…</p>
       <div class="row" id="setExportRow" hidden>
@@ -1288,7 +1400,7 @@ footer span { white-space:nowrap; }
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" data-set-tab="system">
       <h2>数据去向（隐私透明页 B9）</h2>
       <ul class="privacyList">
         <li><b>🎙 音频不出电脑</b> —— 采集 / 分句 / 识别全部本机完成（faster-whisper 本地推理）</li>
@@ -1480,9 +1592,10 @@ footer span { white-space:nowrap; }
     <p class="sub" style="margin-top:12px"><b>手机连不上？按顺序排查这三步</b></p>
     <ol class="lanSteps">
       <li><b>防火墙弹窗点「允许访问」</b>：首次开启时 Windows 会问是否允许
-          <code>python.exe</code> 联网——必须选允许；当时点了「取消」的话，到
-          「Windows 安全中心 → 防火墙和网络保护 → 允许应用通过防火墙」里把 Python
-          的两个勾（专用/公用）补上。</li>
+          <code>LectureLens.exe</code> 联网（开发态直接跑源码时显示为
+          <code>python.exe</code>）——必须选允许；当时点了「取消」的话，到
+          「Windows 安全中心 → 防火墙和网络保护 → 允许应用通过防火墙」里把这个程序的
+          两个勾（专用/公用）补上。</li>
       <li><b>网络配置选「专用网络」</b>：连着校园网/公司网时，Windows 常把网络判成
           「公用」并默认拒绝入站；在「防火墙和网络保护」里把当前网络改成「专用网络」。</li>
       <li><b>手机与电脑连同一个 WiFi</b>：别一个连 WiFi 一个连热点/有线到别的网段；
@@ -1494,6 +1607,7 @@ footer span { white-space:nowrap; }
     </div>
     <div class="dlgFoot">
       <button id="lanRefresh" title="重新拉取二维码与状态（换网/换端口后用）">刷新</button>
+      <button id="lanGoSet" title="关掉本面板并跳到设置页「📶 连接」分区（手机同屏开关与安全 token 都在那里）">去设置</button>
       <span class="sp"></span>
       <button id="lanDone" class="primary">完成</button>
     </div>
@@ -2260,9 +2374,28 @@ function closeModal(mask) {
   if (back && document.contains(back) && back.focus) back.focus();
 }
 
+/** 当前打开着的遮罩（同一时刻至多一个）。Escape 与 A1 的 Ctrl+A 共用这个判据。 */
+function activeMask() {
+  return MASKS.map((id) => $(id)).find((m) => m && m.classList.contains('on'));
+}
+
 document.addEventListener('keydown', (e) => {
+  // —— 波次一 A1：Ctrl+A = 全选当前列表（**只在笔记库视图生效**）——
+  // 三道闸门，任一不满足就放行给浏览器默认：① 不在笔记库视图（上课态的 Ctrl+A
+  // 与这里无关）；② 有弹窗开着（背景正 inert，别在背后改选择）；③ 焦点在输入控件里
+  // ——在检索框里 Ctrl+A 必须是「全选这段文字」，绝不能被抢走。
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'a' || e.key === 'A')) {
+    if (!document.body.classList.contains('view-notes')) return;
+    if (activeMask()) return;
+    const el = document.activeElement;
+    if (el && (el.isContentEditable
+               || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return;
+    e.preventDefault();
+    pickAllVisible();
+    return;
+  }
   if (e.key !== 'Escape') return;
-  const mask = MASKS.map((id) => $(id)).find((m) => m && m.classList.contains('on'));
+  const mask = activeMask();
   if (!mask) return;
   e.preventDefault();
   if (mask.id === 'wizardMask') wizardFinish();   // 与「跳过向导」同一语义（写标记）
@@ -2474,7 +2607,46 @@ let SEC = {};      // /api/security 快照（auth_enabled / token_set / key_set 
 //   settings-on     = 工作台是否打开（p1-6 既有 CSS 契约，上课态元素靠它隐藏）；
 //   view-notes/-settings = 工作台内「笔记库（§七-2）」与「设置（§七-3）」两块主区。
 function viewSettings(on) { openWorkbench(on ? 'settings' : null); }
-function openWorkbench(view) {
+
+// —— B12：设置页五分区（🎙上课 / 📝笔记 / 📶连接 / 🎨外观 / ⚙系统）——
+// 选中态复用 .tagChip/.tagChip.on（gold-dim 底 + gold 字，§六），不新造一套 tab 样式；
+// 分区选择记在 localStorage（键 ll_settings_tab）——下次打开设置页回到**上次那格**。
+// 注意别把这条和「上次课程」混为一谈：课程那条**不靠前端记**（courses.json 的 active
+// 跨重启保留，启动处读回来挂到 status.course 与新笔记头上），本项才是前端记忆。
+// 深链：openWorkbench('settings', {tab:'link'})
+// 直达（手机同屏面板的「去设置」就走它）。分区名非法/存储被禁（隐私模式）一律回落上课。
+const SET_TABS = ['lesson', 'notes', 'link', 'look', 'system'];
+const SET_TAB_KEY = 'll_settings_tab';
+
+function storedSetTab() {
+  try {
+    const v = localStorage.getItem(SET_TAB_KEY);
+    return SET_TABS.includes(v) ? v : 'lesson';
+  } catch (e) {
+    return 'lesson';           // 隐私模式/存储被禁：不记也行，绝不因此报错
+  }
+}
+
+/** 切到某个分区：tab 高亮 + 卡片按 data-set-tab 显隐；save=true 时记进 localStorage。 */
+function setActiveTab(tab, save = true) {
+  const want = SET_TABS.includes(tab) ? tab : 'lesson';
+  for (const t of SET_TABS) {
+    const b = $('setTab-' + t);
+    if (b) {
+      b.classList.toggle('on', t === want);
+      b.setAttribute('aria-selected', t === want ? 'true' : 'false');
+    }
+  }
+  for (const card of document.querySelectorAll('#viewSettings .card[data-set-tab]')) {
+    card.classList.toggle('setOn', card.dataset.setTab === want);
+  }
+  if (save) {
+    try { localStorage.setItem(SET_TAB_KEY, want); } catch (e) { /* 隐私模式：忽略 */ }
+  }
+  return want;
+}
+
+function openWorkbench(view, opts) {
   document.body.classList.toggle('settings-on', !!view);
   document.body.classList.toggle('view-notes', view === 'notes');
   document.body.classList.toggle('view-glossary', view === 'glossary');
@@ -2488,6 +2660,9 @@ function openWorkbench(view) {
   } else if (view === 'glossary') {
     refreshGlossary();
   } else if (view === 'settings') {
+    // B12：带 tab 进来 = 深链（并把该格记成"上次分区"）；不带 = 回到上次那格
+    const want = opts && opts.tab;
+    setActiveTab(want || storedSetTab(), !!want);
     refreshSettings();
   } else {
     // p1-review 修复⑧：返回上课态时重置回看机制——工作台期间（#log display:none）
@@ -2616,6 +2791,11 @@ async function setActiveCourse(id) {
   syncToolbarCourse();
 }
 
+// —— B14：设置页课程卡 = **纯「课程管理」**（职责拆分）——
+// 「选当前课程」只留在**上课的地方**：字幕页工具条「课程」下拉 + 笔记库左侧课程列表
+// （点条目 = 设为当前）。本卡不做选课，只做管理：改名 / 换色 / 绑定术语表 / 删除。
+// 行内统计（N 篇笔记 · M 条术语）读 GET /api/courses 带来的 notes / terms——口径在
+// 服务端（扫笔记头 + 读该课术语表**真文件**），前端不自己数、不另立缓存。
 function renderCourseCard() {
   const box = $('courseRows');
   box.innerHTML = '';
@@ -2629,16 +2809,30 @@ function renderCourseCard() {
   for (const c of COURSES.courses) box.appendChild(courseRow(c));
 }
 
+/** B14：课程行 → 笔记库并筛出该课。与笔记库课程筛选栏**同一口径**（NB.course = 课名）：
+ *  先设 NB.course 再 openWorkbench('notes')——它内含 refreshNotes()，读的就是 NB.course，
+ *  已在笔记库视图时也照样重取，故这里不再多发一次请求。 */
+function openCourseNotes(name) {
+  NB.course = name;
+  openWorkbench('notes');
+  showToast(`已筛出「${name}」的笔记`, 'ok');
+}
+
 function courseRow(c) {
   const row = document.createElement('div');
-  row.className = 'cRow';
+  row.className = 'cRow cGo';
+  row.title = `点这一行（或「查看笔记」）→ 到笔记库筛出「${c.name}」的笔记`;
+  row.onclick = (e) => {
+    if (e.target.closest('input, button')) return;   // 控件自己的点击不触发跳转
+    openCourseNotes(c.name);
+  };
   const sw = document.createElement('div');
   sw.className = 'cSw';
   for (const col of COURSES.palette) {
     const b = document.createElement('button');
     b.className = 'cSwDot' + (col === c.color ? ' cur' : '');
     b.style.background = col;
-    b.title = col;
+    b.title = `换色：${col}`;
     b.onclick = () => saveCourse(c.id, { color: col });
     sw.appendChild(b);
   }
@@ -2646,19 +2840,36 @@ function courseRow(c) {
   name.type = 'text';
   name.value = c.name;
   name.maxLength = 60;
-  name.title = '课程名（失焦保存）';
+  name.title = '课程名（失焦保存；已写笔记头里的旧课名会一并同步）';
   name.onchange = () => saveCourse(c.id, { name: name.value });
+  const stat = document.createElement('span');
+  stat.className = 'cStat';
+  const nPapers = c.notes || 0, nTerms = c.terms || 0;
+  // 绑了术语表但文件不在（改过名/删过文件）→ 如实说「未找到」，别谎报「0 条」
+  stat.textContent = c.glossary_missing
+    ? `${nPapers} 篇笔记 · 术语表未找到`
+    : `${nPapers} 篇笔记 · ${nTerms} 条术语`;
+  stat.title = c.glossary
+    ? (c.glossary_missing
+        ? `绑定的是 ${c.glossary}，但该文件不在（改名或删除过？）`
+        : `术语表 ${c.glossary}：${nTerms} 条`)
+    : '未绑定术语表（在右侧填路径即可绑定）';
   const gl = document.createElement('input');
   gl.type = 'text';
   gl.value = c.glossary || '';
   gl.placeholder = '术语表 glossary/CS.md（可空）';
   gl.title = '术语表路径，相对项目根目录（失焦保存）';
   gl.onchange = () => saveCourse(c.id, { glossary: gl.value });
+  const go = document.createElement('button');
+  go.className = 'cOpen';
+  go.textContent = '查看笔记';
+  go.title = `到笔记库筛出「${c.name}」的笔记（键盘可达的等价入口）`;
+  go.onclick = () => openCourseNotes(c.name);
   const del = document.createElement('button');
   del.className = 'cDel';
   del.textContent = '删除';
   del.onclick = () => delCourse(c);
-  row.append(sw, name, gl, del);
+  row.append(sw, name, stat, gl, go, del);
   return row;
 }
 
@@ -2676,10 +2887,20 @@ async function saveCourse(id, fields) {
 }
 
 async function delCourse(c) {
-  if (!confirm(`删除课程「${c.name}」？\n笔记文件会保留，仅失去分组归属。`)) return;
+  const n = c.notes || 0;
+  const un = COURSES.uncategorized || '未分类';
+  // B14：确认框写明「几篇笔记 → 去哪」。这句话是**承诺**，服务端 DELETE 真做：
+  // main.delete_course 收尾调 courses.rename_in_notes(旧课名 → 未分类)，只改笔记头
+  // 那一行（正文/切换标记零改动），故「归入未分类」与删除后的实际归属一致。
+  const what = n > 0
+    ? `${n} 篇笔记将归入「${un}」（笔记文件保留，不会删除）。`
+    : '目前没有归属到这门课的笔记（笔记文件一律保留）。';
+  if (!confirm(`删除课程「${c.name}」？\n\n${what}`)) return;
   const r = await jfetch('/api/courses/' + encodeURIComponent(c.id), { method: 'DELETE' });
   if (!r || !r.ok) { showToast((r && r.error) || '删除失败', 'err'); return; }
-  showToast(`已删除「${c.name}」`, 'ok');
+  showToast(r.retagged
+    ? `已删除「${c.name}」，${r.retagged} 篇笔记归入「${un}」`
+    : `已删除「${c.name}」`, 'ok');
   await refreshCourses();
 }
 
@@ -2807,8 +3028,9 @@ $('btnCourseNewCancel').onclick = () => closeCourseNewInline();
 // 内容，绝不拼 innerHTML），与课程列表同款纪律。
 let NB = { notes: [], query: '', course: '', tag: '', current: null, sel: null,
            tagCounts: [] };
-// §2：行首勾选的多选集（批量改归属用）。只作用于**当前列表可见项**——筛选/检索
-// 变化时在 refreshNotes 里收敛，避免"看不见却被批量改掉"的意外。
+// §2：行首勾选的多选集（批量改归属用）。只作用于**当前列表可见项**——
+// A1 起：任何列表刷新（含检索/课程/标签筛选变化）都**硬清空**该集合（不再收敛，
+// 见 clearNotePick 注释），避免"看不见却被批量改/删掉"的意外。
 let nbPicked = new Set();
 let nbTimer = null;
 // 摘要/卡组是后台任务：记下上一次轮询看到的状态，只在 running→终态**跃迁**时
@@ -2841,11 +3063,12 @@ async function refreshNotes() {
   NB.notes = r.notes || [];
   NB.current = r.current;
   NB.tagCounts = r.tag_counts || [];         // §8：全局标签清单+计数（筛选栏用）
-  // §2：选择集收敛到当前可见项（被筛掉的自动取消勾选，见 nbPicked 注释）
-  if (nbPicked.size) {
-    nbPicked = new Set([...nbPicked].filter((n) => NB.notes.some((x) => x.name === n)));
-    renderBatchBar();
-  }
+  TAG_PRESETS = r.presets || TAG_PRESETS;    // A2：预设标签随列表下发（服务端为准）
+  // —— 波次一 A1：选择集**硬清空**（取代 §2 的「收敛到可见项」）——
+  // 检索 / 课程 / 标签任一筛选变化、另一窗口改了笔记、后台摘要跑完都会走到这里；
+  // 一律清空 = 宁可让用户重勾，也绝不留「看不见的选中」被下一次批量删除带走
+  // （三条筛选手臂不必各自清一次：它们都走本函数，漏改的缝不存在）。
+  clearNotePick();
   // 当前选中项被筛选掉 → 清空预览（否则右侧会留着不在列表里的笔记）
   if (NB.sel && !NB.notes.some(n => n.name === NB.sel)) { NB.sel = null; }
   LOADED.notes = true;
@@ -3299,6 +3522,61 @@ async function downloadNote(name, fmt, btn) {
   }
 }
 
+// —— A3：批量导出（所选笔记 → 一个 zip）——
+// 服务端两种模式都走同一个端点：设了 export_dir → zip 落盘（JSON {ok,path,count}，
+// toast 给「打开文件夹」）；没设 → 附件下载（application/zip，文件名服务端给）。
+// 选择**不清空**：导出是只读动作，用户可能接着换个格式再导一次（与移动/删除不同）。
+let nbZipBusy = false;      // 提交中：防连点（50 篇打包 + 落盘在慢机上会有窗口）
+
+async function exportPickedZip() {
+  if (!nbPicked.size || nbZipBusy) return;
+  const files = [...nbPicked];
+  const btn = $('nbBatchZip');
+  nbZipBusy = true;
+  if (btn) btn.disabled = true;
+  try {
+    let r = null;
+    try {
+      r = await fetch(apiURL('/api/notes/export/batch'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files, fmt: 'md' }) });
+    } catch (e) {
+      r = null;                     // 服务不可达：下面统一报错（绝不静默无反应）
+    }
+    if (!r) { showToast('批量导出失败：服务无响应', 'err'); return; }
+    if (!r.ok) {
+      let msg = `批量导出失败（HTTP ${r.status}）`;
+      try {
+        const j = await r.json();
+        if (j && j.error) msg = j.error;
+      } catch (e) { /* 非 JSON 错误体：保留默认文案 */ }
+      showToast(msg, 'err');
+      return;
+    }
+    if ((r.headers.get('content-type') || '').includes('application/json')) {
+      const j = await r.json();     // 落盘模式
+      if (!j.ok) { showToast(j.error || '批量导出失败', 'err'); return; }
+      showToast(`已导出 ${j.count} 篇 → ${j.path}`, 'ok',
+                { label: '打开文件夹', fn: openExportDir });
+      return;
+    }
+    const blob = await r.blob();    // 下载模式：名字以服务端 Content-Disposition 为准
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = exportFilename(r, '笔记导出', 'zip');
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 5000);
+    showToast(`已导出 ${files.length} 篇（${a.download}，`
+              + `${Math.round(blob.size / 1024)} KB）`, 'ok');
+  } finally {
+    nbZipBusy = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
 // —— §5 下课一键归档 ——
 // 一键给一节课收尾：暂停收音 → 生成摘要（已有则跳过、无 API key 明说跳过、正在跑则
 // 等完成）→ 导出这篇笔记（§3：设了导出位置直接落盘，未设置走浏览器下载）。
@@ -3591,10 +3869,61 @@ $('nbCourseFilter').onchange = () => {
 let moveFiles = [];        // 本次弹窗要移动的文件名（单篇=1，批量=多）
 let moveBusy = false;      // 提交中：防连点（慢网/手机端会有窗口）
 
+// —— 波次一 A1：全选套装（三态全选 + 反选 + Ctrl+A）——
+// 作用域恒为 **NB.notes = 当前筛选/检索后的可见列表**：看不见的笔记勾不上，也就
+// 不会被批量改归属 / 删除带走。三态 = 空（一个没勾）/ 半选（勾了一部分，原生
+// indeterminate 小横杠）/ 全选；「点全选框」语义 = 已全选则清空、空或半选则补齐
+// （半选时点一下是补齐而不是清空，符合下拉全选框的通行直觉）。Ctrl+A 同「补齐」。
+// 全选框放在**工具条**而非批量条里：批量条要「已选 ≥1 篇」才显示，而全选框必须在
+// 一篇都没选时就能用（否则没法开始多选）。样式沿用 .nbPick（accent-color=gold）。
+function visibleNames() {
+  return NB.notes.map((n) => n.name);
+}
+
+/** 三态全选 + 反选的可用性，统一跟着「选择集 / 当前列表」现算现画。 */
+function syncSelAll() {
+  const all = visibleNames();
+  const picked = all.reduce((k, n) => k + (nbPicked.has(n) ? 1 : 0), 0);
+  const box = $('nbSelAll');
+  box.checked = all.length > 0 && picked === all.length;      // 全选态
+  box.indeterminate = picked > 0 && picked < all.length;      // 半选态
+  box.disabled = all.length === 0;                            // 列表空 → 无从全选
+  $('nbBatchInvert').disabled = all.length === 0;
+}
+
+/** 选择集变了之后重画两处：行内勾选框（现读 nbPicked）与批量条（计数 + 三态）。 */
+function rerenderPicked() {
+  renderNoteList();
+  renderBatchBar();
+}
+
+/** A1 硬清空口径的唯一实现：见 refreshNotes 的调用点注释。
+ *
+ *  **必须连行内勾选框一起重画**（评审1 ① 实测）：只 renderBatchBar 的话，行上的
+ *  checkbox 仍显示着上一次的 checked——选择集已经空了，此时用户点某一行，onchange
+ *  把 cb.checked 从 true 翻成 false，走的是「取消勾选」分支（delete 一个不在集合里的
+ *  名字）→ 选择集不增长、批量条不出现，**那一次点击被静默吞掉**。窗口 = 清空之后到
+ *  afterNotesChanged 的 refreshNotes 落地之间（本机 ~50ms，手机 LAN/笔记多时到秒级）。 */
+function clearNotePick() {
+  if (nbPicked.size) nbPicked.clear();
+  rerenderPicked();          // renderNoteList()（画掉行上的勾）+ renderBatchBar()
+}
+
+/** Ctrl+A（或全选框「补齐」分支）：把当前列表全部勾上；空列表 = 无事发生。 */
+function pickAllVisible() {
+  const all = visibleNames();
+  if (!all.length) return false;
+  for (const n of all) nbPicked.add(n);
+  rerenderPicked();
+  return true;
+}
+
 function renderBatchBar() {
   $('nbBatch').classList.toggle('on', nbPicked.size > 0);
   $('nbBatchText').textContent = `已选 ${nbPicked.size} 篇`;
   $('nbBatchMove').disabled = nbPicked.size === 0;
+  if (!nbPicked.size) closeNbTagPanel();   // A2：选择一空，打标签面板自动收起
+  syncSelAll();          // A1：三态全选跟着选择集/列表走（唯一同步点）
 }
 
 // §2：改归属完成后的统一收尾——列表徽章 / 侧栏课程计数 /（在预览时）预览头部
@@ -3681,8 +4010,7 @@ async function applyMove(courseId) {
     showToast(bad ? `已移动 ${cnt} 篇到「${r.course}」，${bad} 篇失败（详见日志）`
                   : `已移动 ${cnt} 篇到「${r.course}」`, bad ? 'warn' : 'ok');
     closeModal($('moveMask'));
-    nbPicked.clear();
-    renderBatchBar();
+    clearNotePick();                 // A1：与筛选变化同一口径（含三态全选复位）
     await afterNotesChanged();
   } catch (e) {
     showToast('移动失败：服务无响应', 'err');
@@ -3703,7 +4031,24 @@ async function moveNewCourse() {
 }
 
 $('nbBatchMove').onclick = () => { if (nbPicked.size) openMoveDialog([...nbPicked]); };
-$('nbBatchClear').onclick = () => { nbPicked.clear(); renderNoteList(); renderBatchBar(); };
+// 清空选择 = clearNotePick（它自己会重画行内勾选框，这里不再重复 renderNoteList）
+$('nbBatchClear').onclick = () => clearNotePick();
+// A1：全选框（三态点击语义）与反选按钮——两者都只在当前列表内动手
+$('nbSelAll').onchange = () => {
+  const all = visibleNames();
+  const full = all.length > 0 && all.every((n) => nbPicked.has(n));
+  if (full) nbPicked.clear();                        // 已全选 → 点一下 = 清空
+  else for (const n of all) nbPicked.add(n);         // 空 / 半选 → 补齐
+  rerenderPicked();
+};
+$('nbBatchInvert').onclick = () => {
+  const all = visibleNames();
+  if (!all.length) return;
+  for (const n of all) {
+    if (nbPicked.has(n)) nbPicked.delete(n); else nbPicked.add(n);
+  }
+  rerenderPicked();
+};
 
 // —— §4 笔记管理：编辑 / 重命名 / 删除（软删）+ 回收站 ——
 // 三个弹窗共用统一入口（openModal/closeModal：焦点进弹窗、背景 inert、Escape 可关）。
@@ -3811,8 +4156,7 @@ async function delNote(files) {
     if (bad) msg += `，${bad} 篇失败`;
     showToast(msg, bad ? 'warn' : 'ok');
     if (files.includes(NB.sel)) { NB.sel = null; renderPreviewEmpty(); }
-    nbPicked.clear();
-    renderBatchBar();
+    clearNotePick();                 // A1：与筛选变化同一口径（含三态全选复位）
     await afterNotesChanged();
   } catch (e) {
     showToast('删除失败：服务无响应', 'err');
@@ -4120,6 +4464,139 @@ async function quickToggleTag(name, tag) {
   }
 }
 
+// —— A2：批量打标签（笔记库批量条 →「🏷 打标签」小面板）——
+// 语义：面板里点选一组标签 + 选方向（添加/移除）→ 一次应用到**所选的那些笔记**。
+// 提交走 POST /api/notes/tags/batch：服务端逐篇读现状再合并（前端不必逐篇 GET，
+// 也就没有"读到一半、写到一半"的中间态），整单校验 + 逐篇失败明细如实回传。
+// 面板与选择**同生共死**：renderBatchBar 里选择一空就自动收起（切筛选 / 移动 / 删除 /
+// 应用完成都会经过那里），不会出现"面板开着但其实没选中任何笔记"的状态。
+// chips 复用 §8 的 tagChipEl/.tagChip.on（选中态仍走 gold-dim/gold，§六 口径）。
+let nbTagPick = [];        // 本次要加/去的那组标签（chips 点选 + 自定义输入）
+let nbTagBusy = false;     // 提交中：防连点（慢网/手机端会有窗口）
+
+function renderNbTagChips() {
+  const box = $('nbTagChips');
+  const mode = $('nbTagModeSel').value === 'remove' ? 'remove' : 'add';
+  const dir = mode === 'remove' ? '移除' : '加上';
+  box.innerHTML = '';
+  const seen = new Set();
+  const add = (t) => {
+    if (seen.has(t)) return;
+    seen.add(t);
+    const on = nbTagPick.includes(t);
+    const el = tagChipEl(t, on, () => {
+      nbTagPick = toggleTag(nbTagPick, t);
+      renderNbTagChips();
+    });
+    // 同一个 chip 在「移除」模式下含义相反，title 必须跟着方向说清楚
+    el.title = `点一下：本次${on ? '不' : ''}${dir} #${t}`;
+    box.appendChild(el);
+  };
+  for (const t of TAG_PRESETS) add(t);       // 预设 = 服务端口径（列表/标签响应带来）
+  for (const t of nbTagPick) add(t);         // 自定义的也画出来（可点取消）
+}
+
+function closeNbTagPanel() {
+  $('nbTagBar').classList.remove('on');
+  nbTagPick = [];
+  $('nbTagNew').value = '';
+}
+
+function toggleNbTagPanel() {
+  const bar = $('nbTagBar');
+  if (bar.classList.contains('on')) { closeNbTagPanel(); return; }
+  if (!nbPicked.size) { showToast('先勾选要打标签的笔记', 'err'); return; }
+  nbTagPick = [];
+  $('nbTagNew').value = '';
+  renderNbTagChips();
+  bar.classList.add('on');
+  $('nbTagNew').focus();
+}
+
+//: 零宽族（服务端 TAG_INVISIBLE；JS 的 \s 抓不到它们，必须单列一张表）
+const TAG_BAD_INVISIBLE = '\u200b\u200c\u200d\u2060\ufeff';
+
+/** 与服务端 notes.normalize_tag **同一套规则**的前置校验（返回错误文案；null = 合法）。
+ *
+ *  评审1 ② 实测的坑：这里原先只查「长度 ≤16」，而服务端禁**一切空白/控制字符与内部
+ *  `#`**（notes.py:294-298，`\s` 覆盖不到的全角空格/NBSP/零宽族另有表）——于是
+ *  「机器 学习」会被收成合法样子的 chip，点「应用」才由服务端整单 400（A2 是先校验
+ *  后动手：一篇都不动），用户白跑一趟还得回面板删掉那条。这里逐条对齐服务端口径，
+ *  把红灯提前到输入那一刻（服务端仍是唯一权威，它拒了照旧整单 400）。
+ *  规则逐条对应 notes.normalize_tag：非空；≤16 字符；禁 isspace()（JS \s 含全角空格/
+ *  NBSP/\u2028\u2029）；禁 ord<32 的控制字符；禁 `#`；禁零宽族。 */
+function tagProblem(t) {
+  if (!t) return '标签不能为空';
+  if (t.length > 16) return '标签最长 16 个字符';
+  for (const ch of t) {
+    if (/\s/.test(ch) || ch.codePointAt(0) < 32 || ch === '#'
+        || TAG_BAD_INVISIBLE.includes(ch)) {
+      return '标签里不能有空白 / 控制字符 / #（≤16 字符）';
+    }
+  }
+  return null;
+}
+
+/** 自定义标签加入本次（先去首尾空白与开头的 #，再按上面的规则查——与服务端一致）。 */
+function nbTagAddCustom() {
+  const val = $('nbTagNew').value.trim().replace(/^#+/, '').trim();
+  if (!val) return;
+  const bad = tagProblem(val);
+  if (bad) { showToast(bad, 'err'); return; }
+  if (nbTagPick.includes(val)) { showToast('这一条已经在本次标签里了', 'warn'); return; }
+  nbTagPick.push(val);
+  $('nbTagNew').value = '';
+  renderNbTagChips();
+}
+
+async function applyBatchTags() {
+  if (nbTagBusy) return;
+  const files = [...nbPicked];
+  if (!files.length) { showToast('先勾选要打标签的笔记', 'err'); closeNbTagPanel(); return; }
+  if (!nbTagPick.length) { showToast('先点选标签（或填一个自定义标签）', 'err'); return; }
+  const mode = $('nbTagModeSel').value === 'remove' ? 'remove' : 'add';
+  nbTagBusy = true;
+  $('nbTagApply').disabled = true;
+  try {
+    let r = null;
+    try {
+      r = await jfetch('/api/notes/tags/batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files, tags: nbTagPick, mode }) });
+    } catch (e) {
+      r = null;      // 服务不可达：下面统一报错（绝不静默无反应）
+    }
+    if (!r || !r.ok) {
+      showToast((r && r.error) || '批量打标签失败：服务无响应', 'err');
+      return;
+    }
+    TAG_PRESETS = r.presets || TAG_PRESETS;      // 以服务端为准（与单篇 postTags 同口径）
+    const bad = (r.failed || []).length;
+    const verb = r.mode === 'remove' ? '去掉' : '加上';
+    let msg = `已给 ${r.changed} 篇${verb} ${(r.tags || []).map((t) => '#' + t).join(' ')}`;
+    if (bad) {                                   // 部分失败如实汇总（含第一条原因）
+      const first = (r.failed[0] || {}).error || '';
+      msg += `，${bad} 篇失败${first ? '（' + first + '）' : ''}`;
+    }
+    showToast(msg, bad ? 'warn' : 'ok');
+    clearNotePick();                             // 面板收起 + 选择清空（与移动/删除同款收尾）
+    await afterNotesChanged();                   // 列表徽章 / 筛选计数 / 预览头部一起对齐
+  } finally {
+    nbTagBusy = false;
+    $('nbTagApply').disabled = false;
+  }
+}
+
+$('nbBatchTag').onclick = () => toggleNbTagPanel();
+$('nbBatchZip').onclick = () => exportPickedZip();
+$('nbTagApply').onclick = () => applyBatchTags();
+$('nbTagCancel').onclick = () => closeNbTagPanel();
+$('nbTagModeSel').onchange = () => renderNbTagChips();   // chip 的 title 随方向变
+$('nbTagNew').onkeydown = (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); nbTagAddCustom(); }
+  else if (e.key === 'Escape') closeNbTagPanel();
+};
+
 $('btnTag').onclick = () => toggleTagQuick();
 $('tagQuickClose').onclick = () => $('tagQuickWrap').classList.remove('on');
 $('tagQuickAdd').onclick = () => {
@@ -4382,7 +4859,24 @@ function renderModelRows() {
   $('modelCacheInfo').textContent = MODELS.cache_dir
     ? `缓存目录：${MODELS.cache_dir} · 共占用 ${MODELS.total_size_h}`
       + (MODELS.offline ? ' · 离线模式（不联网下载）' : '')
+      + '（下载的档位在用户目录的 HF 缓存里；想换盘就设环境变量 HF_HOME 后重启）'
     : '';
+  // D2：镜像开关的**事实行**（MODELS.mirror = 进程内实际生效值，见 main.models_snapshot）。
+  // 与配置里的 hf_mirror 不一致 = 已保存但还没重启——如实说出来，别让用户以为点了就换源。
+  const mState = $('setHfMirrorState');
+  if (mState) {
+    // 四种组合都要说实话：勾了还没重启 / 勾了已生效 / 取消了但本进程还在走镜像 /
+    // 都没开。判据全部来自服务端事实（MODELS.mirror）与配置快照（SETCFG.hf_mirror）。
+    if (MODELS.mirror && !SETCFG.hf_mirror) {
+      mState.textContent = '⚠ 已取消勾选，但当前进程仍走 hf-mirror.com —— 重启应用后回到官方 huggingface.co';
+    } else if (MODELS.mirror) {
+      mState.textContent = '当前进程：镜像已生效（HF_ENDPOINT=hf-mirror.com）';
+    } else if (SETCFG.hf_mirror) {
+      mState.textContent = '已保存，重启应用后生效（当前仍走官方 huggingface.co）';
+    } else {
+      mState.textContent = '当前走官方 huggingface.co';
+    }
+  }
   // 下载终态的持久提示（评审2）：toast 只活 4s，刷新页面就没了；把错误落在卡片上，
   // 用户回到设置页永远能看到「上次为什么没下成」。
   const dl = MODELS.dl || {};
@@ -4895,6 +5389,7 @@ function renderSettings() {
   if (SETCFG.hotkey_float) $('setHotkeyFloat').value = SETCFG.hotkey_float;
   renderExportCard();       // §3：导出位置卡（当前值 + 桌面/浏览器两种交互形态）
   $('setLanChk').checked = !!SETCFG.lan_enabled;   // §7：手机同屏（字幕页面板同键）
+  $('setHfMirrorChk').checked = !!SETCFG.hf_mirror;  // D2：模型下载镜像（重启应用后生效）
   $('setAuthChk').checked = !!SEC.auth_enabled;
   $('setTokenState').innerHTML = SEC.auth_token_set
     ? 'LAN token：已启用 · <span class="ok">••••••••</span>'
@@ -5007,7 +5502,10 @@ async function cfgSet(patch, label) {  // 设置页统一保存出口（全走 /
     const r = await jfetch('/api/config', { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
     if (r && r.ok) {
-      const note = 'streaming' in patch ? '（重启服务后生效）' : '';
+      // D2：hf_mirror 与 streaming 同款——写盘即存，但要重启进程才真生效
+      // （streaming 重启服务、hf_mirror 重启应用；桌面版两者都是重开程序）。
+      const note = ('streaming' in patch || 'hf_mirror' in patch)
+        ? '（重启应用后生效）' : '';
       showToast(`${label} 已保存${note}`, 'ok');
       await refreshSettings();
     } else {
@@ -5036,6 +5534,10 @@ $('setEndConfirmChk').onchange = (e) =>   // §5：下课归档的二次确认�
   cfgSet({ class_end_confirm: e.target.checked }, '下课归档二次确认');
 $('setLanChk').onchange = (e) =>          // §7：手机同屏（走共用写入口，面板同步重画）
   lanSetEnabled(e.target.checked);
+// D2：模型下载镜像开关。只写布尔键（镜像地址由后端固定为 hf-mirror.com，前端不传任何
+// URL）；保存后靠 renderModelRows 里的事实行告诉用户「重启才生效」。
+$('setHfMirrorChk').onchange = (e) =>
+  cfgSet({ hf_mirror: e.target.checked }, '模型下载镜像');
 // p3-1（B12）全局快捷键：开关 + 两个键位。键位只在失焦/回车时提交（逐字符提交会
 // 把 "ctrl+alt+l" 的每个中间态都打成 400 红 toast）；非法值由后端白名单拒绝并
 // 回滚控件到服务端真值（cfgSet 的两个分支都 refreshSettings）。
@@ -5196,6 +5698,21 @@ window.addEventListener('pywebviewready', () => {
 // 就要显示当前课程名，故把启动拉取挪到这里（与其余「启动即拉」同一位置）。
 renderToolbarCourse();   // §1：先画出骨架（未分类 + ＋ 新建课程…），下拉不留空
 refreshCourses();        // p2-1：启动即拉课程表（侧栏 / 课程卡 / 工具条下拉开箱有数据）
+
+// B12：设置分区——tab 接线，并**先按 localStorage 回到上次那格**（深链时
+// openWorkbench('settings', {tab}) 会覆盖它）；不写回存储（首次打开别凭空写脏）。
+for (const _t of SET_TABS) {
+  const _b = $('setTab-' + _t);
+  if (_b) _b.onclick = () => setActiveTab(_t);
+}
+setActiveTab(storedSetTab(), false);
+// B12 深链入口：手机同屏面板「去设置」→ 关面板 + 直达设置页「📶 连接」分区
+if ($('lanGoSet')) {
+  $('lanGoSet').onclick = () => {
+    closeModal($('lanMask'));
+    openWorkbench('settings', { tab: 'link' });
+  };
+}
 </script>
 </body>
 </html>

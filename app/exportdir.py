@@ -319,6 +319,24 @@ def _candidate_name(filename: str, n: int) -> str:
     return f"{stem}-{n}.{ext}"
 
 
+def dedupe_names(name: str, used: set) -> str:
+    """把 name 登记进 used 并返回**不重名**的版本（重名追加 `-2/-3…`）→ A3 打包用。
+
+    为什么需要：打包 zip 时多个笔记可能算出同一个条目名——同一门课同一天的
+    两节课都会得到 `{课程}_{日期}.md`。zip 里出现两个同名条目，解压时是"后者盖
+    前者"（各家解压器行为还不一致），用户会静默少文件。规则与落盘避让共用
+    `_candidate_name`，两种模式不会打架。"""
+    if name not in used:
+        used.add(name)
+        return name
+    for n in range(2, 1000):
+        cand = _candidate_name(name, n)
+        if cand not in used:
+            used.add(cand)
+            return cand
+    raise OSError(f"同名文件过多: {name}")
+
+
 def unique_path(dir_path, filename: str) -> Path:
     """（**只算名、不占位**）目标目录下第一个不存在的落点；落盘请用 reserve_path。
 

@@ -232,6 +232,8 @@ INVALID_VALUE_BY_KEY = {
     # §7：手机同屏开关——用**字符串 "true"** 而非数字：JSON 里 1 也是"像布尔"的值，
     # 而这里要钉的是「只有真布尔 false/True 才收」（枚举表 (False, True) 的等价类）。
     "lan_enabled": "true",
+    # D2：模型下载镜像开关——同样用字符串 "true"（钉「像布尔的字符串不算开关」）。
+    "hf_mirror": "true",
 }
 
 

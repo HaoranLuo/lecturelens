@@ -17,7 +17,9 @@ import json
 import os
 import secrets
 import sys
+import tempfile
 import types
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -455,8 +457,8 @@ async def test_export_to_dir_returns_json_and_writes_file(app_state, tmp_path):
     j = r.json()
     assert j["ok"] is True and j["fmt"] == "md"
     assert j["name"] == f"{COURSE}_20260101.md"          # {课程}_{日期}.{ext}
-    assert Path(j["path"]) == dest / j["name"]
-    assert j["dir"] == str(dest) and j["bytes"] > 0
+    assert Path(j["path"]) == dest / COURSE / j["name"]  # B1：课程非空 → 落课程子目录
+    assert j["dir"] == str(dest) and j["bytes"] > 0      # dir 仍是配置的导出目录
     assert "Hello world." in Path(j["path"]).read_text(encoding="utf-8")
 
 
@@ -483,8 +485,9 @@ async def test_export_to_dir_second_export_does_not_overwrite(app_state, tmp_pat
         r2 = await c.get("/api/notes/export", params={"name": NOTE, "fmt": "srt"})
     n1, n2 = r1.json()["name"], r2.json()["name"]
     assert n1 == f"{COURSE}_20260101.srt" and n2 == f"{COURSE}_20260101-2.srt"
-    assert "Hello world." in (dest / n1).read_text(encoding="utf-8-sig")
-    assert "Second line." in (dest / n2).read_text(encoding="utf-8-sig")
+    sub = dest / COURSE                                   # B1：两份都在课程子目录里
+    assert "Hello world." in (sub / n1).read_text(encoding="utf-8-sig")
+    assert "Second line." in (sub / n2).read_text(encoding="utf-8-sig")
 
 
 async def test_export_to_dir_pdf_real_bytes(app_state, tmp_path):
@@ -496,6 +499,58 @@ async def test_export_to_dir_pdf_real_bytes(app_state, tmp_path):
     assert r.status_code == 200, r.text
     out = Path(r.json()["path"])
     assert out.suffix == ".pdf" and out.read_bytes()[:5] == b"%PDF-"
+
+
+async def test_export_to_dir_puts_course_subfolder(app_state, tmp_path):
+    """B1：export_dir 已设 + 课程非空 → 文件落在 **<导出目录>/<课程名>/** 下
+    （"对应的笔记本"的物理版）；根目录不再堆平铺文件。"""
+    write_note()                                          # 课程 = 计算机科学导论
+    dest = tmp_path / "导出"
+    async with asgi_client() as c:
+        await c.post("/api/config", json={"export_dir": str(dest)})
+        r = await c.get("/api/notes/export", params={"name": NOTE, "fmt": "md"})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    out = Path(j["path"])
+    assert out.is_file() and out.parent == dest / COURSE
+    assert not (dest / j["name"]).exists(), "根目录不该再出现平铺的那份"
+    assert j["dir"] == str(dest)                          # 「打开」开的仍是导出目录本身
+    assert "Hello world." in out.read_text(encoding="utf-8")
+
+
+async def test_export_course_subfolder_name_is_sanitized(app_state, tmp_path):
+    """B1 安全面：子目录名走与文件名**同一个** clean_component——课程名里的路径分隔与
+    非法字符绝不能把文件写到导出目录之外，也建不出非法目录（目录名是用户可控输入）。"""
+    write_note(course='恶意/课程\\名:*?"<>|')
+    dest = tmp_path / "导出"
+    async with asgi_client() as c:
+        await c.post("/api/config", json={"export_dir": str(dest)})
+        r = await c.get("/api/notes/export", params={"name": NOTE, "fmt": "md"})
+    assert r.status_code == 200, r.text
+    out = Path(r.json()["path"])
+    assert out.is_file()
+    assert out.parent.parent == dest                       # 只在导出目录下**一层**子目录
+    assert "/" not in out.parent.name and "\\" not in out.parent.name
+    assert not (tmp_path / "恶意").exists()                # 没有越过导出目录建目录
+
+
+async def test_export_to_dir_without_course_stays_in_root(app_state, tmp_path):
+    """B1：课程为空 / 「未分类」/ 整条名字清洗后为空（如全是标点）→ 仍落导出根目录
+    （与 §3 原行为一致：不凭空造「未分类」文件夹，文件名也维持原名）。"""
+    cases = (None, "未分类", "   ", "...")
+    for i, course in enumerate(cases):
+        note = f"lecture_2026010{i}_0900.md"
+        write_note(name=note, course=course, stamp=f"2026010{i}_0900")
+        dest = tmp_path / f"导出{i}"
+        async with asgi_client() as c:
+            await c.post("/api/config", json={"export_dir": str(dest)})
+            r = await c.get("/api/notes/export", params={"name": note, "fmt": "md"})
+        assert r.status_code == 200, (course, r.text)
+        j = r.json()
+        assert Path(j["path"]).parent == dest, (course, j)
+        assert j["name"] == note                           # 课程空 → 文件名维持原名
+        assert list(dest.iterdir()) and not any(p.is_dir() for p in dest.iterdir()), \
+            f"不该建子目录（course={course!r}）"
 
 
 async def test_export_to_dir_recreates_deleted_dir(app_state, tmp_path):
@@ -551,6 +606,203 @@ def test_export_disposition_ascii_and_utf8():
     ascii_part = quoted.split("filename*=")[0]
     assert ascii_part == 'attachment; filename="a_b_c.md"; '
     assert quoted.count('"') == 2
+
+
+# ---------------- A3：批量导出 zip ----------------
+
+def test_zip_export_name_and_dedupe_pure():
+    """文件名与条目避让都是纯函数：随日期命名；同日同课重名追加 -2（与落盘同一规则）。"""
+    assert main.zip_export_name(__import__("datetime").date(2026, 10, 14)) == "笔记导出_20261014.zip"
+    used: set = set()
+    assert ed.dedupe_names("数学_20260101.md", used) == "数学_20260101.md"
+    assert ed.dedupe_names("数学_20260101.md", used) == "数学_20260101-2.md"
+    assert ed.dedupe_names("数学_20260101.md", used) == "数学_20260101-3.md"
+    assert ed.dedupe_names("没有扩展名", used) == "没有扩展名"       # 极端情况不炸
+
+
+def _bad_zip_files():
+    return ["../config.json", ".trash/lecture_x.md", "lecture_x.summary.md",
+            "config.json", 7]
+
+
+async def test_zip_batch_to_dir_lands_and_unpacks(app_state, tmp_path):
+    """A3 主链（落盘）：两篇 → 一个 zip 落在导出目录（不套课程子目录），包里条目
+    名 = 单篇导出的 `{课程}_{日期}.md`，内容各自对上。"""
+    a = write_note()                                        # 计算机科学导论 20260101_0900
+    b = write_note(name="lecture_20260101_1400.md", en="Afternoon lecture.",
+                   zh="下午的课。", stamp="20260101_1400")
+    dest = tmp_path / "导出"
+    async with asgi_client() as c:
+        await c.post("/api/config", json={"export_dir": str(dest)})
+        r = await c.post("/api/notes/export/batch",
+                         json={"files": [a.name, b.name], "fmt": "md"})
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j["ok"] and j["count"] == 2 and j["bytes"] > 0
+        assert j["name"] == main.zip_export_name()          # 笔记导出_YYYYMMDD.zip
+        out = Path(j["path"])
+        assert out.parent == dest                           # 落导出根目录（B1 只管单篇）
+        assert j["dir"] == str(dest)
+    assert out.is_file()
+    with zipfile.ZipFile(out) as zf:                        # 包可解 + 条目名/内容都对
+        names = zf.namelist()
+        # 两篇同课同日 → 条目名按输入顺序取名 + 避让（-2）；顺序即 files 的顺序
+        assert names == [f"{COURSE}_20260101.md", f"{COURSE}_20260101-2.md"]
+        assert "Hello world." in zf.read(names[0]).decode("utf-8")
+        assert "Afternoon lecture." in zf.read(names[1]).decode("utf-8")
+        assert not any("/" in n or "\\" in n or n.startswith(".") for n in names)
+
+
+async def test_zip_batch_second_export_does_not_overwrite(app_state, tmp_path):
+    """同名不覆盖（与单篇落盘同一口径）：同一天导两次 → 第二个包自动 -2，两份都在。"""
+    write_note()
+    dest = tmp_path / "导出"
+    async with asgi_client() as c:
+        await c.post("/api/config", json={"export_dir": str(dest)})
+        r1 = await c.post("/api/notes/export/batch", json={"files": [NOTE]})
+        r2 = await c.post("/api/notes/export/batch", json={"files": [NOTE]})
+    n1, n2 = r1.json()["name"], r2.json()["name"]
+    assert n1 == main.zip_export_name() and n2 == n1[:-4] + "-2.zip"
+    assert (dest / n1).is_file() and (dest / n2).is_file()
+
+
+async def test_zip_batch_download_when_dir_unset(app_state):
+    """未设导出目录 → 浏览器下载：application/zip + attachment（中文名走 RFC 5987），
+    正文是**可解的** zip；临时文件在响应发完后被清掉（不留垃圾）。"""
+    write_note()
+    tmproot = Path(tempfile.gettempdir())
+    before = set(tmproot.glob("lecturelens-zip-*.zip"))
+    async with asgi_client() as c:
+        r = await c.post("/api/notes/export/batch", json={"files": [NOTE], "fmt": "md"})
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/zip"
+    cd = r.headers["content-disposition"]
+    assert "attachment" in cd and "filename*=utf-8''" in cd
+    assert main.zip_export_name() in __import__("urllib.parse", fromlist=["unquote"]) \
+        .unquote(cd)
+    with zipfile.ZipFile(__import__("io").BytesIO(r.content)) as zf:
+        assert zf.namelist() == [f"{COURSE}_20260101.md"]
+        assert "Hello world." in zf.read(zf.namelist()[0]).decode("utf-8")
+    assert set(tmproot.glob("lecturelens-zip-*.zip")) == before     # 临时文件已清理
+
+
+async def test_zip_batch_md_payload_is_byte_identical(app_state, tmp_path):
+    """评审2 ① 回归：zip 里那份 md **逐字节**等于原文件（CRLF 笔记不许被翻成 LF）。
+
+    旧实现用 read_text（通用换行）取文本再 encode → CRLF 全变 LF；本仓真实笔记 176 篇
+    里 174 篇是全 CRLF，等于每次批量导出都静默改写内容，且与单篇导出（read_bytes）
+    给出不同字节。"""
+    body = ("# 双语课堂笔记 20260101_0900\n\n"
+            "> LectureLens 自动生成（EN 原文 / ZH 翻译）\n"
+            f"> 课程：{COURSE}\n\n---\n\n- `01:00:00` Hello world.\n  - `#1` 你好世界。\n")
+    main.TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
+    p = main.TRANSCRIPTS / NOTE
+    p.write_bytes(body.replace("\n", "\r\n").encode("utf-8"))   # 显式 CRLF，不经平台翻译
+    dest = tmp_path / "导出"
+    async with asgi_client() as c:
+        await c.post("/api/config", json={"export_dir": str(dest)})
+        r = await c.post("/api/notes/export/batch", json={"files": [NOTE], "fmt": "md"})
+    assert r.status_code == 200, r.text
+    with zipfile.ZipFile(Path(r.json()["path"])) as zf:
+        payload = zf.read(zf.namelist()[0])
+    assert payload == p.read_bytes()                      # 与盘上原文件逐字节相同
+    assert payload.count(b"\r\n") == payload.count(b"\n") > 0   # 行尾没被改写
+
+
+async def test_zip_download_is_memory_response_no_temp_file(app_state):
+    """评审2 ② 回归：下载路径**不落地临时文件**（也就不存在"客户端断开漏一包 zip"）。
+
+    旧实现是 mkstemp + FileResponse(background=unlink)：starlette 把 background 放在
+    各 send 分支之后、没有 try/finally，send 抛 ClientDisconnected 时清理被跳过，
+    %TEMP% 里留下一整包 zip。现在直接回内存字节——这里用「send 必抛」的最小 ASGI
+    调用证明：异常照旧往上抛，但根本没有可漏的临时文件。"""
+    from starlette.requests import Request as StarletteRequest
+    write_note()
+    tmproot = Path(tempfile.gettempdir())
+    before = set(tmproot.glob("lecturelens-zip-*.zip"))
+    payload = json.dumps({"files": [NOTE], "fmt": "md"}).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": payload, "more_body": False}
+
+    req = StarletteRequest(
+        {"type": "http", "http_version": "1.1", "method": "POST",
+         "path": "/api/notes/export/batch", "query_string": b"",
+         "headers": [(b"content-type", b"application/json")],
+         "client": ("127.0.0.1", 123), "scheme": "http", "server": ("test", 80)},
+        receive)
+    resp = await main.notes_export_batch(req)
+    assert resp.media_type == "application/zip"
+    assert getattr(resp, "background", None) is None    # 没有后台清理任务 = 没有临时文件
+
+    async def send(message):
+        raise RuntimeError("client disconnected (simulated)")
+
+    with pytest.raises(RuntimeError):
+        await resp({"type": "http", "method": "GET", "headers": []}, receive, send)
+    assert set(tmproot.glob("lecturelens-zip-*.zip")) == before
+
+
+async def test_zip_batch_srt_format(app_state, tmp_path):
+    write_note()
+    dest = tmp_path / "导出"
+    async with asgi_client() as c:
+        await c.post("/api/config", json={"export_dir": str(dest)})
+        r = await c.post("/api/notes/export/batch",
+                         json={"files": [NOTE], "fmt": "srt"})
+    assert r.status_code == 200, r.text
+    with zipfile.ZipFile(Path(r.json()["path"])) as zf:
+        names = zf.namelist()
+        assert names == [f"{COURSE}_20260101.srt"]
+        assert "Hello world." in zf.read(names[0]).decode("utf-8")
+
+
+async def test_zip_batch_dedupes_same_course_same_day(app_state, tmp_path):
+    """同门课同一天的两节课算出同一个条目名 → 包内必须避让（否则解压时后者盖前者，
+    用户静默少文件），且两份内容各自对得上。"""
+    a = write_note(name="lecture_20260101_0900.md", en="Morning.", stamp="20260101_0900")
+    b = write_note(name="lecture_20260101_1400.md", en="Afternoon.", stamp="20260101_1400")
+    dest = tmp_path / "导出"
+    async with asgi_client() as c:
+        await c.post("/api/config", json={"export_dir": str(dest)})
+        r = await c.post("/api/notes/export/batch", json={"files": [a.name, b.name]})
+    with zipfile.ZipFile(Path(r.json()["path"])) as zf:
+        assert len(zf.namelist()) == 2 and len(set(zf.namelist())) == 2
+        joined = {n: zf.read(n).decode("utf-8") for n in zf.namelist()}
+    assert any("Morning." in t for t in joined.values())
+    assert any("Afternoon." in t for t in joined.values())
+
+
+async def test_zip_batch_all_or_nothing_and_validation(app_state, tmp_path):
+    """整单校验：一篇有问题 → 400 且**一个包都不产出**；各类参数边界同样 400。"""
+    a = write_note()
+    dest = tmp_path / "导出"
+    many = [f"lecture_20260101_{i:04d}.md" for i in range(main.NOTE_ZIP_MAX + 1)]
+    async with asgi_client() as c:
+        await c.post("/api/config", json={"export_dir": str(dest)})
+        r_missing = await c.post("/api/notes/export/batch",
+                                 json={"files": [a.name, "lecture_19990101_0000.md"]})
+        assert r_missing.status_code == 400 and "笔记不存在" in r_missing.json()["error"]
+        cases = [
+            ({"files": []}, "不能为空"),
+            ({"fmt": "md"}, "缺少 files"),
+            ({"files": a.name}, "不能为空"),                     # 非数组
+            ({"files": many}, str(main.NOTE_ZIP_MAX)),
+            ({"files": [a.name], "fmt": "pdf"}, "只支持 md / srt"),
+            ({"files": [a.name], "bogus": 1}, "未知字段"),
+        ]
+        for body, want in cases:
+            r = await c.post("/api/notes/export/batch", json=body)
+            assert r.status_code == 400, (body, r.status_code)
+            assert want in r.json()["error"], (body, r.json())
+        for bad in _bad_zip_files():
+            r = await c.post("/api/notes/export/batch", json={"files": [bad]})
+            assert r.status_code == 400, (bad, r.status_code)
+        bad_json = await c.post("/api/notes/export/batch", content=b"not json",
+                                headers={"Content-Type": "application/json"})
+        assert bad_json.status_code == 400
+    assert not list(dest.glob("*.zip")), "整单校验失败时不该留下任何包"
+    assert a.is_file()
 
 
 # ---------------- /api/export/open：打开文件夹（仅本机） ----------------
@@ -674,6 +926,20 @@ def test_index_html_has_export_card_and_toast_action():
                    "setExportInput", "desktopApi()", "toastAct",
                    "/api/export/open", "pywebviewready"):
         assert anchor in html, f"index.html 缺少 {anchor}"
+
+
+def test_index_html_has_batch_zip_button_and_wiring():
+    """A3 前端：批量条「导出所选」按钮 + 两种模式的反馈（落盘给「打开文件夹」）。"""
+    html = (main.WEB / "index.html").read_text(encoding="utf-8")
+    bar = html.split('<div class="nbBatch" id="nbBatch">', 1)[1].split("</div>", 1)[0]
+    assert 'id="nbBatchZip"' in bar and "导出所选" in bar
+    assert "$('nbBatchZip').onclick = () => exportPickedZip();" in html
+    fn = html.split("async function exportPickedZip() {", 1)[1].split("\n}", 1)[0]
+    assert "'/api/notes/export/batch'" in fn
+    assert "JSON.stringify({ files, fmt: 'md' })" in fn
+    assert "openExportDir" in fn and "打开文件夹" in fn          # 落盘 → 打开文件夹
+    assert "r.blob()" in fn and "exportFilename(r, '笔记导出', 'zip')" in fn  # 下载模式
+    assert "clearNotePick" not in fn            # 导出是只读动作：不动选择集（可再导一次）
 
 
 def test_notes_module_untouched_by_export_naming():

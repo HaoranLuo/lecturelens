@@ -535,3 +535,253 @@ def test_empty_state_covers_tag_filter():
     seg = HTML.split("emptySlot(box, 'nbEmpty', 'notes',", 1)[1].split(");", 1)[0]
     assert "NB.tag" in seg
     assert "课程/标签筛选" in seg
+
+
+# ---------------- 7) A2：批量打标签（端点） ----------------
+
+def test_merge_tags_pure():
+    """合并口径（纯函数）：add 保序幂等（已有不重复加），remove 只筛命中项。"""
+    assert main.merge_tags([], ["重点"], "add") == ["重点"]
+    assert main.merge_tags(["重点"], ["重点", "考试"], "add") == ["重点", "考试"]
+    assert main.merge_tags(["重点", "考试"], ["重点"], "add") == ["重点", "考试"]
+    assert main.merge_tags(["重点", "考试"], ["重点"], "remove") == ["考试"]
+    assert main.merge_tags(["重点"], ["没听懂"], "remove") == ["重点"]
+    assert main.merge_tags([], ["重点"], "remove") == []
+
+
+def note_text(p: Path) -> str:
+    return p.read_text(encoding="utf-8")
+
+
+async def test_tags_batch_add_then_remove_roundtrip():
+    """A2 主链：一次给多篇加一组标签 → 读回（**以文件为准**）→ 再去掉其中一条。
+
+    读回走 /api/notes/file 而不是只看响应体：标签是写进笔记头那行的，只有盘上的
+    文件才是事实来源。"""
+    a = write_note("lecture_20261013_0100.md")
+    b = write_note("lecture_20261013_0200.md")
+    async with asgi_client() as c:
+        r = await c.post("/api/notes/tags/batch",
+                         json={"files": [a.name, b.name], "tags": ["重点", "考试"]})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] and body["mode"] == "add" and body["changed"] == 2
+        assert body["failed"] == [] and body["tags"] == ["重点", "考试"]
+        assert {x["file"] for x in body["results"]} == {a.name, b.name}
+        assert all(x["action"] == "inserted" for x in body["results"])
+        assert body["presets"] == list(main.TAG_PRESETS)
+        back = [notes_mod.note_tags((await c.get("/api/notes/file",
+                                                params={"name": n})).text)
+                for n in (a.name, b.name)]
+        assert back == [["重点", "考试"], ["重点", "考试"]]
+        # 再删掉其中一条：只剩「重点」
+        r2 = await c.post("/api/notes/tags/batch",
+                          json={"files": [a.name, b.name], "tags": ["考试"],
+                                "mode": "remove"})
+        assert r2.status_code == 200 and r2.json()["changed"] == 2
+        assert notes_mod.note_tags(note_text(a)) == ["重点"]
+        assert notes_mod.note_tags(note_text(b)) == ["重点"]
+        # 幂等：再删一次同一条（已经没有了）→ action=none（文件没动），changed 仍如实计数
+        r3 = await c.post("/api/notes/tags/batch",
+                          json={"files": [a.name, b.name], "tags": ["考试"],
+                                "mode": "remove"})
+        assert r3.json()["changed"] == 2
+        assert all(x["action"] == "none" for x in r3.json()["results"])
+        # 删到空：整行移除（不是留一行空标签）
+        r4 = await c.post("/api/notes/tags/batch",
+                          json={"files": [a.name], "tags": ["重点"], "mode": "remove"})
+        assert r4.json()["results"][0]["action"] == "removed"
+        assert "> 标签" not in note_text(a)
+    assert "hello world" in note_text(a)          # 正文一字不动
+
+
+async def test_tags_batch_keeps_body_and_crlf():
+    """行级改写纪律（与 §2/M4 同款）：只动标签那一行，正文与行尾原样保留。"""
+    main.TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
+    p = main.TRANSCRIPTS / "lecture_20261013_0300.md"
+    p.write_bytes(NOTE.replace("\n", "\r\n").encode("utf-8"))
+    async with asgi_client() as c:
+        r = await c.post("/api/notes/tags/batch",
+                         json={"files": [p.name], "tags": ["重点"]})
+        assert r.status_code == 200, r.text
+    raw = p.read_bytes()
+    assert b"\r\r\n" not in raw and raw.count(b"\n") == raw.count(b"\r\n")
+    assert "hello world" in raw.decode("utf-8")
+
+
+async def test_tags_batch_is_all_or_nothing_on_bad_name():
+    """先全部校验、后动手：任一篇不存在 → 整单 400，**已存在的那篇也不许动**。"""
+    a = write_note("lecture_20261013_0100.md")
+    async with asgi_client() as c:
+        r = await c.post("/api/notes/tags/batch",
+                         json={"files": [a.name, "lecture_19990101_0000.md"],
+                               "tags": ["重点"]})
+        assert r.status_code == 400 and "笔记不存在" in r.json()["error"]
+    assert notes_mod.note_tags(note_text(a)) == []
+    assert not list(main.TRANSCRIPTS.glob("*.tmp"))       # 半个字也没落盘
+
+
+async def test_tags_batch_rejects_traversal_and_trash():
+    """写路径同样只认库内 lecture_*.md（与读/导出/删除同一个入口）。"""
+    async with asgi_client() as c:
+        for bad in ("../config.json", ".trash/lecture_x.md", "lecture_x.summary.md",
+                    "config.json", 7):
+            r = await c.post("/api/notes/tags/batch",
+                             json={"files": [bad], "tags": ["重点"]})
+            assert r.status_code == 400, (bad, r.status_code)
+            assert ("非法笔记名" in r.json()["error"]
+                    or "笔记不存在" in r.json()["error"]), (bad, r.json())
+
+
+async def test_tags_batch_validation_400s():
+    a = write_note("lecture_20261013_0100.md")
+    many = [f"lecture_20260101_{i:04d}.md" for i in range(main.NOTE_MOVE_MAX + 1)]
+    async with asgi_client() as c:
+        cases = [
+            ({"files": [a.name], "tags": ["重点"], "bogus": 1}, "未知字段"),
+            ({"files": [a.name], "tags": ["重点"], "mode": "反向"}, "未知方向"),
+            ({"files": [a.name], "tags": []}, "至少要给一个标签"),
+            ({"files": [a.name]}, "tags 必须是数组"),
+            ({"files": [a.name], "tags": ["a b"]}, "非法标签"),
+            ({"files": [a.name], "tags": ["x" * 40]}, "非法标签"),
+            ({"files": [], "tags": ["重点"]}, "不能为空"),
+            ({"files": a.name, "tags": ["重点"]}, "不能为空"),      # 非数组
+            ({"tags": ["重点"]}, "缺少 files"),
+            ({"files": many, "tags": ["重点"]}, str(main.NOTE_MOVE_MAX)),
+        ]
+        for body, want in cases:
+            r = await c.post("/api/notes/tags/batch", json=body)
+            assert r.status_code == 400, (body, r.status_code)
+            assert want in r.json()["error"], (body, r.json())
+        bad = await c.post("/api/notes/tags/batch", content=b"not json",
+                           headers={"Content-Type": "application/json"})
+        assert bad.status_code == 400
+        assert (await c.post("/api/notes/tags/batch", json=[1, 2])).status_code == 400
+        # 同一篇重复列：去重（幂等，不报错也不算两次）
+        r = await c.post("/api/notes/tags/batch",
+                         json={"files": [a.name, a.name], "tags": ["重点"]})
+        assert r.status_code == 200 and r.json()["changed"] == 1
+    assert notes_mod.note_tags(note_text(a)) == ["重点"]
+
+
+async def test_tags_batch_cap_is_per_file_not_all_or_nothing():
+    """满 20 个标签的那篇 → 单篇失败（点名原因、不静默截断）；**其余篇照常打上**。"""
+    full = write_note("lecture_20261013_0400.md",
+                      NOTE.replace("> 课程：未分类\n",
+                                   "> 课程：未分类\n> 标签："
+                                   + " ".join(f"#t{i}" for i in range(20)) + "\n"))
+    ok = write_note("lecture_20261013_0500.md")
+    async with asgi_client() as c:
+        r = await c.post("/api/notes/tags/batch",
+                         json={"files": [full.name, ok.name], "tags": ["新标签"]})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["changed"] == 1 and len(body["failed"]) == 1
+        assert body["failed"][0]["file"] == full.name
+        assert "20 个标签上限" in body["failed"][0]["error"]
+        assert body["results"][0]["file"] == ok.name
+    assert len(notes_mod.note_tags(note_text(full))) == 20      # 没被截断也没被改写
+    assert notes_mod.note_tags(note_text(ok)) == ["新标签"]
+
+
+async def test_tags_batch_broadcasts_notes_once(monkeypatch):
+    """一次批量 = **一帧** notes 广播（N 篇逐条广播会把别的窗口打爆）。"""
+    a = write_note("lecture_20261013_0100.md")
+    b = write_note("lecture_20261013_0200.md")
+    sent: list = []
+    real = main.hub.broadcast
+
+    async def spy(payload):
+        sent.append(payload)
+
+    monkeypatch.setattr(main.hub, "broadcast", spy)
+    try:
+        async with asgi_client() as c:
+            await c.post("/api/notes/tags/batch",
+                         json={"files": [a.name, b.name], "tags": ["重点"]})
+    finally:
+        monkeypatch.setattr(main.hub, "broadcast", real)
+    frames = [m for m in sent if m.get("type") == "notes"]
+    assert len(frames) == 1
+    assert set(frames[0]["files"]) == {a.name, b.name}
+
+
+async def test_list_endpoint_carries_presets():
+    """A2：预设标签随列表下发（面板 chips 的服务端来源；B3 自定义预设时同一条路）。"""
+    async with asgi_client() as c:
+        body = (await c.get("/api/notes/list")).json()
+    assert body["presets"] == list(main.TAG_PRESETS)
+    assert main.TAG_PRESETS == ("重点", "考试", "没听懂", "待复习")
+
+
+# ---------------- 8) A2：批量打标签（index.html 结构断言） ----------------
+
+def test_batch_tag_button_and_panel_wired():
+    bar = HTML.split('<div class="nbBatch" id="nbBatch">', 1)[1].split("</div>", 1)[0]
+    assert 'id="nbBatchTag"' in bar and "打标签" in bar          # 与「移动到…」同级
+    panel = HTML.split('<div class="nbTagBar" id="nbTagBar">', 1)[1].split("</div>", 1)[0]
+    for anchor in ('id="nbTagModeSel"', 'id="nbTagChips"', 'id="nbTagNew"',
+                   'id="nbTagApply"', 'id="nbTagCancel"'):
+        assert anchor in panel, anchor
+    assert '<option value="add">添加</option>' in panel
+    assert '<option value="remove">移除</option>' in panel
+    for binding in ("$('nbBatchTag').onclick", "$('nbTagApply').onclick",
+                    "$('nbTagCancel').onclick", "$('nbTagModeSel').onchange",
+                    "$('nbTagNew').onkeydown"):
+        assert binding in HTML, binding
+
+
+def test_batch_tag_panel_uses_server_presets_and_batch_endpoint():
+    """预设 chips 来自服务端（TAG_PRESETS 由列表/标签响应刷新）；提交走 batch 端点，
+    参数形状 {files, tags, mode}；部分失败要如实汇总。"""
+    apply_fn = HTML.split("async function applyBatchTags() {", 1)[1].split("\n}", 1)[0]
+    assert "'/api/notes/tags/batch'" in apply_fn
+    assert "JSON.stringify({ files, tags: nbTagPick, mode })" in apply_fn
+    assert "r.failed" in apply_fn and "篇失败" in apply_fn       # 部分失败如实汇总
+    assert "clearNotePick();" in apply_fn and "await afterNotesChanged();" in apply_fn
+    chips = HTML.split("function renderNbTagChips() {", 1)[1].split("\n}", 1)[0]
+    assert "for (const t of TAG_PRESETS) add(t);" in chips
+    assert "tagChipEl(t, on," in chips                            # chips 走 §8 同一套样式
+    assert "TAG_PRESETS = r.presets || TAG_PRESETS;" in HTML      # 服务端为准
+    assert "NB.tagCounts = r.tag_counts" in HTML
+
+
+def test_custom_tag_input_mirrors_server_rules():
+    """评审1 ② 回归：自定义标签输入必须按**服务端同一套规则**先拦。
+
+    旧实现只查长度：`机器 学习` 会被收成合法样子的 chip，点「应用」才由服务端整单
+    400（A2 先校验后动手 → 一篇都不动），用户白跑一趟还得回面板删掉那条。这里逐条
+    对齐 notes.normalize_tag 的禁令（空白 / ord<32 / 内部 # / 零宽族）+ 长度上限，
+    并把 JS 那张零宽表与服务端 TAG_INVISIBLE 常量机械对齐（两边同名同值）。"""
+    fn = HTML.split("function tagProblem(t) {", 1)[1].split("\n}", 1)[0]
+    assert "t.length > 16" in fn
+    assert r"/\s/.test(ch)" in fn                 # 空白（JS \s 含全角空格/NBSP/\u2028\u2029）
+    assert "codePointAt(0) < 32" in fn            # 控制字符
+    assert "ch === '#'" in fn                     # 内部 #（开头的 # 由调用方先剥掉）
+    assert "TAG_BAD_INVISIBLE.includes(ch)" in fn  # 零宽族（isspace 抓不到）
+    assert notes_mod.TAG_INVISIBLE == "\u200b\u200c\u200d\u2060\ufeff"
+    assert "'\\u200b\\u200c\\u200d\\u2060\\ufeff'" in HTML
+    add = HTML.split("function nbTagAddCustom() {", 1)[1].split("\n}", 1)[0]
+    assert "const bad = tagProblem(val);" in add and "showToast(bad, 'err')" in add
+    assert "nbTagPick.push(val);" in add           # 校验不过就 return，push 在其后
+
+
+def test_batch_tag_panel_dies_with_selection():
+    """面板与选择同生共死：选择一空就收起（renderBatchBar 是唯一同步点）。"""
+    bar = HTML.split("function renderBatchBar() {", 1)[1].split("\n}", 1)[0]
+    assert "if (!nbPicked.size) closeNbTagPanel();" in bar
+    close_fn = HTML.split("function closeNbTagPanel() {", 1)[1].split("\n}", 1)[0]
+    assert "classList.remove('on')" in close_fn and "nbTagPick = [];" in close_fn
+
+
+def test_batch_tag_styles_use_tokens_and_scope_buttons():
+    """令牌纪律 + 作用域纪律：不复用 .nbBatch 类名（它的 `.nbBatch button` 会盖掉 chips
+    的 999 圆角/24px 高度，面板会长出一排方 chip），按钮规则一律 `> button`。"""
+    blk = HTML.split("/* —— A2：批量打标签的小面板 ——", 1)[1].split(".nbTagBar select", 1)[0]
+    assert not re.search(r":\s*#[0-9a-fA-F]{3,6}", blk), "面板样式不得写死色值（§一-4）"
+    assert "animation" not in blk and "transition" not in blk, "§5：不加动效"
+    assert "var(--surface-2)" in blk
+    whole = HTML.split("/* —— A2：批量打标签的小面板 ——", 1)[1].split("/* ——", 1)[0]
+    assert ".nbTagBar > button" in whole and ".nbTagBar button {" not in whole
+    assert ".nbTagBar.on { display:flex; }" in whole
+    assert '<div class="nbTagBar" id="nbTagBar">' in HTML         # 不带 nbBatch 类

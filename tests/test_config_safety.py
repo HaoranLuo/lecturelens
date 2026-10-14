@@ -156,7 +156,8 @@ async def test_allowed_keys_constant(app_state):
     （B12：开关 + 两个键位）；p3-5：+6 个窗口版式记忆键（B12：主窗 4 + 悬浮条 2）；
     §3：+export_dir（导出位置自选：绝对路径字符串或 null，走 exportdir.dir_problem）；
     §5：+class_end_confirm（下课归档的二次确认开关，布尔枚举）；
-    §7：+lan_enabled（手机同屏开关，布尔枚举；写盘即存，换绑监听地址要重启）。"""
+    §7：+lan_enabled（手机同屏开关，布尔枚举；写盘即存，换绑监听地址要重启）；
+    D2：+hf_mirror（模型下载镜像开关，布尔枚举；写盘即存，HF endpoint 要重启才换）。"""
     assert set(ALLOWED_CONFIG_KEYS) == {"model", "device", "compute_type", "vad",
                                         "lang", "streaming", "source", "input_device",
                                         "translate_model", "auth_enabled",
@@ -179,7 +180,10 @@ async def test_allowed_keys_constant(app_state):
                                         "class_end_confirm",
                                         # §7：手机同屏（布尔枚举；非即时键——
                                         # 换绑监听地址要重启，见 main.lan_bind_state）
-                                        "lan_enabled"}
+                                        "lan_enabled",
+                                        # D2：模型下载镜像（布尔枚举；非即时键——
+                                        # HF_ENDPOINT 在库导入时读入，重启应用才生效）
+                                        "hf_mirror"}
 
 
 # ---------------- streaming 预留键（条目11 灰度，重启服务后生效） ----------------
@@ -243,14 +247,18 @@ async def test_lang_invalid_400(app_state):
 
 def test_build_asr_reads_config_lang(app_state, monkeypatch):
     """条目13②：build_asr 从 cfg 读 lang（重启后持久化生效的关键）；legacy config
-    无 lang 键时回退 en。"""
+    无 lang 键时回退 en。
+
+    D2(b)：model_path 现在是 resolve_model_ref 的产物（随包 → 本地缓存 snapshot →
+    按名 None），故这里把解析器打桩成「都没命中」，专测 lang 与 None 透传；三档解析
+    次序本身在 tests/test_hf_env.py 里单独钉。"""
     captured = {}
 
     class FakeASR:
         def __init__(self, model_size=None, device=None, compute_type=None,
                      language=None, cpu_threads=4, model_path=None):
             captured["language"] = language
-            captured["model_path"] = model_path  # 条目20：frozen 随包路径（开发态 None）
+            captured["model_path"] = model_path
             self.model_size = model_size
             self.device = "cpu"
             self.compute_type = "int8"
@@ -259,10 +267,11 @@ def test_build_asr_reads_config_lang(app_state, monkeypatch):
             pass
 
     monkeypatch.setattr(main, "WhisperASR", FakeASR)
+    monkeypatch.setattr(main, "resolve_model_ref", lambda name: (None, "hub"))
     main.runtime["config"]["lang"] = "zh"
     REAL_BUILD_ASR()
     assert captured["language"] == "zh"
-    assert captured["model_path"] is None  # 条目20：开发模式不走随包路径
+    assert captured["model_path"] is None  # D2：本地都没有 → 交给 faster-whisper 按名取
     assert main.status["asr"] == "ready"
     main.runtime["config"].pop("lang", None)  # 模拟 legacy config.json（无 lang 键）
     REAL_BUILD_ASR()
@@ -701,7 +710,9 @@ def test_resolve_build_cfg_does_not_mutate_runtime(app_state):
                       "float_x": None, "float_y": None,
                       "export_dir": None,   # §3 新增键：导出位置（未设置）
                       "class_end_confirm": True,   # §5 新增键：下课归档二次确认
-                      "lan_enabled": False}        # §7 新增键：手机同屏（默认关＝只听 127.0.0.1）
+                      "lan_enabled": False,  # §7 新增键：手机同屏（默认关＝只听 127.0.0.1）
+                      # D2 新增键：模型下载镜像（默认关 = 走官方 huggingface.co）
+                      "hf_mirror": False}
     assert main.runtime["config"]["model"] == "large-v3-turbo"  # 原配置不动
     assert main.runtime["config"]["streaming"] is True
     assert main._resolve_build_cfg() == dict(main.runtime["config"])  # 无 overrides = 原样

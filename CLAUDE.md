@@ -22,6 +22,10 @@
                      + §4 笔记管理 /api/notes/{raw,rename,delete,trash*}：软删除进
                      transcripts/.trash/、编辑走正文指纹、重命名规范化；
                      + §8 标签 /api/notes/tags：改笔记头 `> 标签：` 行，全量替换；
+                     + A2 批量打标签 /api/notes/tags/batch {files,tags,mode:add|remove}：
+                     整单校验 + 逐篇合并（幂等）+ 失败明细 + 单次广播；
+                     + A3 批量导出 /api/notes/export/batch {files,fmt:md|srt}：打包 zip
+                     （落 export_dir 或临时文件下载；条目名 {课程}_{日期} 自动避让）；
                      + §3 导出位置 export_dir（落盘 JSON {ok,path}）+ /api/export/open：
                      仅本机打开导出目录；
                      + §6 可编辑摘要 /api/notes/summary（GET/PUT）：摘要原文读写、正文
@@ -39,10 +43,14 @@
                     端口占用回落（真 bind 探测）、主网卡地址（UDP connect 探测，不发包）、
                     配对 URL（`#t=<token>` 走 hash 段）与 token 解析、qrcode 出 SVG
 - app/exportdir.py  §3 导出位置与文件名（export_dir 校验：绝对路径/可建/可写/非系统
-                    关键目录；`{课程}_{日期}.{ext}` + sanitize；同名避让 -2；原子落盘）
+                    关键目录；`{课程}_{日期}.{ext}` + sanitize；B1 课程子目录
+                    `<导出目录>/<课程名>/`（空课程仍落根）；同名避让 -2；原子落盘）
 - app/notes.py      笔记解析（EN↔ZH 配对）+ safe_note_path + §2 set_course 定稿改写
                     + §4 名字校验/回收站/派生文件搬运 + §8 标签解析/规范化/写回
 - app/web/index.html 字幕页（工具条：暂停/选课程/换模型/电平条/字号/导出/清屏/全屏）
+                    + 工作台：笔记库（A1 三态全选/Ctrl+A、A2 批量打标签、A3 批量导出 zip）、
+                    术语库、设置页五分区（B12：卡片挂 data-set-tab + setTabs 标签条，
+                    记住上次分区 ll_settings_tab，openWorkbench('settings',{tab}) 深链）
 - config.json       模型/设备/VAD 持久化（字幕页热切换会写回）
 - glossary/         课程术语表（每行 `EN term = 中文译名`，--glossary 传入）
 - scripts/smoke_test.py 全管线自检（无需麦克风；--gpu 基准 / --server 在线 / --translate）
@@ -64,10 +72,28 @@
 - config.json 默认 large-v3-turbo + device=auto → RTX 5060 上 float16，RTF 0.05，显存 2.2/8GB
 - Windows 坑：ctranslate2 首次推理经 PATH 搜 cuBLAS DLL，asr.py 的 _setup_cuda_dlls 已双保险
   （add_dll_directory + 进程 PATH 前插），换机器装了 nvidia-*cu12 即可
-- C 盘零占用原则：venv/模型缓存全在 D 盘（HF_HOME=D:\01_Environments\model-cache）
+- C 盘零占用原则（**仅开发机**）：venv/模型缓存全在 D 盘（HF_HOME=D:\01_Environments\model-cache）。
+  ⚠ 分发形态下不成立：朋友机器没有 HF_HOME，**档位下载**默认落
+  `C:\Users\<user>\.cache\huggingface\hub`（随包模型在安装目录、不占额外空间）；
+  设置页模型卡常显实际路径，README「模型放在哪」一节是给用户的口径
 - 档位化（2026-10-13）：首装未选过模型时按硬件自动选档（判定=config.json 有无
-  model 键，见 main.user_picked_model；frozen 打包版不参与）；检测只信 nvidia-smi
+  model 键，见 main.user_picked_model；**D2 起打包版改为默认选随包模型**——
+  main.pick_bundled_default，small 优先；旧口径「frozen 不参与」已废）；检测只信 nvidia-smi
   （WMI 大显存读数不准）、阈值宁小勿大、可随时手动覆盖
+- D2（分发工程）：frozen **不再**强制离线（旧 `HF_HUB_OFFLINE=1` 让打包版永远不能下载
+  新档位）；离线只认显式环境变量；模型解析次序=随包 → HF 缓存已下载 snapshot → 按名联网
+  （main.resolve_model_ref）；config 键 `hf_mirror`（true → 导入前把 HF_ENDPOINT 设为
+  **唯一预设镜像** hf-mirror.com，重启生效，见 app/hfenv.py）
+- **D4 安装包必须实测的四条（评审2 点名，D3 时仓库内尚无安装器 → 无法核验）**：
+  ① 安装器/安装后目录内不得有敏感物（把 build_exe.forbidden_hits 对**解包目录**再跑一遍，
+     清单=config.json/courses.json/.env/transcripts/logs/glossary/desktop.lock/`*.log`）；
+  ② 装到 `%LocalAppData%\LectureLens` 后该目录**仍可写**（用户数据跟着 exe 目录走，
+     main.ROOT=exe 所在目录——这是数据布局的前提，必须真装出来验）；
+  ③ **卸载必须保留数据**：Inno 卸载器默认会连安装目录一起删 → 必须
+     `[UninstallDelete]` 精细控制 + 卸载页写明「你的笔记已保留」，且**实测**卸载后
+     transcripts/config.json/glossary 仍在（否则第一个朋友卸载就丢笔记）；
+  ④ 覆盖安装不丢数据 + 新手指引含：SmartScreen「更多信息→仍要运行」、防火墙首次弹窗、
+     **模型缓存落点与 HF_HOME 换盘**（README「模型放在哪」同口径）、首启向导、扫码配对
 
 ## 四、红线（2026-10-13 用户拍板口径）
 - 当前阶段：**免费自用 + 朋友使用（含朋友装机）**；不收费、不注册公司、不公开分发

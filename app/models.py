@@ -93,18 +93,28 @@ def dir_size(d: Path) -> int:
     return total
 
 
-def snapshot_revision(entry: Path) -> str | None:
-    """取一个已完成的 snapshot 的 revision（无 → None）。"""
+def snapshot_dir(entry: Path) -> Path | None:
+    """取一个已完成的 snapshot **目录**（含 model.bin）；无 → None。
+
+    D2：本地路径解析要用目录本身（faster-whisper 的 WhisperModel 接受本地目录），
+    故与 snapshot_revision 拆开——后者只要名字。多个 snapshot 时取名字序最小的
+    那个（与旧实现同款确定性；HF 缓存按需保留多条时不会随机换）。"""
     snaps = Path(entry) / "snapshots"
     try:
         if not snaps.is_dir():
             return None
         for s in sorted(snaps.iterdir()):
             if (s / REQUIRED_FILE).is_file():
-                return s.name
+                return s
     except OSError:
         return None
     return None
+
+
+def snapshot_revision(entry: Path) -> str | None:
+    """取一个已完成的 snapshot 的 revision（无 → None）。"""
+    snap = snapshot_dir(entry)
+    return snap.name if snap else None
 
 
 def is_cached(entry: Path) -> bool:
@@ -225,8 +235,8 @@ def download_model(name: str, cache: Path, on_progress, *,
     on_progress(pct:int, stage:str) 会被高频调用（每个 tqdm 增量一次），
     实现里必须廉价、且**永不抛**。
 
-    `local_files_only=True`（frozen 离线模式）时不联网：命中缓存则秒回，
-    否则抛 —— 由调用方转成用户可见错误。"""
+    `local_files_only=True`（**显式离线开关**：环境里 HF_HUB_OFFLINE=1；D2 起 frozen
+    不再自动置位）时不联网：命中缓存则秒回，否则抛 —— 由调用方转成用户可见错误。"""
     repo = MODEL_REPOS[name]           # KeyError = 调用方没做白名单校验（不该发生）
     emit = safe_emit(on_progress)
     if local_files_only:
