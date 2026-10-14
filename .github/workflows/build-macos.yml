@@ -1,0 +1,71 @@
+# LectureLens macOS（Apple Silicon）云构建
+#
+# 为什么需要这份工作流：PyInstaller **不能跨平台产包**——开发机是 Windows，
+# 造不出 .app（build_macos.py 在非 darwin 上直接拒绝）。这里借 GitHub 的
+# macOS runner（真实 arm64 Apple Silicon）代跑 scripts/build_macos.py，
+# 把产物 zip + SHA256 挂到 Release 供朋友免登录下载。
+#
+# 产物：LectureLens-<版本>-macos-arm64.zip（ad-hoc 签名、未公证 —— 首次打开需
+# 右键「打开」或 xattr -dr com.apple.quarantine，属预期，见 docs/mac-guide.md §5）
+#
+# ⚠️ 诚实边界：CI 只证明「构建成功 + --check 自检通过」；mlx 推理 / BlackHole 内录 /
+# 麦克风授权弹窗等真机行为仍需在朋友的 Mac 上实测（docs/mac-guide.md §6 有清单）。
+name: build-macos
+
+on:
+  workflow_dispatch:          # 手动触发：仓库 Actions 页，或 gh workflow run build-macos.yml
+  push:
+    tags: ["v*"]              # 发版打 tag 时自动构建（若 Release 已存在则覆盖同名资产）
+
+permissions:
+  contents: write             # 上传产物到 Release 需要
+
+jobs:
+  build:
+    runs-on: macos-14         # Apple Silicon（arm64 / M 系列）
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: 构建 .app（含 Info.plist 注入与 ad-hoc 签名）
+        run: python scripts/build_macos.py
+
+      - name: 无窗口自检（必须退出 0）
+        run: ./dist/LectureLens.app/Contents/MacOS/LectureLens --check
+
+      - name: 打包 zip + 生成 SHA256（ditto 保 .app 结构与权限）
+        run: |
+          VERSION=$(python -c "import sys; sys.path.insert(0, 'app'); import branding; print(branding.APP_VERSION)")
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          ditto -c -k --keepParent dist/LectureLens.app "LectureLens-${VERSION}-macos-arm64.zip"
+          shasum -a 256 "LectureLens-${VERSION}-macos-arm64.zip" > "LectureLens-${VERSION}-macos-arm64.zip.sha256"
+          ls -lh LectureLens-*-macos-arm64.zip*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: LectureLens-*-macos-arm64.zip*
+
+      - name: 挂到 Release（朋友免登录下载；同名资产覆盖）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG=$(gh release view --json tagName -q .tagName)
+          fi
+          gh release upload "$TAG" "LectureLens-${VERSION}-macos-arm64.zip" "LectureLens-${VERSION}-macos-arm64.zip.sha256" --clobber
+          echo "已上传到 Release ${TAG}：LectureLens-${VERSION}-macos-arm64.zip"
