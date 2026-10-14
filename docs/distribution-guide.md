@@ -187,7 +187,7 @@ gh release create v1.1.0 --verify-tag "dist\installer\LectureLens-1.1.0-setup.ex
 ### 已知限制（如实说）
 - 没有代码签名 → SmartScreen 会提示。
 - 没有自动更新 → 换新版要**重新下载并覆盖安装**（笔记不会丢，见 FAQ）。
-- 仅 Windows 64 位；macOS 版是独立工程，还没做。
+- 平台：Windows 64 位 + macOS（Apple Silicon，预构建包见 Release）；两者均未签名（SmartScreen／未公证提示，属预期）。
 ```
 
 ---
@@ -380,7 +380,7 @@ certutil -hashfile "%USERPROFILE%\Downloads\LectureLens-1.1.0-setup.exe" SHA256
 |---|---|
 | 代码签名 | **没有** → 首启必弹 SmartScreen。买证书 £100-400/年，商业化再上。 |
 | 自动更新 | **没有**（Tauri 议题）→ 换新版靠手动覆盖安装。 |
-| macOS 版 | **没有**，是独立工程。 |
+| macOS 版 | **有预构建包（实验性）**：Apple Silicon（arm64），GitHub 云构建（`.github/workflows/build-macos.yml`）；未公证（首次打开需右键「打开」）；真机全量验收进行中；Intel Mac 不适用。 |
 | 开源许可 | **没有**——仓库虽公开（2026-10-14 起）但**保留所有权利**：可下载使用，未授权复制/修改/再分发/商用（见 README「许可」）。 |
 | 公网访问手机同屏 | **没有** → 仅同一 WiFi，不做穿透/映射。 |
 | 云同步 / 账号 | **没有** → 笔记只在本机。 |

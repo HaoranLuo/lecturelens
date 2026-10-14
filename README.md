@@ -32,7 +32,7 @@
 
 - **升级 = 覆盖安装**：直接装新版即可，笔记/设置/课程/术语表全部保留（跨版本升级有真实实测）
 - 完整性校验值以 Release 页面的 `.sha256` 为准（当前 v1.1.0：`0b41d0a0…b2b3f14`，以文件为准）
-- **macOS**：目前**没有**现成安装包（.app 需要在 Mac 上构建，见 [`docs/mac-guide.md`](docs/mac-guide.md)）
+- **macOS（Apple Silicon / M 系列芯片）**：两档任选——① **预构建包**（实验性）：[`LectureLens-1.1.0-macos-arm64.zip`](https://github.com/HaoranLuo/lecturelens/releases/latest/download/LectureLens-1.1.0-macos-arm64.zip)（约 293 MB）解压后把 `LectureLens.app` 拖进「应用程序」，首次打开需**右键 →「打开」**（未公证，属预期）；② **自行构建**（最稳）：见 [`docs/mac-guide.md`](docs/mac-guide.md)。⚠️ 云构建包只经过包内 `--check` 自检，mlx 推理 / BlackHole 内录 / 权限弹窗尚待真机验收
 
 ## 快速开始
 

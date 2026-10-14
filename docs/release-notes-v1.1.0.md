@@ -14,7 +14,7 @@ Windows 64 位课堂实时字幕翻译工具（免费自用 + 朋友使用）。
   - 插电提醒（电池供电 + GPU 模型时提示「插电满速」）
   - 一键打包备份（全部笔记 → 一个 zip，保险/换机用）
   - 手机同屏防误触（手机端隐藏会改电脑采集状态的控件；暂停横幅给手机端显示对应文案）
-- **Mac 版准备（代码级完成）**：Apple Silicon 新引擎分支（mlx-whisper）、BlackHole 内录、launchd 自启、.app 打包脚本与《Mac 构建与实测指南》。诚实边界：本版**不含 .app 安装包**——需要在 Mac 上按 `docs/mac-guide.md` 构建并实测（mlx 推理 / BlackHole 内录 / 权限弹窗）；相关代码已在 Windows 侧以平台守卫 + 打桩单测覆盖，Windows 现有行为零变化。
+- **Mac 版（Apple Silicon）**：全套适配（mlx-whisper 引擎 / BlackHole 内录 / launchd 自启 / .app 打包脚本 / 《Mac 构建与实测指南》）。**自本版起提供云构建的 arm64 预构建包**——`LectureLens-1.1.0-macos-arm64.zip`（GitHub 的 macOS 云机器实机构建；包内 `--check` 自检全过；ad-hoc 签名、未公证——首次打开需右键 →「打开」，或 `xattr -dr com.apple.quarantine`）。诚实边界：预构建包**尚未经真机全量验收**（mlx 推理 / BlackHole 内录 / 权限弹窗），欢迎尝鲜反馈；自行构建见 `docs/mac-guide.md`。
 
 ## 发布前评审的修复（挑用户可见的）
 
@@ -30,12 +30,15 @@ Windows 64 位课堂实时字幕翻译工具（免费自用 + 朋友使用）。
 1. 下载 `LectureLens-1.1.0-setup.exe`（约 1.41 GB）
 2. 双击运行；若弹蓝色「Windows 已保护你的电脑」→「更多信息」→「仍要运行」（未购买代码签名证书，属正常提示）
 3. 已装 1.0.0 的**直接覆盖安装**即可：笔记 / 课程 / 术语表 / 设置全部保留（1.0.0→1.1.0 跨版本已实测）
+4. **macOS（Apple Silicon / M 系列芯片）**：下载 `LectureLens-1.1.0-macos-arm64.zip`（约 293 MB）→ 解压 → 把 `LectureLens.app` 拖进「应用程序」→ 首次打开对着图标**右键 →「打开」**（未公证，属正常提示）
 
 ## 校验（可选）
 
 ```
-SHA256: 0b41d0a04b7f4fd93b25a96f8315f3ead00d4124a6d613cb792b6b192b2b3f14
+Windows 安装包    SHA256: 0b41d0a04b7f4fd93b25a96f8315f3ead00d4124a6d613cb792b6b192b2b3f14
+macOS arm64 包    SHA256: 19555ea41e44862e29066facdbfbc86f57e7b8429375d7f830c2357035b26aad
 ```
+（与 Release 页面上两个 `.sha256` 文件逐字一致；macOS 包用 `shasum -a 256` 校验）
 
 ## 说明
 

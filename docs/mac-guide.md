@@ -18,6 +18,13 @@
 | 验证产物 | `.venv/bin/python scripts/verify_dist.py` |
 | 数据在哪 | `~/Library/Application Support/LectureLens`（日志在同目录 `logs/lecturelens.log`） |
 
+> 📦 **不想自己构建？** Release 上有 GitHub 云端（真实 Apple Silicon runner）构建好的
+> arm64 包：`LectureLens-<版本>-macos-arm64.zip`（`.github/workflows/build-macos.yml`
+> 在打 tag / 手动触发时产出，ad-hoc 签名、未公证——首次打开需右键 →「打开」）。
+> ⚠️ 云构建只证明「构建成功 + 包内 `--check` 自检全过」；mlx 推理 / BlackHole 内录 /
+> 麦克风授权弹窗等真机行为仍需按 §6 清单实测（真出问题时，本指南的构建流程仍是
+> 复现与排障的第一手段）。
+
 ---
 
 ## 1. 前置
