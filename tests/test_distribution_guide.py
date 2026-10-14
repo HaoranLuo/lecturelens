@@ -55,10 +55,12 @@ def test_guide_covers_the_five_required_parts():
         assert q in t, f"FAQ 缺「{q}」问题"
 
 
-def test_guide_states_the_three_honest_limits():
-    """需求原话：私有仓库可见性、未签名、无自动更新——**如实写明，不要承诺**。"""
+def test_guide_states_the_honest_limits():
+    """需求原话：诚实边界**如实写明，不要承诺**。2026-10-14 起仓库公开——
+    边界口径 = 公开且保留所有权利（未授予开源许可）、未签名、无自动更新。"""
     t = _text()
-    assert "私有" in t, "未写明仓库私有（Release 仅 collaborator 可见）"
+    assert "已公开" in t, "未写明仓库已公开（2026-10-14 新口径）"
+    assert "保留所有权利" in t, "未写明「保留所有权利」（未授予开源许可）"
     assert "代码签名" in t, "未写明没有代码签名"
     assert re.search(r"没有自动更新|无自动更新|没有\s*自动更新", t), "未写明没有自动更新"
     # 2 GiB 单附件上限是渠道对比的关键事实，不能漏
@@ -82,11 +84,14 @@ def test_no_auto_update_mechanism_exists_in_code():
                       f"（它现在写着「没有自动更新」）：{hits}")
 
 
-def test_guide_is_not_public_distribution():
-    """口径纪律：必须保持「不公开分发」，不得写成公开发布教程。"""
+def test_guide_reflects_public_repo_policy():
+    """口径纪律（2026-10-14 用户拍板变更）：仓库已转公开（便于朋友/AI 从 GitHub
+    一键安装），但**保留所有权利**——指南必须写清新口径，且不再出现私有仓库时代
+    的 collaborator 邀请流程。"""
     t = _text()
-    assert "不公开分发" in t or "刻意不做" in t
-    assert "collaborator" in t, "未说明私有仓库需邀请 collaborator"
+    assert "保留所有权利" in t, "指南未写 2026-10-14 新口径「保留所有权利」"
+    assert "已公开" in t, "指南未反映仓库已公开"
+    assert "gh api -X PUT repos" not in t, "不应再写 collaborator 邀请命令（仓库已公开）"
 
 
 def _built_installer():

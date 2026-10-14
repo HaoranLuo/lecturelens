@@ -2575,8 +2575,8 @@ def test_distribution_guide_contract() -> None:
     换了名字/哈希、仓库口径变了，而指南还停在旧说法，朋友照着做就踩空。故这里钉：
     ① 指南存在且是 UTF-8；
     ② 五块内容齐（三渠道对比 / 发版 SOP / 首次使用 / 可复制文案 / FAQ）；
-    ③ **诚实边界三条如实写明**：私有可见性、未签名、无自动更新（D5 原话
-       「只写真实能力……不要承诺不存在的能力」）；
+    ③ **诚实边界如实写明**：公开口径（保留所有权利）、未签名、无自动更新（D5 原话
+       「只写真实能力……不要承诺不存在的能力」；2026-10-14 起仓库公开）；
     ④ **文档↔代码对齐**：指南说"没有自动更新"，代码里就真没有；
     ⑤ **文档↔产物对齐**：指南里贴的安装包名与 SHA256 与 dist/installer 下真产物一致
        （产物不存在则跳过该条，不误报）。
@@ -2605,15 +2605,15 @@ def test_distribution_guide_contract() -> None:
         if need not in text:
             problems.append(f"缺{why}（{need}）")
 
-    # ③ 诚实边界
-    if "私有" not in text:
-        problems.append("未写明仓库私有（Release 仅 collaborator 可见）")
+    # ③ 诚实边界（2026-10-14 新口径：仓库公开但保留所有权利）
+    if "已公开" not in text:
+        problems.append("未写明仓库已公开（Release 无需登录，2026-10-14 新口径）")
+    if "保留所有权利" not in text:
+        problems.append("未写明「保留所有权利」（未授予开源许可）")
     if "代码签名" not in text:
         problems.append("未写明没有代码签名")
     if "自动更新" not in text:
         problems.append("未写明没有自动更新")
-    if "不公开分发" not in text and "刻意不做" not in text:
-        problems.append("未守住「不公开分发」口径")
 
     # ④ 文档↔代码对齐：说了没有自动更新，代码里就得真没有
     hits = []

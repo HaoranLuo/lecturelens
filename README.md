@@ -1,10 +1,38 @@
 # LectureLens 课堂透镜 — 留学生课堂实时字幕翻译
 
-> 免费自用 + 朋友工具。**当前阶段（Student visa 禁 self-employment）：免费供本人学习使用，并免费分享给朋友使用（含朋友装机）；不收费、不注册公司、不公开分发**。未来可能商业化（含对外发布或出售），相关决策**推迟至毕业后**，届时按签证与法律要求评估。
+> 免费自用 + 朋友工具。**当前阶段（Student visa 禁 self-employment）：免费供本人学习使用，并免费分享给朋友使用（含朋友装机）；不收费、不注册公司**。仓库自 2026-10-14 起**公开**（便于朋友及其 AI 助手直接从 GitHub 安装），但**保留所有权利——未授予开源许可**（见文末「许可」）。未来可能商业化（含对外发布或出售），相关决策**推迟至毕业后**，届时按签证与法律要求评估。
 
 ## 一句话
 
 上课时笔记本采集老师语音 → faster-whisper 实时英文识别 → DeepSeek 翻译中文 → 浏览器大字幕（上英下中）→ 课后自动存双语笔记。
+
+## 安装（给朋友 / 新电脑）
+
+> Windows 64 位 · 安装包约 1.41 GB · 不需要管理员权限 · 不需要 GitHub 账号。
+> **把下面这段话整段贴给你的 AI 助手**（带执行权限的：ZCode / Claude Code /
+> Cursor 等），它会自动完成"下载 → 校验 → 安装 → 自检"：
+
+```text
+帮我在本机安装 LectureLens（Windows 课堂实时字幕工具）：
+1. 取最新发布：https://github.com/HaoranLuo/lecturelens/releases/latest
+   （或调 API：https://api.github.com/repos/HaoranLuo/lecturelens/releases/latest
+    的 assets 里取 browser_download_url）
+2. 下载其中的 LectureLens-*-setup.exe（约 1.41 GB）和同名 .sha256 文件，
+   用 SHA256 校验两者一致；
+3. 静默安装：<安装包> /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+   （每用户安装，不需要管理员权限）；
+4. 装完运行 %LocalAppData%\LectureLens\LectureLens.exe --check，
+   看到 [check] ALL OK 即安装成功；
+5. 告诉我安装位置与版本号。
+```
+
+不想用 AI 就手装：下载同一安装包，双击 → 若弹蓝色「Windows 已保护你的电脑」→
+点「更多信息」→ 再点「仍要运行」（未购买代码签名证书，属正常提示）→ 一路下一步 →
+首启三步向导（麦克风测试 → DeepSeek key → 试说一句）。
+
+- **升级 = 覆盖安装**：直接装新版即可，笔记/设置/课程/术语表全部保留（跨版本升级有真实实测）
+- 完整性校验值以 Release 页面的 `.sha256` 为准（当前 v1.1.0：`0b41d0a0…b2b3f14`，以文件为准）
+- **macOS**：目前**没有**现成安装包（.app 需要在 Mac 上构建，见 [`docs/mac-guide.md`](docs/mac-guide.md)）
 
 ## 快速开始
 
@@ -184,3 +212,9 @@ python app/main.py --list-devices                    # 列出麦克风设备（�
 - v1：术语表热更新 + 讲师口音自适应
 - v2：对话模式（双向翻译）、浏览器插件
 - 商业化（含出售）：**推迟至毕业后评估**（签证合规优先；口径与关于页/隐私透明页一致）
+
+## 许可
+
+**保留所有权利（All rights reserved）**。仓库公开（2026-10-14 起）仅为了分发与安装便利：
+你可以下载并按原样使用本软件（含给朋友装机），但**未授予**复制、修改、再分发、
+商业使用或将其作为服务提供的许可。课堂音频仅限本人学习用途，笔记不外传。

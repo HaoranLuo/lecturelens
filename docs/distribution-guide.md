@@ -1,32 +1,39 @@
 # LectureLens 分发指南（D5）
 
 > 读者 = **你本人**（发版时照做）。目标 = 把安装包可靠地送到朋友手上，并且让朋友
-> 第一次就能装上、能用。定位见 README：**免费自用 + 朋友工具，不公开分发**。
+> 第一次就能装上、能用。定位见 README：**免费自用 + 朋友工具**（仓库公开但保留所有权利）。
 >
-> 本指南只写**已经存在的能力**。三条需要你心里有数的现实约束（贯穿全文）：
-> **仓库是私有的**（Release 只有 collaborator 看得到）、**安装包没有代码签名**
-> （首次运行必弹 SmartScreen）、**没有自动更新**（换新版靠手动覆盖安装）。
-> 这三条都不是缺陷，是本阶段刻意不做的范围，但**不能对朋友含糊**。
+> 本指南只写**已经存在的能力**。两条需要你心里有数的现实约束（贯穿全文）：
+> **安装包没有代码签名**（首次运行必弹 SmartScreen）、**没有自动更新**
+> （换新版靠手动覆盖安装）。这两条都不是缺陷，是本阶段刻意不做的范围，但
+> **不能对朋友含糊**。
+>
+> 📌 **2026-10-14 变更**：仓库已转**公开**（保留所有权利，见 README「许可」）。
+> Release 下载**无需登录、无需邀请 collaborator**——朋友（或其 AI 助手）拿到
+> 链接就能自助安装（README「安装」章有可直接贴给 AI 的指令）。网盘/直传降为
+> **镜像兜底**。
 
 ---
 
 ## 一、三条分发渠道对比
 
-| 维度 | ① GitHub Release（私有仓库） | ② 网盘直发 | ③ 直接传文件 |
+| 维度 | ① GitHub Release（已公开，正本） | ② 网盘转载（镜像） | ③ 直接传文件（兜底） |
 |---|---|---|---|
-| 谁能拿到 | **仅 collaborator**——每个朋友都要你单独邀请 | 拿到分享链接的人 | 你发给谁谁才有 |
+| 谁能拿到 | **任何人**（链接即得，无需账号；朋友的 AI 也能自助下载） | 拿到分享链接的人 | 你发给谁谁才有 |
 | 国内下载速度 | **常不稳**（GitHub 在国内波动大） | 快（选国内网盘） | 看传输方式 |
 | 单附件上限 | **2 GiB**（GitHub 硬限制） | 各家不同，通常够 | 受渠道限制（微信/QQ 对超大文件不友好） |
 | 版本历史 | **有**（每个 tag 一个版本，可回溯） | 弱（文件会被覆盖/过期） | 无 |
 | 完整性校验 | **好**（附件 + `.sha256` 并排挂着） | 中（要你自己把 `.sha256` 一起放） | 弱 |
 | 链接寿命 | 长期（只要仓库在） | **链接会过期**（免费网盘尤其） | 一次性 |
 
-### 推荐组合（兼顾"可靠"与"朋友拿得到"）
+### 推荐组合（2026-10-14 起）
 
-- **GitHub Release 当唯一"正本"**：它是版本库与事实来源——版本号、发布说明、
-  SHA256 都齐。以后要回溯"1.0.0 到底装的是哪个包"只有这里查得到。
-- **网盘当主要投递方式**：朋友在国内从 GitHub 拖 1.4 GiB 大概率失败或极慢。
-  把**安装包 + `.sha256` + 新手指引**三件一起放网盘，把链接发给朋友。
+- **GitHub Release 是唯一"正本"与首选投递**：版本号、发布说明、SHA256 都齐；
+  公开后朋友（或其 AI 助手）**拿链接即装**——把 README「安装」章那段指令贴给
+  AI 即可全自动完成（下载 → 校验 → 静默安装 → 自检）。以后回溯"1.0.0 到底装的
+  是哪个包"也只有这里查得到。
+- **网盘当镜像/兜底**：朋友在国内直连 GitHub 拖 1.4 GiB 大概率极慢。
+  把**安装包 + `.sha256` + 新手指引**三件一起转存网盘，把链接发给他备用。
 - **直传（微信/QQ/移动硬盘）当兜底**：只有一两个朋友、或网盘也卡时用。
   注意微信对超大文件不友好，**优先用 U 盘或直接让朋友从你电脑上拷**。
 
@@ -48,12 +55,11 @@
 
 - `gh` 已装并已登录：实测 `gh --version` → **gh version 2.92.0**
   （`C:\Program Files\GitHub CLI\gh.exe`）；`gh auth status` → 已登录
-  **HaoranLuo**，token scopes 含 `repo`（发 Release、加 collaborator 都够用）。
+  **HaoranLuo**，token scopes 含 `repo`（发 Release 够用）。
 - Inno Setup 6 已装（D4 装好，v6.7.3）。注意 **ISCC 不在 PATH 上**，
   下面一律用绝对路径调用。
-- 仓库还是私有的：`gh repo view --json visibility` → `"PRIVATE"`。
-- **当前 collaborator 只有你自己**（实测 `gh api repos/HaoranLuo/lecturelens/collaborators`
-  只返回 HaoranLuo 一条）——所以朋友要用 Release 下载，**必须先邀请**。
+- 仓库**已公开**（2026-10-14 起）：`gh repo view --json visibility` → `"PUBLIC"`。
+  Release 下载无需登录——发完照 §2.3 的「匿名验证」跑一遍即可交出去。
 
 ### 2.1 构建
 
@@ -142,11 +148,18 @@ gh release create v1.1.0 --verify-tag "dist\installer\LectureLens-1.1.0-setup.ex
 （`--title` / `--notes-file` / `--verify-tag` 三个旗标均已用
 `gh release create --help` 核对过存在。）
 
-> Release 建在**私有仓库**上 → 只有你邀请为 collaborator 的人看得到。
-> 朋友要用 Release 下载，你得先邀请他（`{owner}`/`{repo}` 会被 gh 自动填成当前
-> 仓库，`-X/--method` 已用 `gh api --help` 核对过）：
-> `gh api -X PUT repos/{owner}/{repo}/collaborators/<他的GitHub用户名>`
-> （对方要接受邀请邮件）。**嫌麻烦就只给他网盘链接**——这通常才是国内的正解。
+> 仓库已公开（2026-10-14）→ Release 对所有人可见可下载，**不再需要邀请 collaborator**。
+> 发完做一次**匿名验证**（curl 默认不携带登录态；应看到 200 / 302→200，
+> 不出现任何登录跳转）：
+>
+> ```bash
+> curl -s  -o /dev/null -w "repo   HTTP %{http_code}\n" https://github.com/HaoranLuo/lecturelens
+> curl -sIL -o /dev/null -w "setup  HTTP %{http_code}\n" \
+>   "https://github.com/HaoranLuo/lecturelens/releases/latest/download/LectureLens-<版本>-setup.exe"
+> curl -s https://api.github.com/repos/HaoranLuo/lecturelens/releases/latest | grep -o '"tag_name[^,]*'
+> ```
+>
+> （2026-10-14 实测 v1.1.0：repo 200、setup 302→200、API 返回 `"tag_name": "v1.1.0"`。）
 
 ### 2.4 发布说明模板
 
@@ -155,7 +168,7 @@ gh release create v1.1.0 --verify-tag "dist\installer\LectureLens-1.1.0-setup.ex
 ```markdown
 ## LectureLens vX.Y.Z
 
-**这个版本给谁用**：自己的学习用 + 朋友装机（不公开分发）。
+**这个版本给谁用**：自己的学习用 + 朋友装机（公开仓库 · 保留所有权利）。
 
 ### 装之前先看
 - 本程序**没有代码签名**，首次运行 Windows 会拦一次：点「更多信息」→「仍要运行」。
@@ -209,14 +222,17 @@ gh release create v1.1.0 --verify-tag "dist\installer\LectureLens-1.1.0-setup.ex
 
 ## 四、可直接复制发给朋友的文案
 
-> 把 `【】` 里的东西替换掉再发。这段话刻意不提"签名证书多少钱"之类的内部细节。
+> 链接公开后不用替换任何东西，整段发即可。两版任选：① 手装版；② 贴给 AI 版更省事
+> （对方电脑上要有能执行命令的 AI 助手）。这段话刻意不提"签名证书多少钱"之类的内部细节。
+
+① 手装版：
 
 ```text
-给你个我自己在用的上课字幕工具，LectureLens，Windows 64 位。
+给你个我自己在用的上课字幕工具，LectureLens，Windows 64 位，免费。
 
-下载：https://【网盘链接，提取码 XXXX】
-（或者 GitHub：https://github.com/HaoranLuo/lecturelens/releases ，
- 用这个得我先把你加成协作者，你告诉我 GitHub 用户名）
+下载：https://github.com/HaoranLuo/lecturelens/releases/latest
+（点最新那个 LectureLens-1.1.0-setup.exe 下载，约 1.41 GB；国内直连慢的话
+ 跟我说一声，我发你网盘镜像）
 
 怎么装（三步）：
 1. 双击 LectureLens-1.1.0-setup.exe。如果 Windows 弹蓝色的
@@ -234,8 +250,20 @@ gh release create v1.1.0 --verify-tag "dist\installer\LectureLens-1.1.0-setup.ex
 
 想手机躺床上看字幕：同一个 WiFi 下点字幕页的「📱 手机同屏」，扫码即可。
 
-装完看「关于」能看到版本号。有新版我会再发链接给你，
-直接双击新安装包覆盖装就行，你的笔记不会丢。
+装完看「关于」能看到版本号。有新版我会再发你，直接双击新安装包覆盖装就行，
+你的笔记不会丢。
+```
+
+② 贴给 AI 版（对方电脑上有带执行权限的 AI 助手时，整段贴给它）：
+
+```text
+帮我在本机安装 LectureLens（Windows 课堂实时字幕工具）：
+1. 取最新发布：https://github.com/HaoranLuo/lecturelens/releases/latest
+2. 下载其中的 LectureLens-*-setup.exe（约 1.41 GB）和同名 .sha256 文件，
+   用 SHA256 校验两者一致；
+3. 静默安装：<安装包> /VERYSILENT /SUPPRESSMSGBOXES /NORESTART；
+4. 装完运行 %LocalAppData%\LectureLens\LectureLens.exe --check，
+   看到 [check] ALL OK 即成功；告诉我安装位置和版本号。
 ```
 
 ---
@@ -353,7 +381,7 @@ certutil -hashfile "%USERPROFILE%\Downloads\LectureLens-1.1.0-setup.exe" SHA256
 | 代码签名 | **没有** → 首启必弹 SmartScreen。买证书 £100-400/年，商业化再上。 |
 | 自动更新 | **没有**（Tauri 议题）→ 换新版靠手动覆盖安装。 |
 | macOS 版 | **没有**，是独立工程。 |
-| 公开分发 | **刻意不做**（签证与法律口径，见 README）→ 仓库保持私有，只给朋友。 |
+| 开源许可 | **没有**——仓库虽公开（2026-10-14 起）但**保留所有权利**：可下载使用，未授权复制/修改/再分发/商用（见 README「许可」）。 |
 | 公网访问手机同屏 | **没有** → 仅同一 WiFi，不做穿透/映射。 |
 | 云同步 / 账号 | **没有** → 笔记只在本机。 |
 | 上架商店 | **没有** → 只走 Release / 网盘 / 直传。 |
@@ -367,7 +395,6 @@ certutil -hashfile "%USERPROFILE%\Downloads\LectureLens-1.1.0-setup.exe" SHA256
     清理那四条**也是断言**（卸载器已退出、临时目录已删净、无残留进程、无新增 Inno
     临时目录），不是只打印一行日志。
 - **未实测**（属你本人操作、或需要另一台机器 / GUI，我做不了）：
-  - `gh release create` 上传与 collaborator 邀请 —— 需要你的 GitHub 账号授权；
   - 网盘上传与分享链接；
   - **"干净 Windows、没装过 Python"的机器**上装一遍 —— D5 把这条列为已知未知，
     本机验证不能替代它。理论上安装包自带运行时（PyInstaller onedir 全量打包）

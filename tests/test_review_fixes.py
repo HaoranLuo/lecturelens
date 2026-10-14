@@ -315,20 +315,24 @@ def test_r2_privacy_discloses_lan_plaintext_path():
 
 
 def test_r2_redline_copy_matches_readme_authority():
-    """R2（红线声明）回归——2026-10-13 用户拍板后**重钉**：权威口径 = README.md:3
-    新版（当前免费自用+朋友含装机、不收费不注册公司不公开分发；商业化含出售，
-    推迟至毕业后）。三处文案必须一致；不得再用「永久」把推迟裁决写成既成事实。
-    旧口径的「待裁决」断言已随拍板作废——历史出处见 docs/upgrade-plan.md §3.3-1。"""
+    """R2（红线声明）回归——**2026-10-14 用户拍板后重钉**：权威口径 = README.md:3
+    新版（免费自用+朋友含装机、不收费不注册公司；**仓库公开但保留所有权利**；
+    商业化含出售，推迟至毕业后）。三处文案必须一致；不得用「永久」把推迟裁决
+    写成既成事实。历史沿革：2026-10-13 拍板「不公开分发」→ 2026-10-14 修订为
+    「公开·保留所有权利」；最旧「待裁决」出处见 docs/upgrade-plan.md §3.3-1。"""
     readme = "".join((PROJ / "README.md").read_text(encoding="utf-8").split())
-    assert "不收费、不注册公司、不公开分发" in readme      # README 2026-10-13 原文
+    assert "不收费、不注册公司" in readme
     assert "含朋友装机" in readme
+    assert "保留所有权利" in readme            # 2026-10-14 口径
     assert "推迟至毕业后" in readme
 
     for name in ("index.html", "privacy.html"):
         flat = "".join((WEB / name).read_text(encoding="utf-8").split())
-        assert "不收费、不注册公司、不公开分发" in flat, \
-            f"{name}: 红线本体与 README 新口径不一致"
+        assert "不收费、不注册公司" in flat, \
+            f"{name}: 红线本体与 README 口径不一致"
         assert "含朋友装机" in flat, f"{name}: 未写明「含朋友装机」的边界"
+        assert "保留所有权利" in flat, \
+            f"{name}: 漏了「保留所有权利」（2026-10-14 口径）"
         assert "推迟至毕业后" in flat, f"{name}: 漏了「推迟至毕业后」"
         assert "合规红线（永久）" not in flat, f"{name}: 不得用「永久」定格"
 
