@@ -8,15 +8,20 @@
 检查项（每项一行 ✅/❌，任一失败 exit 1）：
   1. 安装包体检：存在、非空、文件名含版本号、有 .sha256 校验文件且**核对通过**；
   2. 静默安装（/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=<临时目录>）退 0，
-     且装出关键产物：LectureLens.exe、_internal/web/index.html、models/small、
-     随包「新手指引.txt」；
+     且装出 REQUIRED_INSTALLED 全部关键产物（**派生自 build_exe.required_dist_files**，
+     见该常量的注释：含 float/privacy 两页与 B13 术语库包抽查 + 随包「新手指引.txt」），
+     并读回装好的 `LectureLens.exe` 的 FileVersion 断言 == 目标版本号；
   3. 装好的 `LectureLens.exe --check` 退 0（桌面壳 headless 自检，见 app/desktop.py）；
-  4. 在**安装目录**造数据探针：transcripts/探针笔记.md + config.json；
+  4. 在**安装目录**造四类数据探针（见 PROBES）：transcripts/lecture_<stamp>.md
+     （**真实笔记命名法**）、glossary/、logs/、config.json —— 覆盖面 = .iss 对用户
+     承诺保留的那四类；
   5. 静默卸载（unins*.exe /VERYSILENT）→ 断言 **exe 已删**（程序文件清干净）
-     但 **两个探针原样还在**（D2 数据保留口径，[UninstallDelete] 故意缺席）；
+     但 **四类探针原样还在**（D2 数据保留口径，[UninstallDelete] 故意缺席）；
   6. 重新静默安装 → 探针仍在、exe 回来、--check 再退 0；
   7. **跨版本覆盖升级**：装「旧版」→ **在旧版下**造探针 → 装目标版**覆盖**它 →
-     断言探针原样 + --check 仍退 0。**必须传 `--upgrade-from <旧版安装包>`**；
+     断言 ① 装好的 exe 版本 == **新版号**（否则"新文件没落地"照样全绿）、
+     ② REQUIRED_INSTALLED 在覆盖后**重跑一遍**（1.1.0 的卖点就是随包新文件）、
+     ③ 探针原样、④ --check 仍退 0。**必须传 `--upgrade-from <旧版安装包>`**；
      不传就判失败——评审指出：原先拿同一个安装包原地再装一遍只是"同版本重装"，
      撑不起「换新版覆盖安装不丢数据」这句话（那本该是这条最该验的路径）；
   8. 清理**也是断言**（评审指出原先只 print，rmtree 失败不影响结论）：卸载器已退出、
@@ -33,18 +38,23 @@
     传 `cwd=` 会 WinError 2（见 `exe_check` docstring）。`shell=False`，
     参数列表形式；本脚本不接受任何外部 URL。
   - **安装包只从 `dist/installer/` 取**（`checked_installer_path`），不搜全盘。
-  - 只用标准库。
+  - 除标准库外**只多 import 同目录的 `build_exe`**（读它的产物清单/版本四段口径，
+    见 REQUIRED_INSTALLED 的注释——两份清单各写一份正是评审②抓到的漂移源）。
+    `installed_exe_version` 用系统自带 PowerShell 读版本资源，不引入新依赖。
 
 用法:
     .venv/Scripts/python.exe scripts/verify_installer.py
     .venv/Scripts/python.exe scripts/verify_installer.py --keep     # 失败现场留档
-    :: 完整的发布门禁（含跨版本升级实测）——先生成一个旧版测试包：
+    :: 完整的发布门禁（含跨版本覆盖升级实测）——**优先用真实旧版包**：
+    .venv/Scripts/python.exe scripts/verify_installer.py ^
+        --upgrade-from dist\\installer\\LectureLens-1.0.0-setup.exe
+    :: 没有真旧版（首次发版）时才合成一个（.iss 的 TEST_VERSION 钩子；输出到
+    :: upgrade-test\\ 子目录，免得被 find_setup_exe 当成"最新的正式包"误选）：
     "%LocalAppData%\\Programs\\Inno Setup 6\\ISCC.exe" /DTEST_VERSION=0.9.0 ^
         /O"dist\\installer\\upgrade-test" installer\\lecturelens.iss
     .venv/Scripts/python.exe scripts/verify_installer.py ^
         --upgrade-from dist\\installer\\upgrade-test\\LectureLens-0.9.0-setup.exe
-（旧版测试包用 .iss 里的 TEST_VERSION 钩子生成：0.9.0 + 不压缩，只为省掉 LZMA 时间；
-输出到 upgrade-test\\ 子目录是为了不被 find_setup_exe 当成"最新的正式包"误选。）
+（旧版测试包用 TEST_VERSION 钩子生成：0.9.0 + 不压缩，只为省掉 LZMA 时间。）
 """
 import argparse
 import hashlib
@@ -63,17 +73,40 @@ EXE_NAME = "LectureLens.exe"                 # 字面量文件名（启动时用
 GUIDE_NAME = "新手指引.txt"                   # 随包新手指引（D4 要求）
 UNINSTALLER_GLOB = "unins*.exe"
 
-#: 装完必须具备的关键产物（相对安装目录）——少了任何一项都说明 [Files] 收漏了
-REQUIRED_INSTALLED = (
-    EXE_NAME,
-    "_internal/web/index.html",
-    "models/small/model.bin",
-    GUIDE_NAME,
-)
-#: 数据探针（相对安装目录）：运行期产物，卸载**必须保留**
-PROBE_NOTE = "transcripts/探针笔记.md"
+#: 构建侧脚本（同目录）：产物清单 / 版本四段口径**单一事实源**（只读它的常量与纯函数）
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_exe    # noqa: E402
+
+#: 装完必须具备的关键产物（相对安装目录）。
+#: **派生自 build_exe.required_dist_files()，不在这里另抄一份**——评审指出：原先本处
+#: 是 4 项独立清单（且只含 _internal/web/index.html），弱于构建侧的 7 项（漏了
+#: float.html / privacy.html 两个页面与 B13 术语库包抽查），两份清单迟早漂移；而
+#: 「新文件没落地」恰恰是跨版本升级最该抓到的事（1.1.0 的卖点就在这些新文件上）。
+#: 新手指引.txt 不在 dist/ 里（由 .iss 从 installer/ 单独挂上去），故单独补一项。
+REQUIRED_INSTALLED = (*build_exe.required_dist_files(build_exe.BUNDLE_MODEL), GUIDE_NAME)
+#: 数据探针（相对安装目录）：运行期产物，卸载**必须保留**。
+#: 覆盖面 = installer/lecturelens.iss 对用户承诺保留的那四类（transcripts / glossary /
+#: logs / config.json）。评审指出原先只探 transcripts+config.json 两项，**术语表与日志
+#: 无人验**——其中 glossary/ 是用户自己攒的、不可再生，最该验。
+#: 笔记探针名**刻意用真实命名法**（main.py 的运行期笔记是 transcripts/lecture_<stamp>.md）：
+#: 若探针叫「探针笔记.md」这种真实命名法里不存在的名字，一条
+#: `[UninstallDelete] …transcripts\lecture_*.md` 式通配就能删光真实笔记而探针完好
+#: ——探针必须站在真实数据的名字空间里才有判别力。
+PROBE_NOTE = "transcripts/lecture_20261014_probe.md"
 PROBE_CONFIG = "config.json"
+PROBE_GLOSSARY = "glossary/探针术语.md"
+PROBE_LOG = "logs/lecture_verify_probe.log"
 PROBE_MARKER = "lecturelens-installer-verify"
+#: 探针相对路径 → 内容模板（`{marker}` → PROBE_MARKER）。写与验共用这一份，不许两处各写。
+#: 占位符用 **str.replace 而不是 str.format**：config.json 探针本身就是 JSON，满是大括号，
+#: format 会把它们当占位符（实测 KeyError: '\n  "_verify_probe"'）。
+PROBES = {
+    PROBE_NOTE: "# 探针笔记\n\n这是 verify_installer.py 写入的数据保留探针（{marker}）。\n",
+    PROBE_CONFIG: ('{\n  "_verify_probe": "{marker}",\n'
+                   '  "model": "small",\n  "first_run_done": true\n}\n'),
+    PROBE_GLOSSARY: "# 探针术语表\n\nattention = 注意力（{marker}）\n",
+    PROBE_LOG: "probe log line（{marker}）\n",
+}
 #: 清理断言要查的"本程序相关"镜像名（残留进程检查，见 leftover_processes）
 PROCESS_NAMES = (EXE_NAME, "unins000.exe")
 
@@ -254,34 +287,64 @@ def exe_check(install_dir: Path, timeout: float = 420.0):
         os.chdir(prev)
 
 
-def write_probes(install_dir: Path) -> None:
-    """在安装目录造两个数据探针（D4 要断言它们卸载后还在）。"""
-    note = install_dir / PROBE_NOTE
-    note.parent.mkdir(parents=True, exist_ok=True)
-    note.write_text(
-        f"# 探针笔记\n\n这是 verify_installer.py 写入的数据保留探针（{PROBE_MARKER}）。\n",
-        encoding="utf-8")
-    (install_dir / PROBE_CONFIG).write_text(
-        '{\n'
-        f'  "_verify_probe": "{PROBE_MARKER}",\n'
-        '  "model": "small",\n'
-        '  "first_run_done": true\n'
-        '}\n',
-        encoding="utf-8")
+def write_probes(install_dir: Path) -> dict:
+    """在安装目录造数据探针，返回 {相对路径: 写入内容}（供 probes_intact 逐字节复核）。
+
+    覆盖面见 PROBES 的注释（= .iss 承诺保留的那四类）；返回内容而不是让调用方各自
+    再读一遍，是为了「写的」和「验的」永远是同一份字符串。
+    """
+    written = {}
+    for rel, tpl in PROBES.items():
+        p = install_dir / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        text = tpl.replace("{marker}", PROBE_MARKER)
+        p.write_text(text, encoding="utf-8")
+        written[rel] = text
+    return written
 
 
-def probes_intact(install_dir: Path, want_note: str, want_cfg: str) -> tuple:
-    """探针是否原样（存在 + 内容字节一致）。返回 (ok, 说明)。"""
-    note = install_dir / PROBE_NOTE
-    cfg = install_dir / PROBE_CONFIG
-    missing = [rel for rel, p in ((PROBE_NOTE, note), (PROBE_CONFIG, cfg)) if not p.is_file()]
+def probes_intact(install_dir: Path, want: dict) -> tuple:
+    """探针是否原样（存在 + 内容逐字节一致）。返回 (ok, 说明)。
+
+    `want` = write_probes() 的返回值（多探针；见 PROBES）。"""
+    missing = [rel for rel in want if not (install_dir / rel).is_file()]
     if missing:
         return False, f"探针丢失: {missing}"
-    if note.read_text(encoding="utf-8") != want_note:
-        return False, f"{PROBE_NOTE} 内容被改动"
-    if cfg.read_text(encoding="utf-8") != want_cfg:
-        return False, f"{PROBE_CONFIG} 内容被改动"
+    for rel, text in want.items():
+        if (install_dir / rel).read_text(encoding="utf-8") != text:
+            return False, f"{rel} 内容被改动"
     return True, ""
+
+
+def missing_installed(install_dir: Path) -> list:
+    """REQUIRED_INSTALLED 里缺哪些（相对安装目录的路径列表）。"""
+    return [rel for rel in REQUIRED_INSTALLED if not (install_dir / rel).is_file()]
+
+
+def installed_exe_version(install_dir: Path) -> str:
+    """读**安装目录里** exe 的 FileVersion（PowerShell VersionInfo，与资源管理器同源）。
+
+    为什么必须有这一步（评审②）：跨版本升级那一步原先只断言「exe 在位 + 探针还在 +
+    --check 退 0」——若新版根本没覆盖上去（例如 1.1.0 的新文件没落地），那一轮照样
+    28/28 全绿。要证明「新版真装上了」，只能把装好的二进制的版本读回来看。
+    """
+    quoted = str(install_dir / EXE_NAME).replace("'", "''")
+    r = run_quiet(["powershell", "-NoProfile", "-Command",
+                   f"(Get-Item -LiteralPath '{quoted}').VersionInfo.FileVersion"],
+                  timeout=120.0)
+    return (r.stdout or "").strip()
+
+
+def version_matches(installed: str, expected: str) -> bool:
+    """版本号比较走 build_exe.version_quad（四段补零）：'1.1.0.0' == '1.1.0'。
+
+    两边都经同一个解析器，避免这边自己写一套「三段/四段」的比较逻辑。
+    解析失败（version_quad 会 SystemExit）一律判不等，不猜。
+    """
+    try:
+        return build_exe.version_quad(installed) == build_exe.version_quad(expected)
+    except SystemExit:
+        return False
 
 
 def main() -> int:
@@ -352,10 +415,14 @@ def main() -> int:
             rec("装出 LectureLens.exe", False, f"未找到 {install_dir / EXE_NAME}")
             return 1
         rec("装出 LectureLens.exe", True, EXE_NAME)
-        missing = [rel for rel in REQUIRED_INSTALLED if not (install_dir / rel).is_file()]
+        missing = missing_installed(install_dir)
         rec("关键产物齐全", not missing,
             f"{len(REQUIRED_INSTALLED) - len(missing)}/{len(REQUIRED_INSTALLED)}"
             + (f"，缺 {missing}" if missing else ""))
+        # 装出来的必须是**目标版本**（评审②）：清单齐了但版本是旧的，同样是错的包。
+        got_v = installed_exe_version(install_dir)
+        rec(f"装出的 exe 版本 == {version_from_setup(setup)}",
+            version_matches(got_v, version_from_setup(setup)), f"读到 {got_v!r}")
 
         # —— ③ 装好的程序能过 --check ————————————————————————————
         print("\n③ 装好的程序自检（LectureLens.exe --check）")
@@ -365,10 +432,8 @@ def main() -> int:
 
         # —— ④ 造数据探针 ————————————————————————————————————————
         print("\n④ 在安装目录造数据探针")
-        write_probes(install_dir)
-        want_note = (install_dir / PROBE_NOTE).read_text(encoding="utf-8")
-        want_cfg = (install_dir / PROBE_CONFIG).read_text(encoding="utf-8")
-        rec("探针已写入", True, f"{PROBE_NOTE} + {PROBE_CONFIG}")
+        want_probes = write_probes(install_dir)
+        rec("探针已写入", True, " + ".join(PROBES))
 
         # —— ⑤ 静默卸载：程序文件删掉，数据留下 ————————————————————
         print("\n⑤ 静默卸载（断言：exe 已删 / 探针仍在）")
@@ -383,8 +448,8 @@ def main() -> int:
                      UNINSTALL_WAIT_S, "安装的 exe 被删除")
         rec("卸载后 exe 已删除", not (install_dir / EXE_NAME).is_file(),
             f"卸载器退出码 {urc}")
-        ok, why = probes_intact(install_dir, want_note, want_cfg)
-        rec("卸载后探针仍在（数据保留）", ok, why or "transcripts/ 与 config.json 原样")
+        ok, why = probes_intact(install_dir, want_probes)
+        rec("卸载后探针仍在（数据保留）", ok, why or "四类探针（笔记/术语表/日志/配置）原样")
         # 程序文件目录也该清掉（否则是卸载不全，不是"保留数据"）
         leftover_internal = (install_dir / "_internal").exists()
         rec("程序文件目录已清理", not leftover_internal,
@@ -395,8 +460,8 @@ def main() -> int:
         rc2 = silent_install(setup, install_dir, log)
         rec("重装退出码 0", rc2 == 0, f"退出码 {rc2}")
         rec("重装后 exe 回来", (install_dir / EXE_NAME).is_file())
-        ok, why = probes_intact(install_dir, want_note, want_cfg)
-        rec("重装后探针仍在（覆盖不丢数据）", ok, why or "transcripts/ 与 config.json 原样")
+        ok, why = probes_intact(install_dir, want_probes)
+        rec("重装后探针仍在（覆盖不丢数据）", ok, why or "四类探针原样")
         try:
             r2 = exe_check(install_dir)
             rec("重装后 --check 仍退 0", r2.returncode == 0, f"退出码 {r2.returncode}")
@@ -421,16 +486,30 @@ def main() -> int:
             rc_old = silent_install(upgrade_from, install_dir, log)
             rec(f"旧版 {old_v} 安装退 0", rc_old == 0, f"退出码 {rc_old}")
             rec(f"旧版 {old_v} 装出 exe", (install_dir / EXE_NAME).is_file())
+            # 旧版自身也读一次版本：确认「升级起点」真的是旧版（而不是上一步残留）
+            old_got = installed_exe_version(install_dir)
+            rec(f"旧版 {old_v} 装出的确实不是新版",
+                not version_matches(old_got, new_v), f"读到 {old_got!r}")
             # **在旧版下**造探针（这才是"升级前的用户数据"）
-            write_probes(install_dir)
-            up_note = (install_dir / PROBE_NOTE).read_text(encoding="utf-8")
-            up_cfg = (install_dir / PROBE_CONFIG).read_text(encoding="utf-8")
+            up_probes = write_probes(install_dir)
             rc_new = silent_install(setup, install_dir, log)
             rec(f"新版 {new_v} 覆盖安装退 0", rc_new == 0, f"退出码 {rc_new}")
             rec("覆盖后 exe 在位", (install_dir / EXE_NAME).is_file())
-            ok, why = probes_intact(install_dir, up_note, up_cfg)
+            # —— 评审②要求的两条「新版真装上了」的证据 ——
+            # ① 装好的二进制版本 == 新版号（只断言 exe 在位的话，新文件没落地也照样绿）
+            new_got = installed_exe_version(install_dir)
+            rec(f"覆盖后 exe 版本 == {new_v}", version_matches(new_got, new_v),
+                f"读到 {new_got!r}")
+            # ② ② 的关键产物清单**在覆盖后重跑一遍**——1.1.0 的卖点正是随包新文件
+            #    （_internal/glossary_packs/*.md、float.html、privacy.html），
+            #    它们没落地是本步最该抓到的事。清单与构建侧同源（见 REQUIRED_INSTALLED）。
+            up_missing = missing_installed(install_dir)
+            rec("覆盖后关键产物齐全（含 float/privacy/术语库包）", not up_missing,
+                f"{len(REQUIRED_INSTALLED) - len(up_missing)}/{len(REQUIRED_INSTALLED)}"
+                + (f"，缺 {up_missing}" if up_missing else ""))
+            ok, why = probes_intact(install_dir, up_probes)
             rec(f"跨版本升级（{old_v}→{new_v}）后探针仍在", ok,
-                why or "旧版下造的 transcripts/ 与 config.json 原样")
+                why or "旧版下造的四类探针原样")
             try:
                 r3 = exe_check(install_dir)
                 rec("跨版本升级后 --check 退 0", r3.returncode == 0, f"退出码 {r3.returncode}")
@@ -440,8 +519,8 @@ def main() -> int:
             print("\n⑦ 覆盖安装（同版本原地重装）")
             rc3 = silent_install(setup, install_dir, log)
             rec("覆盖安装退出码 0", rc3 == 0, f"退出码 {rc3}")
-            ok, why = probes_intact(install_dir, want_note, want_cfg)
-            rec("覆盖安装后探针仍在", ok, why or "transcripts/ 与 config.json 原样")
+            ok, why = probes_intact(install_dir, want_probes)
+            rec("覆盖安装后探针仍在", ok, why or "四类探针原样")
             try:
                 r3 = exe_check(install_dir)
                 rec("覆盖安装后 --check 退 0", r3.returncode == 0, f"退出码 {r3.returncode}")

@@ -8,11 +8,17 @@
 
 ## 快速开始
 
+> **平台**：Windows 与 macOS 都支持。下面凡带「Windows」标注的步骤是 Windows 专属；
+> macOS 的对应做法就地写在括号里（启动方式、路径、--gpu、防火墙、字体等）。
+
 1. 项目根建 `.env`，写一行 `DEEPSEEK_API_KEY=sk-xxx`（没有 key 也能跑，只出英文字幕不翻译）
-2. 双击 `start_translate.bat` —— 打开**桌面窗口**（原生窗口 + 系统托盘 + 悬浮字幕条，
+2. **Windows**：双击 `start_translate.bat` —— 打开**桌面窗口**（原生窗口 + 系统托盘 + 悬浮字幕条，
    首次自动装依赖，whisper 模型约 250MB 首次自动下载）。关闭窗口 = 隐藏到托盘，
    真退出走托盘菜单；首次启动有 3 步向导（麦克风测试 → DeepSeek key → 试说一句）
-3. 课程术语表：`start_translate.bat --glossary glossary/CS.md`（可多次）
+   **macOS**：开发态跑 `.venv/bin/python app/desktop.py`（无 .bat）；打包版双击
+   `dist/LectureLens.app`（见「打包」一节）。窗口/托盘/悬浮条行为一致
+3. 课程术语表：**Windows** `start_translate.bat --glossary glossary/CS.md`；
+   **macOS** `.venv/bin/python app/desktop.py --glossary glossary/CS.md`（可多次）
 4. 手机同 WiFi 看字幕（📱 手机同屏）：在字幕页/设置页打开「手机同屏」开关（config
    `lan_enabled`）→ **重启 LectureLens**（监听地址只有重启才换）→ 字幕页面板里扫码
    （或访问 `http://<电脑IP>:8787`）。开关默认关：桌面模式与 --server-only 一律只监听
@@ -26,25 +32,36 @@
 app/
   main.py         FastAPI + WebSocket 服务 + 双语笔记落盘
   capture.py      麦克风 16k 采集 + VAD 分句（默认 Silero，备选能量门限）
-  asr.py          faster-whisper 封装（CPU int8 默认，GPU 可选）
+  asr.py          faster-whisper 封装（CPU int8 默认，GPU 可选；macOS arm64 走 MLX）
   translate.py    DeepSeek 翻译 + 课程术语表注入（含 whisper initial_prompt）
   web/index.html  字幕页（断线自动重连 + 底部麦克风/翻译状态）
 glossary/         课程术语表（每行 `EN term = 中文译名`）
 scripts/
   smoke_test.py   全管线自检（无需麦克风：VAD + TTS→ASR + 翻译 + 服务）
+  build_exe.py    Windows 打包（PyInstaller onedir → dist/LectureLens/LectureLens.exe）
+  build_macos.py  macOS 打包（PyInstaller onedir + .app → dist/LectureLens.app，含图标/
+                  Info.plist/ad-hoc 签名）——**只在 macOS 上跑**，Windows 上直接拒绝
 transcripts/      每节课双语笔记（gitignore：含课程内容，不外传）
 ```
+
+**数据放在哪（桌面版）**：**Windows** = 安装目录（exe 旁边：`config.json` / `transcripts/` /
+`logs/` / `glossary/`）；**macOS** = `~/Library/Application Support/LectureLens`（.app 是
+签名覆盖的只读包体，用户数据写进去会破坏签名、升级换 .app 也会把数据一起换掉）。
+两侧的「设置页 → ⚙ 系统 → 数据去向」都写着实际位置。
 
 ## 使用
 
 ```
+# 以下命令 Windows 的 python 路径是 .venv/Scripts/python.exe、macOS 是 .venv/bin/python
 python app/main.py --glossary glossary/CS.md        # 课堂模式
-python app/main.py --gpu                             # 强制 CUDA（默认按 config.json 的 device=auto）
+python app/main.py --gpu                             # 强制 CUDA（仅 Windows/NVIDIA；macOS 的
+                                                     #  加速后端是 MLX，自动启用，见 asr.py）
 python app/main.py --model base                      # 临时换模型（CLI 覆盖 config.json）
 python app/main.py --vad energy                      # 噪声底自适应的能量门限（默认 silero）
 python app/main.py --list-devices                    # 列出麦克风设备（配 --device 用）
-.venv/Scripts/python.exe scripts/smoke_test.py       # 不用麦克风的自检
-.venv/Scripts/python.exe scripts/smoke_test.py --gpu # GPU 基准（RTF + 显存）
+.venv/Scripts/python.exe scripts/smoke_test.py       # 不用麦克风的自检（macOS: .venv/bin/python）
+.venv/Scripts/python.exe scripts/smoke_test.py --gpu # GPU 基准（RTF + 显存；仅 Windows，
+                                                     #  非 Windows 会如实打印「该段仅 Windows」跳过）
 ```
 
 ### 配置（config.json）
@@ -55,14 +72,17 @@ python app/main.py --list-devices                    # 列出麦克风设备（�
 { "model": "large-v3-turbo", "device": "auto", "compute_type": null, "vad": "silero" }
 ```
 
-- **GPU 本地顶配**（RTX 5060 8GB 实测）：large-v3-turbo / float16，7.5s 音频 0.35s 出结果（RTF 0.05），显存 2.2/8.0 GB。依赖：`nvidia-cublas-cu12` + `nvidia-cudnn-cu12`（已装在 .venv）
+- **GPU 本地顶配（Windows / NVIDIA）**（RTX 5060 8GB 实测）：large-v3-turbo / float16，7.5s 音频 0.35s 出结果（RTF 0.05），显存 2.2/8.0 GB。依赖：`nvidia-cublas-cu12` + `nvidia-cudnn-cu12`（已装在 .venv）。**macOS** 上是另一条路：Apple Silicon 自动用 MLX（`mlx-whisper`，见 `app/asr.py`），Intel Mac / 没装 mlx-whisper 时回落 CPU，行为与 Windows 的 CPU 档一致
 - CLI 参数（--model/--gpu/--vad）只当次生效，不改文件；字幕页切换会写回 config.json
 - **模型档位**：首次启动自动检测硬件并推荐一档——流畅(base)/标准(small)/高(large-v3-turbo)/极致(large-v3)，界面只显示档位名（原名收在设置页「高级」）；设置页可一键「下载并使用」任一档（140MB–2.9GB，首次需联网）。用户手动选过之后永远以用户为准
-- **模型放在哪（磁盘占用别踩坑）**：**随包模型**在**安装目录**里（`models/<档位>`，离线可用、不占额外空间——打包版首启默认用的就是它）；**点「下载并使用」的更高档位**则落到 HuggingFace 缓存的默认位置，Windows 上是 `C:\Users\<用户名>\.cache\huggingface\hub`（实测：开发机缓存在 D 盘只是因为设了 `HF_HOME`，**朋友机器没有这个环境变量**——「C 盘零占用」只对开发机成立）。设置页「识别模型」卡常显实际路径与占用（`缓存目录：… · 共占用 …`）；想换盘就在**启动前**设环境变量 `HF_HOME`（例：`set HF_HOME=D:\ll-models`），缓存位置随它走
+- **模型放在哪（磁盘占用别踩坑）**：**随包模型**在**安装目录**里（`models/<档位>`，离线可用、不占额外空间——打包版首启默认用的就是它；**macOS 打包版不随包模型**，走下面的 HF 缓存/在线下载）；**点「下载并使用」的更高档位**则落到 HuggingFace 缓存的默认位置，**Windows** 上是 `C:\Users\<用户名>\.cache\huggingface\hub`、**macOS** 上是 `~/.cache/huggingface/hub`（实测：开发机缓存在 D 盘只是因为设了 `HF_HOME`，**朋友机器没有这个环境变量**——「C 盘零占用」只对开发机成立）。设置页「识别模型」卡常显实际路径与占用（`缓存目录：… · 共占用 …`）；想换盘就在**启动前**设环境变量 `HF_HOME`（**Windows**：`set HF_HOME=D:\ll-models`；**macOS**：`export HF_HOME=~/ll-models`，或写进 LaunchAgent/shell 配置），缓存位置随它走
 - **国内网络下载慢**：设置页「识别模型」卡的「模型下载走 hf-mirror.com 镜像」开关（只此一个预设镜像，不接受自定义地址）；**改完要重启应用**才换源（HF 的 endpoint 在库导入时读取）
 - **export_dir**（设置页「导出」卡）：导出目录的绝对路径（或 `null` = 浏览器下载）。
-  写入时实测校验「可创建 + 可写」并拒绝系统关键目录（`C:\Windows`、`Program Files`、
-  系统盘根等），非法值 400 且配置零污染
+  写入时实测校验「可创建 + 可写」并拒绝系统关键目录（**Windows**：系统盘根、
+  `%SystemRoot%`、`Program Files`、`ProgramData` 等；**macOS 等 POSIX**：`/`、
+  `/etc`、`/usr`、`/bin`、`/sbin`、`/boot`、`/sys`、`/proc`、`/dev`——`/System`、
+  `/Library` 这类只读/需提权的目录则会在「可创建 + 可写」那一步被拒），
+  非法值 400 且配置零污染
 - **上次那门课会被记住（B5）**：选过的课程写进 `courses.json` 的 `active` 跨重启保留；
   启动时读回来挂到当前课程（字幕页工具条下拉显示的、以及自动新建的那篇笔记头里的
   课程名）。**不额外维护前端状态**——这就是"打开软件还是上次那门课"的全部机制
@@ -83,10 +103,15 @@ python app/main.py --list-devices                    # 列出麦克风设备（�
 - **选课程**（上课态工具条「课程」下拉）：列出全部课程 + 「未分类」+「＋ 新建课程…」（内联输入，回车即创建并选中）。选中写入 `courses.json` 的 active 并落到当前笔记归属——**还没开始记录 = 改写笔记头的课程行；已在记录 = 追加一行切换标记**（笔记主归属仍是开课那门课，不让前半段说谎）。与侧栏同源：另一窗口改课、或服务端 `status.course` 变化，这里都会跟着刷新（WS 即时 + 轮询兜底）。**选课只在「上课的地方」**（本下拉 + 笔记库左侧课程列表）；设置页那张卡是纯**课程管理**（B14）：每行 = 色点 + 课程名 + 统计「N 篇笔记 · M 条术语」（术语数 = 读该课绑定术语表的真文件），行内改名 / 换色 / 绑定术语表 / 删除，**点行（或「查看笔记」）跳到笔记库并筛出该课**；删除课程会把它的笔记归属改回「未分类」（确认框写明几篇笔记；笔记文件一律保留）
 - 收起工具条即纯字幕沉浸模式；字号记忆在浏览器
 - 上英文下中文，自动滚动；翻译到达稍晚于英文 1-3 秒（正常）
+- **音源可切换（设置页 🎙 上课 → 音源）**：`mic`（麦克风，默认）或 `loopback`（系统声音内录）。
+  **Windows** 走 WASAPI 环回（默认扬声器，免装驱动）；**macOS** 需要先装免费的虚拟声卡
+  **BlackHole**（`brew install blackhole-2ch`）并在「音频 MIDI 设置」把系统输出指到它——
+  没装时内录会明确报错并给出这段指引（不会静默录到空音）；设备可在设置页的音源设备下拉里选
+  （/api/devices 列出的就是它）
 - **开课前看一眼电平条随说话跳动就说明收音正常**；导出 = 下载当前 `transcripts/*.md`
-- 手机连同一 WiFi 看字幕：先在字幕页/设置页打开「📱 手机同屏」（默认关，开启后**重启**生效），面板里扫码即可（也可手输 `http://<电脑IP>:8787`）；打不开多半是 Windows 防火墙拦了入站，首次运行允许"专用网络"、确认同一 WiFi
+- 手机连同一 WiFi 看字幕：先在字幕页/设置页打开「📱 手机同屏」（默认关，开启后**重启**生效），面板里扫码即可（也可手输 `http://<电脑IP>:8787`）；打不开多半是**防火墙**拦了入站——**Windows**：首次运行允许"专用网络"；**macOS**：系统设置 → 网络 → 防火墙里允许 Python/LectureLens 接受传入连接；两侧都要确认同一 WiFi
 
-手机访问（手机同屏）：电脑和手机连同一 WiFi，在字幕页/设置页打开「📱 手机同屏」→ 重启 LectureLens → 扫面板里的二维码（URL 形如 `http://<电脑IP>:8787/#t=<token>`，token 在首启已打印、设置页「安全」卡可重新生成；重新生成会把已在线的旧设备立即断开）。服务只在开关打开时监听 0.0.0.0；若手机打不开，先看防火墙是否允许 python 入站（"专用网络"），再确认电脑与手机在同一网段——面板上的状态行与"已连接 N 台设备"（只数**手机/局域网设备**，本机自己的窗口不计）会如实告诉你卡在哪一步。
+手机访问（手机同屏）：电脑和手机连同一 WiFi，在字幕页/设置页打开「📱 手机同屏」→ 重启 LectureLens → 扫面板里的二维码（URL 形如 `http://<电脑IP>:8787/#t=<token>`，token 在首启已打印、设置页「安全」卡可重新生成；重新生成会把已在线的旧设备立即断开）。服务只在开关打开时监听 0.0.0.0；若手机打不开，先看**防火墙**是否放行入站（**Windows**："专用网络"；**macOS**：系统设置 → 网络 → 防火墙里允许），再确认电脑与手机在同一网段——面板上的状态行与"已连接 N 台设备"（只数**手机/局域网设备**，本机自己的窗口不计）会如实告诉你卡在哪一步。
 
 访问地址只认直连形式：**IP（127.0.0.1 / 本机局域网 IP）、localhost、单标签主机名**。用别的域名访问（hosts 别名、DDNS、隧道域名）会被 400 拒绝——那是 DNS-rebinding 拿本机服务当跳板的唯一载体；确有需要时用环境变量 `LECTURELENS_ALLOW_HOSTS=名字1,名字2` 显式放行。
 
@@ -116,9 +141,31 @@ python app/main.py --list-devices                    # 列出麦克风设备（�
   `机器学习/机器学习_20261013.md`）——"对应的笔记本"的物理版，Obsidian/同步盘直接可用；
   课程名为空 /「未分类」/ 清洗后为空 → 仍落导出根目录。目录名与文件名用**同一条**
   清洗规则（路径分隔与非法字符一律替换，绝不越出你选的导出目录）。
-  导出目录只接受**本机盘符**的绝对路径：`\\主机\共享` 这类 UNC 与 `\\?\` / `\\.\` 扩展前缀
-  一律拒绝（前者会让服务在你选目录时就去连那台主机、后续把笔记写到共享上；后者能绕过
-  系统目录黑名单）——要写网络位置请先映射成盘符（`Z:\导出`）。
+  导出目录只接受**本机绝对路径**：**Windows** 上 `\\主机\共享` 这类 UNC 与 `\\?\` / `\\.\`
+  扩展前缀一律拒绝（前者会让服务在你选目录时就去连那台主机、后续把笔记写到共享上；后者能绕过
+  系统目录黑名单）——要写网络位置请先映射成盘符（`Z:\导出`）；**macOS** 上写 `/Volumes/…` 或
+  `~/…` 即可（网络卷先挂载成本地路径）。
+- **导出用的中文字体按平台取**：**Windows** = 微软雅黑（`C:\Windows\Fonts\msyh.ttc`）；
+  **macOS** = PingFang / Hiragino Sans GB（系统自带，找不到时会在系统字体目录里扫描，
+  仍找不到则报错并提示改 `exporters.FONT_REGULAR`）。PDF/Word 的中文渲染依赖系统字体，
+  与界面字体无关
+
+## 打包（分发给朋友用）
+
+| 平台 | 脚本 | 产物 | 说明 |
+|---|---|---|---|
+| **Windows** | `.venv/Scripts/python.exe scripts/build_exe.py` | `dist/LectureLens/LectureLens.exe`（onedir） | 默认带 GPU 运行库 + 随包 small 模型（≈460MB，离线开箱可用）；`--no-gpu` 出纯 CPU 版；`.exe` 的 `--check` 是无窗口自检 |
+| **macOS** | `.venv/bin/python scripts/build_macos.py` | `dist/LectureLens.app` | PyInstaller onedir + `--windowed`；**不随包模型**（首启按档位下载/走 HF 缓存）；构建后自动注入 Info.plist（版本 + 麦克风用途说明）并做 ad-hoc 签名 |
+
+- macOS 的图标：脚本会在 `assets/icon.icns` 缺失时用 `iconutil` 由 PNG 生成；
+  手工生成命令见 `scripts/build_macos.py` 文件头（需要 16–512px 各档，本机素材到 256px）
+- macOS 的 ad-hoc 签名（`codesign --force --deep -s -`）只够**本机**用：拷给另一台 Mac
+  会被 Gatekeeper 拦，首次要右键 →「打开」（或 `xattr -dr com.apple.quarantine <app>`）。
+  公开分发需要 Apple 开发者证书 + 公证——属于商业化项（红线外，推迟到毕业后评估）
+- macOS 版的数据在 `~/Library/Application Support/LectureLens`（见「数据放在哪」）；
+  Windows 版的数据在安装目录。两边都跑一次 `--check` 再交给朋友
+- **Mac 上的完整操作口径（前置依赖/系统授权/构建/签名/真机验收清单/已知限制）见
+  [`docs/mac-guide.md`](docs/mac-guide.md)** —— 本 README 只写跨平台总览
 
 ## 已知限制（v0.1）
 

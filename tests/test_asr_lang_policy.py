@@ -32,6 +32,7 @@ def make_asr(language: str, detected: str | None = None) -> WhisperASR:
     w = object.__new__(WhisperASR)  # 绕过 __init__：不加载真模型
     w.language = language
     w.detected_lang = detected
+    w.backend = "ctranslate2"       # Mac 适配：transcribe 按 backend 分发（本文件测 ct2 路径）
     w.model = FakeModel()
     return w
 

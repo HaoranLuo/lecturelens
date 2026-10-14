@@ -92,6 +92,9 @@ def test_parse_header_and_pairs():
     assert got["stamp"] == "20261013_0146"
     assert got["course"] == "计算机科学导论"
     assert got["segments"] == 2 and got["paired"] == 2
+    # B4 体量：words = EN+ZH 字符数（列表体量徽章的 M；明细见 test_note_size.py）
+    assert got["words"] == (len("All right.") + len("好的。")
+                            + len("The rest go.") + len("其余的继续。"))
     assert [p["seg"] for p in got["pairs"]] == [1, 2]
     assert got["pairs"][0] == {"seg": 1, "ts": "01:46:42",
                                "en": "All right.", "zh": "好的。"}
@@ -246,6 +249,9 @@ def test_real_transcripts_parse_cleanly():
     for n in got["notes"]:
         if n["segments"] == 0 and n["size"] > 200:
             bad.append(n["name"])          # 有实质内容却解析不出任何段
+        # B4：有段落就必然有体量（words 漏接/写错在真实数据上立刻现形）
+        if n["segments"] > 0 and not n["words"] > 0:
+            bad.append(n["name"] + "（体量为 0）")
     assert not bad, f"这些笔记解析不出段落: {bad}"
 
 
@@ -265,6 +271,7 @@ async def test_list_endpoint_shape_and_search():
         assert n["course"] == "计算机科学导论"
         assert n["first_en"] == "Neural networks."
         assert n["has_summary"] is False and n["has_deck"] is False
+        assert n["words"] == len("Neural networks.") + len("神经网络。")   # B4 体量
         # 中文检索
         assert (await c.get("/api/notes/list", params={"q": "神经网络"})).json()["total"] == 1
         assert (await c.get("/api/notes/list", params={"q": "无此词"})).json()["total"] == 0

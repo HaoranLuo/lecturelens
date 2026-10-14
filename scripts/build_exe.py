@@ -26,9 +26,12 @@
     （DESKTOP_SHELL_ARTIFACTS，缺一即构建失败）。
   - **D1② 版本注入**：版本号唯一来源 = app/branding.py 的 APP_VERSION，构建时
     生成 PyInstaller `--version-file`（VSVersionInfo）写进 exe 属性——资源管理器
-    「详细信息」的 FileVersion/ProductVersion = 1.0.0。
+    「详细信息」的 FileVersion/ProductVersion = APP_VERSION（当前 1.1.0）。
   - **D1③ 产物断言**补 float.html / privacy.html：桌面壳新增的两个页面
     （悬浮字幕条 / 隐私透明页）必须进 `_internal/web/`。
+  - **B13 术语库包随包**：`--add-data glossary_packs;glossary_packs` → `_internal/glossary_packs/`，
+    并在产物断言里抽查其中一个包文件（缺了它打包版的术语库包区就是空的，
+    而开发机上完全看不出异常）。运行期由 main.PACKS_DIR 的 frozen 分支读 _MEIPASS。
   - **D1④ 随包模型默认 small**（≈460MB，任何机器装完开箱可用）；更高的档位走既有
     档位下载（docs/notes-batch.md D3）。`--bundle-model` 可覆盖（须已在 HF 缓存），
     例如有 N 卡的机器可打 large-v3-turbo 完整版。frozen 下 main.bundled_model_path
@@ -70,16 +73,38 @@ REQUIRED_DIST_FILES = (
     "_internal/web/index.html",
     "_internal/web/float.html",    # 悬浮字幕条页（/float）
     "_internal/web/privacy.html",  # 隐私透明页（/privacy）
+    # B13：术语库包随包（--add-data glossary_packs;glossary_packs）。抽查一个包文件即可
+    # 证明**整个目录**被收进来了——缺了它，打包版的术语页「术语库包」区就是空的
+    # （而开发机上看不出任何异常，这正是要从产物侧断言的理由）。
+    "_internal/glossary_packs/数学.md",
 )
 #: D1③ / D3 评审修复：**用户数据/密钥清单**——凡在分发产物里出现即构建失败。
 #: 口径 = 「运行期由 ROOT 锚定写盘的东西」（ROOT = exe 所在目录，见 main.ROOT）：
 #:   config.json（配置）/ courses.json（课程表，main.py:52）/ .env（向导写 key，
 #:   main.py:1593）/ transcripts（笔记）/ logs（日志）/ glossary（术语表，
-#:   glossary.py:53 root=ROOT）/ desktop.lock（单实例锁，desktop.py:87）
+#:   glossary.py:53 root=ROOT）/ desktop.lock（单实例锁，desktop.py:87）/
+#:   webview_profile（B15 评审修复①：桌面壳的持久化 WebView2 profile，desktop.py 的
+#:   WEBVIEW_PROFILE_DIR——里面有 localStorage：主题/字号/分区记忆 + 扫码配对缓存的
+#:   LAN token，随包发出去等于把配对凭据一起发给别人）
 #: **必须与运行期写盘点保持一致**：评审2 实测指出 glossary 与 courses.json 曾漏在
 #: 清单外——「在打包目录里跑过一次/建过一门课」留下的东西就能混进分发目录。
+#:
+#: 工具态目录（评审修复④）：**不是用户数据，是开发工具的状态目录**——扫描器/编辑器
+#: 会在**源目录**里落一个 `.mimosa/`、`.zcode/` 之类的隐藏目录，而
+#: `--add-data app/web;web` 与 `--add-data glossary_packs;glossary_packs` 是
+#: **整目录复制**（PyInstaller 的 --add-data 没有排除语法），于是它被搬进
+#: `_internal/web/`、`_internal/glossary_packs/`，再被 .iss 的
+#: `Source: "{#SourceRoot}\*"` 带进安装包。实测混进去过 2 个
+#: `…/.mimosa/hook-state/sess_<本机会话 id>.json`（逐字检索确认**不含凭据**）。
+#: 两条危害：① 分发物里带着外人看不懂的脏数据与宿主机 session id；
+#: ② 这些目录被 .gitignore 忽略 → **干净 clone 重打会产出不同字节**，
+#: 已发布的 SHA256 不可复现。故既在此列黑名单兜底，又由 prune_tool_state()
+#: 在 COLLECT 之后主动摘掉（两道：一道修，一道守）。
+TOOL_STATE_DIRS = (".mimosa", ".zcode")
 FORBIDDEN_DIST_ENTRIES = (".env", "config.json", "courses.json",
-                          "transcripts", "logs", "glossary", "desktop.lock")
+                          "transcripts", "logs", "glossary", "desktop.lock",
+                          "webview_profile",
+                          *TOOL_STATE_DIRS)
 #: 后缀黑名单：日志类残留（含 server_smoke.log 这类运行痕迹）一律不得进包
 FORBIDDEN_DIST_SUFFIXES = (".log",)
 #: 例外白名单（**只此一处**）：models/<name>/ 下**模型自带**的文件——HF 快照原样
@@ -250,6 +275,10 @@ def pyinstaller_args(gpu: bool, version_file=None) -> list[str]:
         "--version-file", str(version_file or VERSION_FILE),
         "--paths", str(ROOT / "app"),      # applog/asr/capture... 顶层导入的分析路径
         "--add-data", f"{ROOT / 'app' / 'web'};web",
+        # B13：术语库包（glossary_packs/*.md）当只读数据随包 → _internal/glossary_packs/。
+        # 运行期由 main.PACKS_DIR 在 frozen 分支指向 _MEIPASS/glossary_packs（照 WEB 的
+        # 双路径模式），故开发/打包同一套读取代码，无分支漂移。
+        "--add-data", f"{ROOT / 'glossary_packs'};glossary_packs",
         # 官方 issue 351 清单 + av 保底
         "--collect-all", "ctranslate2",
         "--collect-all", "faster_whisper",
@@ -297,6 +326,36 @@ def model_owned_path(rel: Path) -> bool:
     顶层 config.json / _internal/config.json 都不满足该式，仍会被命中。"""
     return (len(Path(rel).parts) >= 3 and Path(rel).parts[0] == "models"
             and Path(rel).name in MODEL_OWNED_ALLOWED)
+
+
+def prune_tool_state(dist: Path = DIST) -> list:
+    """摘掉 COLLECT 之后残留的工具态目录（见 FORBIDDEN_DIST_ENTRIES 的工具态说明）。
+
+    为什么必须"先摘"而不是"只列黑名单"：`--add-data 目录;目标` 是整目录复制，
+    PyInstaller 没有排除语法，所以已知的工具态目录只能在 COLLECT 之后删。黑名单
+    那一条是**兜底**（万一将来有新的工具目录，assert_dist_tree 会当场红而不是又
+    静默混进包）；本函数是**修复**。
+
+    与 `dist/` 同源的另一条路径：macOS 侧 build_macos.py 也调本函数（它的
+    `--add-data` 用同样的整目录口径，同一个 bug）。
+
+    只删名字**精确等于** TOOL_STATE_DIRS 的项（不碰 `.gitignore` 那类无关隐藏文件，
+    也不做"见点目录就删"的激进通配——那会误伤合法数据）。返回被删的相对路径列表。
+    """
+    dist = Path(dist)
+    removed = []
+    for name in TOOL_STATE_DIRS:
+        for p in sorted(dist.rglob(name)):     # 先物化再删，避免边走边改目录树
+            try:
+                rel = p.relative_to(dist)
+            except ValueError:
+                continue
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            elif p.is_file():
+                p.unlink(missing_ok=True)
+            removed.append(str(rel))
+    return removed
 
 
 def forbidden_hits(root: Path) -> list:
@@ -389,6 +448,13 @@ def main() -> None:
     print("[build] ① PyInstaller 分析+收集（进程内，几分钟，耐心等）…")
     import PyInstaller.__main__ as pyi_main
     pyi_main.run(pyinstaller_args(gpu, vf))
+
+    # ①b：`--add-data` 是整目录复制，会把源目录里的工具态目录（.mimosa/.zcode）搬进
+    # _internal/。必须在断言**之前**摘掉——否则要么混进安装包，要么被下面的黑名单
+    # 扫描判红（修复④：实测 2 个文件曾被 ISCC 打进 1.1.0 的包里）。
+    print("[build] ①b 摘掉工具态目录（--add-data 整目录复制带进来的）…")
+    _pruned = prune_tool_state()
+    print(f"[build]    摘掉 {len(_pruned)} 处" + (f": {_pruned}" if _pruned else "（无）"))
 
     print(f"[build] ② 模型随包复制（{bundle_model}）…")
     model_dest = DIST / "models" / bundle_model

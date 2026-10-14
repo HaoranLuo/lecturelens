@@ -308,7 +308,10 @@ async def test_download_conflicts_409(fake_cache, clean_state):
 
 async def test_download_runs_and_sets_status(fake_cache, clean_state, monkeypatch):
     """受理即返回 → 后台跑完 → status['load'] 进度 + model_dl 终态 done。"""
-    def fake_download(name, cache, on_progress, local_files_only=False):
+    def fake_download(name, cache, on_progress, local_files_only=False,
+                      backend="ctranslate2"):
+        # Mac 适配：端点会把「本机实际后端」传下来；非 Mac arm64 必然是 ctranslate2
+        assert backend == "ctranslate2", "本机应走 ctranslate2 表（MLX 只在 Mac arm64）"
         on_progress(10, "下载模型 tiny")
         on_progress(90, "下载模型 tiny")
         make_cached(cache, name, nbytes=2048)          # 落盘，供终态统计
@@ -330,7 +333,8 @@ async def test_download_runs_and_sets_status(fake_cache, clean_state, monkeypatc
 
 async def test_download_failure_surfaces_error(fake_cache, clean_state, monkeypatch):
     """下载失败必须留下可见错误（进度条会清空，错误不能跟着没）。"""
-    def boom(name, cache, on_progress, local_files_only=False):
+    def boom(name, cache, on_progress, local_files_only=False,
+             backend="ctranslate2"):
         raise OSError("disk full")
 
     monkeypatch.setattr(models_mod, "download_model", boom)

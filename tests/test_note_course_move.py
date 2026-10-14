@@ -450,7 +450,10 @@ def test_move_render_is_textcontent_only():
     body = HTML.split("function renderMoveList() {", 1)[1].split("\n}", 1)[0]
     assert "n.textContent = label;" in body
     assert body.count("innerHTML") == body.count("innerHTML = ''")
-    assert "d.style.background = color;" in body    # 课程色只做 8px 圆点（同侧栏口径）
+    # B15 评审修复：课程色仍只做 8px 圆点（同侧栏口径），但**不再直接写 background**——
+    # 色值写进 --dot-c，由 .cdot/.cSwDot 的 color-mix(--dot-w/--dot-mix) 按主题混
+    # （浅色下压深：那 8 个低饱和色在白底上只有 2.1~2.9:1，见 tests/test_theme_tokens.py）。
+    assert "d.style.setProperty('--dot-c', color);" in body
 
 
 def test_move_styles_use_tokens_no_new_animation():

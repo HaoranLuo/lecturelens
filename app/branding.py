@@ -15,12 +15,15 @@
 """
 from pathlib import Path
 
-# 版本口径（D 组分发工程定性）：波次一（笔记工作流）已进，首个**安装包**版本落定
-# 1.0.0——不再是 -dev 后缀的阶段性语义，而是「可发给朋友装机」的正式版本号。
+# 版本口径（D 组分发工程定性）：1.0.0 = 首个**安装包**版本（波次一，可发给朋友装机）；
+# 1.1.0 = 波次二（Mac 适配 / 术语库包 / 笔记增强等）以**覆盖升级**方式交付——
+# 版本语义仍是三段数字，不带 -dev 后缀。
 # 打包消费：scripts/build_exe.py 的 version_info_text() 把它写进 PyInstaller
 # --version-file（exe 属性 FileVersion/ProductVersion），故**四段数字形式**是硬约束
-# （1.0.0 → 1,0,0,0；带 -dev/+build 后缀会被 version_quad 剥离后取数字段）。
-APP_VERSION = "1.0.0"
+# （1.1.0 → 1,1,0,0；带 -dev/+build 后缀会被 version_quad 剥离后取数字段）。
+# 安装包版本**不另立一份**：installer/lecturelens.iss 从 dist 内 exe 的版本资源读
+# （GetVersionNumbersString），故改这一处即同时驱动 exe 属性与安装包文件名。
+APP_VERSION = "1.1.0"
 
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)  # Windows .ico 惯例尺寸族
 #: PNG 尺寸族（p3-4）：16/24 供托盘与小控件、32/48 供列表与任务栏、64/128 供

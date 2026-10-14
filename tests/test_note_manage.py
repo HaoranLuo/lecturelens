@@ -437,6 +437,7 @@ def test_row_and_preview_entries_exist():
     row = HTML.split("function noteRow(n) {", 1)[1].split("\n}", 1)[0]
     assert "删除" in row and "delNote(" in row
     assert "移动" in row and "openMoveDialog([n.name])" in row
+    assert "nbSize(n)" in row                       # B4 体量徽章（断言细节在 test_note_size.py）
     head = HTML.split("// 顶部操作（§七-2）", 1)[1].split("ph.append(", 1)[0]
     for label in ("编辑", "重命名", "删除", "移动到…"):
         assert label in head, label

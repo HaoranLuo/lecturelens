@@ -11,13 +11,69 @@
           --border:#232B35; --border-strong:#2E3844;
           --text-1:#E8EEF5; --text-2:#93A1B0; --text-3:#5C6B7A;
           --gold:#FFD97A; --gold-dim:rgba(255,217,122,.14);
+          /* B15：中文字幕色单列一个令牌。—— 深色下它与 --gold 同值（#FFD97A 逐字），
+             浅色下两者必须分开：UI 强调色是**蓝**，而白底上的中文字幕需要更深的蓝才
+             够对比度（§一-2 金色只用于品牌强调，浅色下由蓝色代行）。 */
+          --zh:#FFD97A;
+          /* B15：金色主按钮的**深字**（§六「主要按钮 = gold 底 + 深字」）——
+             浅色下金色底换成蓝底，字色必须跟着反白，所以它也得是令牌而不是字面量。 */
+          --on-gold:#1A1408;
           --ok:#5FD08A; --warn:#E8B44A; --err:#FF6B6B; --partial:#7C8B99;
+          /* B15：投影 + 两级遮罩也从组件里抽出来（原来 10 处 rgba 字面量散在各弹窗里）——
+             浅色下白色卡片不配 40% 黑投影（会脏），遮罩也要减淡，故必须可覆盖。 */
+          --shadow:0 1px 2px rgba(0,0,0,.4);
+          --mask:rgba(0,0,0,.55);
+          --mask-strong:rgba(4,6,10,.88);
           --radius:12px;
+          /* B15 评审修复：课程身份色圆点（.cdot/.cSwDot）。色值来自服务端
+             COURSE_PALETTE（8 个低饱和色，课程身份不是主题色），JS 把它写进 --dot-c，
+             由 .cdot/.cSwDot 规则按主题混合：--dot-w=混合权重、--dot-mix=混入的墨色。
+             深色下权重 100% → color-mix 恒等（课程色原样，一个字节没变）；浅色下 66% 混
+             深墨——那 8 个色在白底上只有 2.1~2.9:1（< WCAG 1.4.11 非文本 3:1），
+             混后 4.10~5.22:1（数值断言见 tests/test_theme_tokens.py::test_light_course_dots_*）。 */
+          --dot-w:100%; --dot-mix:#0B0E13;
           /* §7 扫码用功能性令牌：二维码必须**高对比**才扫得动（深色底上的黑码手机
              扫不出来）。白底黑码是扫码这个功能的物理要求，不属于 §二 主题色阶——
              按 §一-4「颜色一律走变量」单列一个变量，改主题只改这里，不动组件。 */
           --qr-bg:#FFFFFF;
           /* 字阶 §3（字号档；A-/A+ 运行时覆盖 --cap-*） */
+          --cap-en:24px; --cap-zh:34px; --ui-title:16px; --ui-body:14px; --ui-small:12px; }
+  /* —— B15 浅色主题（白底蓝调，DeepSeek 风）——
+     只在 <html data-theme="light"> 时生效（选择器与 :root 同优先级，靠**排在后面**覆盖）；
+     data-theme 由 <head> 里的 ll_theme 引导脚本在首帧前挂上（防闪烁）。
+     · **默认深色零变化**：ll_theme 缺失/非法/存储被禁 → 不挂 data-theme → 上面那块
+       一个字节都没动（本批所有深色值都是原样搬过来的）；
+     · **键集合必须与深色块完全一致**（tests/test_theme_tokens.py 钉着这条）——
+       新增令牌时两处一起加；只加在深色块里，浅色下会静默继承深色的值（＝看不见的
+       回归），所以两块的键要对齐。字号/圆角/二维码底这类与主题无关的键也照列，
+       值逐一写死为原值。
+     · 蓝色取值口径：UI 强调 #2B4BF2（白字/选中态都 ≥4.5:1；用户点名的 #4D6BFE
+       在 14px 白字上只有 4.33:1、选中态 3.39:1，均不达 AA，故取同族更深一档），
+       中文字幕 #2563EB（白底 5.17:1）。 */
+  html[data-theme="light"] {
+          --bg:#F7F8FA; --surface:#FFFFFF; --surface-2:#F1F3F7;
+          --border:#E2E6EE; --border-strong:#C9D0DE;
+          /* B15 评审修复：--text-3 是**说明/元信息/空状态**这一档的正文字色（28 处 11-16px），
+             不是纯装饰。浅色初版 #8A94A4 在白底只有 3.06、在 --surface-2 上 2.76——
+             比它替掉的深色基线（#5C6B7A 在 --surface 上 3.31）还糊。取 #66707E：
+             白底 5.02 / --bg 4.72 / --surface-2 4.52，全过 AA（同批断言里钉住）。 */
+          --text-1:#1B2430; --text-2:#55606E; --text-3:#66707E;
+          --gold:#2B4BF2; --gold-dim:rgba(43,75,242,.12);
+          --zh:#2563EB;
+          --on-gold:#FFFFFF;
+          /* B15 评审修复：一级/二级状态色的**实际落点**多是「自己的 14% 半透明底」
+             （.chip.warn / #pausedBanner / #errBanner / #toast[.ok] / .mState / .nbFlag），
+             底比 --surface 更贴近字色 → 对比度被吃掉约 1:1。用户拍的 4.5:1 口径按
+             **压在 14% 底上**复核：现在最差组合 ok 4.80 / warn 5.39 / err 4.69
+             （tests/test_theme_tokens.py::test_light_status_colors_meet_aa_on_tinted_bg
+             按色块实际合成的底逐个断言，不是只量 --surface）。 */
+          --ok:#0B6B4A; --warn:#7C4A02; --err:#B3261E; --partial:#6B7686;
+          --dot-w:66%; --dot-mix:#0F172A;
+          --shadow:0 1px 2px rgba(16,24,40,.10);
+          --mask:rgba(15,23,42,.35);
+          --mask-strong:rgba(15,23,42,.55);
+          --radius:12px;
+          --qr-bg:#FFFFFF;
           --cap-en:24px; --cap-zh:34px; --ui-title:16px; --ui-body:14px; --ui-small:12px; }
   * { margin:0; padding:0; box-sizing:border-box; }
   html { height:100%; }
@@ -42,6 +98,15 @@
           border:1px solid var(--border);
           border-radius:999px; padding:3px 10px; white-space:nowrap; font-family:Consolas,monospace; }
   .chip.warn { color:var(--warn); background:color-mix(in srgb, var(--warn) 14%, transparent); }  /* §6 警示态 */
+  /* B6 未归档轻提醒：顶栏 chips 里唯一的**可点**徽章——本体沿用 .chip（§六 徽章 =
+     surface-2 底 + text-2 字 + 999 圆角），只补"可点"的两条：指针 + 悬停时文字提亮到
+     text-1 / 描边走 §六 的 gold 50% 强调口径（与聚焦环、选中态同一族）。
+     不用警示色：它是"有件事没做"的提示，不是错误。
+     字号/字族仍由 .chip 给（作者规则盖过 button 的 UA 默认，故这里**不要**写
+     font:inherit —— 那会把 12px/等宽一起重置回正文字体）。 */
+  .chip.btn { cursor:pointer; }
+  .chip.btn:hover { color:var(--text-1);
+                    border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
 
   /* §7.1 顶部工具条（header 品牌名/徽章 + #toolbar 按钮行）默认隐藏（保留占位防
      字幕跳动）；§5-3 浮现：鼠标靠近顶部 / 暂停态 / 错误态时 opacity+translateY
@@ -69,6 +134,48 @@
                           outline:none; }  /* §6 输入聚焦 gold 50% */
   #toolbar button:disabled { opacity:.45; cursor:not-allowed; }
   #toolbar input[type=text] { cursor:text; }  /* 输入框用文本光标，不跟按钮/下拉 */
+
+  /* —— B11 手机同屏防误触 ——
+     手机/局域网设备连上来时，服务端在 WS 递手帧里给出 lan=true（判据 = 对端地址，
+     不由客户端自报），页面据此给 body 加 .mobile → 这里收起**控制这台电脑**的那一排：
+       暂停（改采集状态）、下课（暂停 + 花钱摘要 + 写文件/导出）、🏷 标签（写当前笔记）、
+       课程下拉与内联新建（切课会往正在写的笔记里追写切换标记）、
+       档位/语言/麦克风三个下拉（重建 ASR 与采集器）。
+     保留：字号 A−/A＋、「↓ 回到最新」、全屏、关于、笔记库/设置（导航，不改采集状态）、
+     导出笔记（只把 md 下到手机上）、📱 面板（手机用户自查连接与设备数）。
+     · 用 display:none 而不是 opacity/pointer-events：display 是布局级，**不会**被
+       @media (hover:none) 那条「触屏工具条常显」（它管 opacity/transform/pointer-events）
+       顶掉；特异性也够用（body.mobile #id = 1,1,1 > #toolbar button 的 1,0,1），
+       故**不需要** !important（本文件也不用 !important 兜底）。
+     · #chipMobile 只在手机形态出现：它是"为什么按钮少了"的可见答复——
+       悄悄把按钮变没而不解释，用户只会以为坏了。桌面/本机窗口零变化。 */
+  body.mobile #btnPause, body.mobile #btnEndClass, body.mobile #btnTag,
+  body.mobile #tagQuickWrap, body.mobile #selCourse, body.mobile #courseNewWrap,
+  body.mobile #selModel, body.mobile #selLang, body.mobile #selDevice { display:none; }
+  /* 评审1① 修复：**同一批控件在 ⚙设置 → 🎙上课 里还有一套等效入口**——工具条藏了
+     下拉、设置页却留着「音源 / 识别语言 / 档位『使用』/ 高级模型 / 模型下载删除 /
+     分句调优」，手机点两下就能重建 ASR 与采集器，等于没防（评审实测：body.mobile 下
+     #setSourceSel 249×32、#setLangSel 143×32、#setModelSel 189×32、档位「使用」
+     按钮 32px 全都可点，而同一时刻工具条的 #selLang 是 display:none）。
+     故这里按**同一条理由**一并收起：会改「这台电脑怎么录 / 怎么认」的控件。
+     边界（刻意不扩大）：📝笔记（课程管理/导出/标签/回收站）、📶连接、🎨外观、
+     ⚙系统（热键/开机自启）不藏——它们不改本次采集状态，且外观是**每设备各自**的
+     偏好（B15 口径），手机必须能改自己的主题。 */
+  body.mobile #tierRows, body.mobile #setModelSel, body.mobile #modelRows,
+  body.mobile #setSourceSel, body.mobile #setLangSel, body.mobile .segGrid,
+  body.mobile #btnSegReset, body.mobile #setStreamChk { display:none; }
+  /* .mobOnly = 只在手机形态出现的**说明**（藏了控件就得说明，两步都别静默）；
+     .pcOnly = 反过来：桌面文案在手机形态收起——暂停横幅原来固定写着「点击工具条
+     『▶ 继续』」，而那颗按钮在手机形态正是被藏掉的（评审1④：那是一条指不到东西的
+     死指令）。两段文案同处一个横幅，靠这两个类按形态二选一。 */
+  .mobOnly { display:none; }
+  body.mobile .mobOnly { display:block; }
+  body.mobile .pcOnly { display:none; }
+  /* 横幅里的两段是行内文本（display:block 会让它们各占一行），单独覆盖回 inline */
+  #pausedBanner .mobOnly { display:none; }
+  body.mobile #pausedBanner .mobOnly { display:inline; }
+  #chipMobile { display:none; }
+  body.mobile #chipMobile { display:inline-block; }
 
   /* §1 录制页选课程：工具条「课程」下拉 + 内联新建（选中「＋ 新建课程…」才展开）。
      · 内联行沿用 §6 输入规范（surface-2 底 + 1px border + 聚焦 gold 50%），不新造样式；
@@ -107,7 +214,7 @@
      不加大面积金色铺底以外的任何装饰，也不加动效（§5 只有三个动效）。
      选择器写成 `#toolbar button#btnEndClass`：`#toolbar button`（id+元素）比单个
      id 更具体，只写 `#btnEndClass` 会被它盖掉——实测背景色仍是 surface-2。 */
-  #toolbar button#btnEndClass { background:var(--gold); color:#1A1408;
+  #toolbar button#btnEndClass { background:var(--gold); color:var(--on-gold);
                                 border-color:var(--gold); font-weight:600; }
   #toolbar button#btnEndClass:hover { border-color:var(--gold); }
   #toolbar button#btnEndClass:disabled { opacity:.45; cursor:not-allowed; }
@@ -167,7 +274,7 @@
            max-width:80vw; padding:8px 16px; border-radius:8px; font-size:var(--ui-small);
            background:color-mix(in srgb, var(--err) 14%, transparent); color:var(--err);
            border:1px solid color-mix(in srgb, var(--err) 45%, transparent);
-           box-shadow:0 1px 2px rgba(0,0,0,.4); display:none; }  /* §4 投影上限 */
+           box-shadow:var(--shadow); display:none; }  /* §4 投影上限 */
   /* §3 toast 里的动作按钮（「打开文件夹」）：幽灵按钮（§6）——无边框、继承 toast
      的文字色，悬停才显 surface-2，绝不与 toast 的颜色语义打架 */
   #toast .toastAct { margin-left:12px; padding:2px 10px; border-radius:8px;
@@ -181,7 +288,7 @@
   #btnLatest { position:fixed; right:24px; bottom:56px; z-index:50;
                background:var(--surface-2); color:var(--text-1); border:1px solid var(--border-strong);
                border-radius:999px; padding:8px 16px; font-size:var(--ui-small); cursor:pointer;
-               box-shadow:0 1px 2px rgba(0,0,0,.4);
+               box-shadow:var(--shadow);
                display:block; opacity:0; transform:translateY(4px); pointer-events:none;
                transition:opacity .2s, transform .2s; }
   #btnLatest.on { opacity:1; transform:none; pointer-events:auto; }
@@ -191,12 +298,12 @@
   /* 关于弹窗（p1-3）：版本 + 签证红线声明 + 隐私透明页入口（p1-4 令牌对齐：
      悬浮层 = surface-2 底，投影 = §4 上限 0 1px 2px） */
   #aboutMask { position:fixed; inset:0; z-index:100; display:none;
-               align-items:center; justify-content:center; background:rgba(0,0,0,.55); }
+               align-items:center; justify-content:center; background:var(--mask); }
   #aboutMask.on { display:flex; }
   #aboutBox { width:min(480px,92vw); max-height:82vh; overflow-y:auto;
               background:var(--surface-2); border:1px solid var(--border);
               border-radius:var(--radius);
-              padding:16px 24px; box-shadow:0 1px 2px rgba(0,0,0,.4); }
+              padding:16px 24px; box-shadow:var(--shadow); }
   #aboutBox h2 { font-size:var(--ui-title); color:var(--gold); margin-bottom:2px; }
   #aboutBox .ver { font-size:var(--ui-small); color:var(--text-2); font-family:Consolas,monospace; }
   #aboutBox h3 { font-size:var(--ui-body); color:var(--text-1); margin:14px 0 6px; }
@@ -218,17 +325,17 @@
 
   /* 首启向导（p1-5）：全屏 3 步——①麦克风测试 ②DeepSeek key（可跳过）③试说一句 */
   #wizardMask { position:fixed; inset:0; z-index:200; display:none;
-                align-items:center; justify-content:center; background:rgba(4,6,10,.88); }
+                align-items:center; justify-content:center; background:var(--mask-strong); }
   #wizardMask.on { display:flex; }
   #wizardBox { width:min(560px,94vw); max-height:86vh; overflow-y:auto;
                background:var(--surface-2); border:1px solid var(--border);
                border-radius:var(--radius); padding:16px 24px;
-               box-shadow:0 1px 2px rgba(0,0,0,.4); }
+               box-shadow:var(--shadow); }
   #wizardBox h2 { font-size:var(--ui-title); color:var(--gold); margin-bottom:4px; }
   #wizSteps { display:flex; gap:8px; margin:12px 0 16px; }
   .wizStep { flex:1; text-align:center; font-size:var(--ui-small); color:var(--text-3);
              border:1px solid var(--border); border-radius:999px; padding:4px 0; }
-  .wizStep.cur { color:#1A1408; background:var(--gold); border-color:var(--gold);
+  .wizStep.cur { color:var(--on-gold); background:var(--gold); border-color:var(--gold);
                  font-weight:600; }  /* §6：gold 唯一品牌色 */
   .wizStep.done { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 45%, transparent); }
   .wizPane p { font-size:var(--ui-body); line-height:1.8; color:var(--text-2); margin:8px 0; }
@@ -253,7 +360,7 @@
                       font-size:var(--ui-body); cursor:pointer; }
   #wizardBox button:hover:not(:disabled) { border-color:var(--border-strong); }
   #wizardBox button:disabled { opacity:.45; cursor:not-allowed; }
-  #wizardBox button.primary { background:var(--gold); color:#1A1408; border-color:var(--gold);
+  #wizardBox button.primary { background:var(--gold); color:var(--on-gold); border-color:var(--gold);
                               font-weight:600; }  /* §6 主要按钮：gold 底深字，每屏一个 */
   #wizardBox button.primary:hover:not(:disabled) { border-color:var(--gold); }
   #wizardBox button.wizSkip { background:none; border:none; color:var(--text-2);
@@ -326,6 +433,16 @@
             border:1px solid transparent; }
   .cSwDot.cur { border-color:var(--text-1);
                 box-shadow:0 0 0 2px color-mix(in srgb, var(--text-1) 20%, transparent); }
+  /* B15 评审修复：课程身份色圆点的**唯一**上色口（令牌 --dot-w/--dot-mix 见 :root）。
+     JS 只写 --dot-c，不再直接写 background —— 于是「深色原样 / 浅色压深」由主题决定，
+     组件零分支。三条上色点（侧栏 .sbCourse .cdot、设置页换色钮 .cSwDot、移动到弹窗
+     #moveList .cdot）共用这一条。
+     ⚠️ 选择器必须带 `.card` 前缀：换色钮是 `.card` 里的 <button>，而 `.card button`
+     （0,1,1）比 `.cSwDot`（0,1,0）更具体——只写 .cSwDot 会被卡片按钮的
+     background:var(--surface-2) 盖掉（真浏览器实测：换色钮恒显示 surface-2 灰）。
+     同 `.tagChip` 在 #setTagBar 里踩过的那条教训（本次是静态断言看不出来、
+     靠真机 getComputedStyle 才暴露的第二次）。 */
+  .cdot, .card .cSwDot { background:color-mix(in srgb, var(--dot-c) var(--dot-w), var(--dot-mix)); }
   .cDel { background:none; border:1px solid var(--border); color:var(--text-2);
           border-radius:8px; height:32px; padding:0 12px; cursor:pointer;
           font-size:var(--ui-small); flex:none; }
@@ -379,7 +496,7 @@
   .tierRow.active { background:color-mix(in srgb, var(--ok) 6%, transparent); }
   .tierMain { flex:1; min-width:0; }
   .tierName { color:var(--text-1); font-weight:600; font-size:var(--ui-body); }
-  .tierBadge { margin-left:8px; font-size:11px; font-weight:600; color:#1A1408;
+  .tierBadge { margin-left:8px; font-size:11px; font-weight:600; color:var(--on-gold);
                background:var(--gold); border-radius:999px; padding:1px 8px; }
   .tierDesc { color:var(--text-2); font-size:var(--ui-small); margin-top:2px; }
   .tierTech { color:var(--text-3); font-size:11px; margin-top:2px;
@@ -445,6 +562,34 @@
     border-color:color-mix(in srgb, var(--err) 45%, transparent); color:var(--err); }
   .glEmpty { font-size:var(--ui-small); color:var(--text-3); padding:8px 0; }
 
+  /* —— B13 术语库包：包卡片网格 + 「安装到哪门课」选择条 ——
+     令牌全部走 §二/§三/§六，无硬编码色：卡片本体是 surface-2 + border（列表项，
+     不是选中态）；**已装**徽章才走 gold-dim 底 + gold 字（§六 选中态口径）。
+     按钮尺寸沿用 §六（工具条紧凑档 28px）。 */
+  .glPacks { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr));
+             gap:8px; }
+  .glPackBar { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+               margin-bottom:12px; }
+  .glPack { display:flex; flex-direction:column; gap:6px; padding:8px 12px;
+            background:var(--surface-2); border:1px solid var(--border);
+            border-radius:8px; }
+  .glPack.on { border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  .glPackHead { display:flex; align-items:baseline; gap:8px; }
+  .glPackName { font-size:var(--ui-body); font-weight:600; color:var(--text-1); }
+  .glPackMeta { font-size:var(--ui-small); color:var(--text-3);
+                font-family:Consolas,monospace; }
+  .glPackIntro { flex:1; font-size:var(--ui-small); color:var(--text-2); line-height:1.6; }
+  .glPackFoot { display:flex; align-items:center; gap:8px; }
+  .glPackFoot button { flex:none; height:28px; padding:0 12px; cursor:pointer;
+            background:var(--surface); color:var(--text-1); border:1px solid var(--border);
+            border-radius:8px; font-size:var(--ui-small); }
+  .glPackFoot button:hover:not(:disabled) { border-color:var(--border-strong); }
+  .glPackFoot button:disabled { color:var(--text-3); cursor:default; }
+  .glPackBadge { flex:none; padding:2px 8px; border-radius:8px; font-size:var(--ui-small);
+            background:var(--gold-dim); color:var(--gold); }
+  .glPackInst { flex:1; min-width:0; font-size:var(--ui-small); color:var(--text-3);
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
   /* —— p2-2 笔记库（§七-2）：主区顶部搜索 + 列表 + 右侧双栏 EN|ZH 预览 ——
      视图切换：body.view-notes / view-settings 与 settings-on（工作台开关）叠加。
      令牌全部走 §二/§三（surface/border/text 系 + gold + radius），无硬编码色。
@@ -462,6 +607,17 @@
   #viewSettings .card[data-set-tab] { display:none; }
   #viewSettings .card[data-set-tab].setOn { display:block; }
   body.view-settings #viewSettings { display:block; }
+  /* —— B15：设置页「主题」三选（深色 / 浅色 / 跟随系统）——
+     chip 形状复用 .tagChip 本体，但 **.card button（0,1,1）优先级高于 .tagChip（0,1,0）**，
+     会被拉成方按钮——故用 #themeRow 前缀把 chip 形状还原（与 #setTagBar 同一条教训）。
+     选中态仍是 .tagChip.on 的 gold-dim/gold（§六 口径），不新造色值、不加动效。
+     色值全部走令牌：浅色下这里的 gold 由 html[data-theme="light"] 换成蓝色，
+     本规则一个字都不用改（§一-4 改主题=改变量，不动组件）。 */
+  #themeRow { gap:8px; }
+  #themeRow .tagChip { height:28px; padding:0 14px; border-radius:999px;
+                       font-size:var(--ui-body); background:var(--surface-2); }
+  #themeRow .tagChip.on { background:var(--gold-dim); color:var(--gold);
+                          border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
   /* A1：工具条可换行——全选/反选使这一行更长（≈620px 内容），窄窗口下宁可折行也
      不能让控件被裁到屏幕外（换行只在装不下时发生，桌面宽度下与原来一模一样）。 */
   .nbBar { display:flex; flex-wrap:wrap; align-items:center; gap:8px;
@@ -556,6 +712,20 @@
   .tagChip.on { background:var(--gold-dim); color:var(--gold);
                 border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
   .tagRow { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:10px; }
+  /* —— B3：设置页「常用标签」编辑条 ——
+     chips 复用 .tagChip 本体，但 **.card button（0,1,1）优先级高于 .tagChip（0,1,0）**，
+     会被拉成方按钮——故这里用 #setTagBar 前缀把 chip 形状还原（同 .nbTagBar 抬头记过
+     的那条教训）。动作按钮一律写 `> button`，只吃本条自己的两个/三个按钮。 */
+  #setTagBar { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+               padding:8px 12px; background:var(--surface-2); border:1px solid var(--border);
+               border-radius:8px; }
+  #setTagBar .tagRow { margin-bottom:0; flex:1; min-width:200px; }
+  #setTagBar .tagChip { height:24px; padding:0 10px; border-radius:999px;
+                        font-size:var(--ui-small); background:var(--surface); }
+  #setTagBar .tagChip.on { background:var(--gold-dim); color:var(--gold);
+                           border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  #setTagBar input { flex:1; min-width:150px; }
+  #setTagBar > button { flex:none; }
   #toolbar button.tagChip { height:24px; font-size:var(--ui-small); }
   #tagQuickWrap { display:none; align-items:center; gap:6px; flex-wrap:wrap; }
   #tagQuickWrap.on { display:flex; }
@@ -566,12 +736,12 @@
   body:has(#tagQuickWrap.on) header, body:has(#tagQuickWrap.on) #toolbar {
     opacity:1; transform:none; pointer-events:auto; }   /* 面板开着就别自动隐藏工具条 */
   #moveMask { position:fixed; inset:0; z-index:150; display:none;
-              align-items:center; justify-content:center; background:rgba(0,0,0,.55); }
+              align-items:center; justify-content:center; background:var(--mask); }
   #moveMask.on { display:flex; }
   #moveBox { width:min(420px,92vw); max-height:82vh; overflow-y:auto;
              background:var(--surface-2); border:1px solid var(--border);
              border-radius:var(--radius); padding:16px 20px;
-             box-shadow:0 1px 2px rgba(0,0,0,.4); }
+             box-shadow:var(--shadow); }
   #moveBox h2 { font-size:var(--ui-title); color:var(--gold); margin-bottom:2px; }
   #moveBox .sub { font-size:var(--ui-small); color:var(--text-2); line-height:1.6;
                   margin-bottom:12px; }
@@ -603,12 +773,12 @@
      与「移动到…」同族（surface-2 悬浮层 + 1px 描边 + radius 12 + 0 1px 2px 投影），
      令牌全部走 §二/§三/§四，不新造色值、不加动效（§5 只有三个动效）。 */
   .dlgMask { position:fixed; inset:0; z-index:150; display:none; align-items:center;
-             justify-content:center; background:rgba(0,0,0,.55); }
+             justify-content:center; background:var(--mask); }
   .dlgMask.on { display:flex; }
   .dlgBox { width:min(560px,92vw); max-height:86vh; overflow-y:auto;
             background:var(--surface-2); border:1px solid var(--border);
             border-radius:var(--radius); padding:16px 20px;
-            box-shadow:0 1px 2px rgba(0,0,0,.4); }
+            box-shadow:var(--shadow); }
   .dlgBox h2 { font-size:var(--ui-title); color:var(--gold); margin-bottom:2px; }
   .dlgBox .sub { font-size:var(--ui-small); color:var(--text-2); line-height:1.6;
                  margin-bottom:12px; }
@@ -649,10 +819,19 @@
                     padding:0 12px; font-size:var(--ui-body); cursor:pointer; }
   .dlgFoot button:hover:not(:disabled) { border-color:var(--border-strong); }
   .dlgFoot button:disabled { opacity:.45; cursor:not-allowed; }
-  .dlgFoot button.primary { background:var(--gold); color:#1A1408;
+  .dlgFoot button.primary { background:var(--gold); color:var(--on-gold);
                             border-color:var(--gold); font-weight:600; }
   .dlgFoot button.danger:hover { color:var(--err);
                                  border-color:color-mix(in srgb, var(--err) 45%, transparent); }
+
+  /* —— B9 标签管理弹窗：复用 .dlgMask/.dlgBox/.dlgList/.tRow/.tName/.tMeta（零新色值），
+     只给行内重命名输入框补一条样式（令牌走 §二/§三；高度对齐 .dlgList button 的 28px） —— */
+  #tagList input { flex:1; min-width:0; background:var(--surface); color:var(--text-1);
+                   border:1px solid var(--border); border-radius:8px;
+                   padding:4px 12px; height:28px; font-size:var(--ui-small); }
+  #tagList input:focus { outline:none;
+    border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
+  #tagList .tName { color:var(--text-1); }
 
   /* §7 手机同屏面板：二维码必须**高对比**才扫得动（§一-1 沉浸优先服务的是字幕，
      这里是功能性例外）——故给码面固定白底 + 白边距（白是扫码的物理要求，走
@@ -683,7 +862,12 @@
                    padding:0 4px; font-size:var(--ui-small); }
   .lanNote { font-size:var(--ui-small); color:var(--text-3); line-height:1.6;
              margin:0 0 12px; }
-  .nbRowTop { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  /* B4 起行顶多了体量徽章，380px 列表里三枚徽章 + 日期 + 课程放不进一行（实测量过：
+     内容宽 257px > 可用 219px）→ 允许换行：装不下时徽章整组落到第二行、右对齐，
+     课程名反而腾回可读宽度（此前被挤成 16px 的「…」）。徽章一律 flex:none 不压缩，
+     故换行是唯一不会裁字的兜底。 */
+  .nbRowTop { display:flex; align-items:center; gap:8px; margin-bottom:6px;
+              flex-wrap:wrap; }
   .nbDate { font-size:var(--ui-small); color:var(--text-2); flex:none;
             font-family:Consolas,monospace; }
   .nbChip { font-size:var(--ui-small); color:var(--text-2); background:var(--surface-2);
@@ -693,6 +877,10 @@
   .nbFlag { font-size:var(--ui-small); border-radius:999px; padding:1px 6px;
             background:color-mix(in srgb, var(--ok) 14%, transparent); color:var(--ok); }
   .nbFlag.no { background:var(--surface-2); color:var(--text-3); }
+  /* B4 体量徽章：中性药丸（spec §六「徽章 = surface-2 底 + text-2 字 + 999 圆角」），
+     复用 .nbFlag 的字号/圆角。它报的是"多大"（段数/字数），不是 .nbFlag 的"有没有"
+     状态，故不走 ok 绿、也不带 ✓/· 后缀。 */
+  .nbFlag.size { background:var(--surface-2); color:var(--text-2); }
   .nbFirst { font-size:var(--ui-body); color:var(--text-2); line-height:1.5;
              display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
              overflow:hidden; word-break:break-word; }
@@ -718,7 +906,7 @@
     height:32px; font-size:var(--ui-small); cursor:pointer; }
   .nbPH select:focus { outline:none;
     border-color:color-mix(in srgb, var(--gold) 50%, transparent); }
-  .nbPH button.primary { background:var(--gold); color:#1A1408; border-color:var(--gold);
+  .nbPH button.primary { background:var(--gold); color:var(--on-gold); border-color:var(--gold);
                          font-weight:600; }
   .nbHead { display:flex; gap:16px; padding-bottom:8px; margin-bottom:4px;
             border-bottom:1px solid var(--border); font-size:var(--ui-small);
@@ -745,7 +933,7 @@
   .nbCell { flex:1; min-width:0; font-size:var(--ui-body); line-height:1.5;
             word-break:break-word; }
   .nbCell.en { color:var(--text-1); }
-  .nbCell.zh { color:var(--gold); }
+  .nbCell.zh { color:var(--zh); }   /* 笔记库中英对照的「中」列：同 §3 字幕中文口径 */
   .nbCell.none { color:var(--text-3); font-style:italic; }
   #workspace { flex:1; min-width:0; overflow-y:auto; padding:24px 32px 48px; }
   #workspace h1 { font-size:22px; margin-bottom:4px; }
@@ -767,7 +955,7 @@
     border-radius:8px; padding:4px 16px; height:32px; font-size:var(--ui-body); cursor:pointer; }
   .card button:hover:not(:disabled) { border-color:var(--border-strong); }
   .card button:disabled { opacity:.45; cursor:not-allowed; }
-  .card button.primary { background:var(--gold); color:#1A1408; border-color:var(--gold);
+  .card button.primary { background:var(--gold); color:var(--on-gold); border-color:var(--gold);
                          font-weight:600; }
   .card button.danger { color:var(--err);
     border-color:color-mix(in srgb, var(--err) 45%, transparent); }
@@ -809,8 +997,9 @@
   .ts { font-size:var(--ui-small); color:var(--text-2); font-family:Consolas,monospace; }
   .en { font-size:var(--cap-en); line-height:1.45; margin:4px 0;
         transition:color .2s; }                 /* §5-2 落定 */
-  .zh { font-size:var(--cap-zh); line-height:1.5; color:var(--gold); font-weight:600;
-        margin:2px 0 4px; transition:color .2s; }   /* §3：zh 34/1.5 600 gold */
+  .zh { font-size:var(--cap-zh); line-height:1.5; color:var(--zh); font-weight:600;
+        margin:2px 0 4px; transition:color .2s; }   /* §3：zh 34/1.5 600 —— 色走 --zh：
+        深色下 = --gold（#FFD97A 原样），浅色下 = 深蓝 #2563EB（白底 5.17:1，金色在白底上会糊） */
   .zh.err { color:var(--text-2); font-weight:400; }  /* 翻译失败提示：灰色弱化 */
   .placeholder { color:var(--text-3); font-size:16px; padding:48px 0; text-align:center; }
 
@@ -864,12 +1053,71 @@ footer span { white-space:nowrap; }
     #log { scroll-behavior: auto; }
   }
 </style>
+<script>
+/* —— B15 深浅主题 · 引导脚本（**必须留在 head**）——
+   作用：在**首帧之前**把 data-theme 挂到 <html> 上。放页尾主脚本里就晚了：
+   body 已按 :root 的深色画过一帧，浅色用户会看到「先黑后白」的闪屏（FOUC）。
+   · 取值 ll_theme ∈ dark | light | auto，**默认 dark**（无键/非法值/存储被禁都回落
+     dark → 老用户界面逐字节不变）；
+   · auto = 跟随系统，用 matchMedia('(prefers-color-scheme: dark)') 判定，并**监听
+     系统切换**（用户在操作系统的「浅色 / 深色」设置里改，页面立刻跟上，不必刷新）；
+   · 存储读写一律 try/catch（隐私模式会让 localStorage 抛异常）——主题读不出来也
+     绝不能把整页脚本带崩，回落 dark 即可；
+   · 只改 <html> 的属性、只给设置页用的一个极小的 window 接口，不动任何组件。 */
+(function () {
+  var KEY = 'll_theme';
+  var MODES = ['dark', 'light', 'auto'];
+  var MQ = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  var cur = 'dark';
+
+  function normalize(v) { return MODES.indexOf(v) >= 0 ? v : 'dark'; }
+  function stored() {
+    try { return normalize(localStorage.getItem(KEY)); } catch (e) { return 'dark'; }
+  }
+  // auto 落到实色：系统深色 → dark，系统浅色 → light；
+  // 取不到 matchMedia（极老的内核）时回落 **dark**——本应用的默认就是深色，
+  // 探不到系统偏好时不该凭空把老用户的界面翻白。
+  function resolve(mode) {
+    if (mode !== 'auto') return mode;
+    if (!MQ) return 'dark';
+    return MQ.matches ? 'dark' : 'light';
+  }
+  function paint() { document.documentElement.dataset.theme = resolve(cur); }
+
+  cur = stored();
+  paint();
+  if (MQ) {
+    var onSysChange = function () { if (cur === 'auto') paint(); };
+    if (MQ.addEventListener) MQ.addEventListener('change', onSysChange);
+    else if (MQ.addListener) MQ.addListener(onSysChange);   // 老 WebView2 兜底
+  }
+  // 设置页 🎨外观 的「主题」三选走这个接口：写入 + 立即生效（存储失败也不影响本次）
+  window.LL_THEME = {
+    key: KEY, modes: MODES,
+    get: function () { return cur; },
+    resolved: function () { return resolve(cur); },
+    set: function (mode) {
+      cur = normalize(mode);
+      try { localStorage.setItem(KEY, cur); } catch (e) { /* 隐私模式：本次会话内仍生效 */ }
+      paint();
+      return cur;
+    }
+  };
+})();
+</script>
 </head>
 <body>
 <header>
   <span class="brand"><span class="dot" id="dot"></span>LectureLens
     <button id="btnCollapse" title="收起/展开工具条">▾</button></span>
   <span class="chips">
+    <!-- B6 未归档轻提醒：近 2 天有「有正文、还没摘要」的笔记时才出现（显隐仿
+         #chipBacklog），但它是**可点**的（按钮而非状态字）→ 跳到笔记库处理，
+         本会话点过一次即收起（不落盘）。放在 chips 区**最前**：.chips 是
+         overflow:hidden，窄窗口裁的是右侧——这条是唯一带动作的，不能被裁掉；
+         无提醒时 hidden 不占位，等于零变化。 -->
+    <button class="chip btn" id="chipPending" hidden
+            title="近 2 天有笔记还没生成摘要">0 篇新笔记未归档 · 点此处理</button>
     <span class="chip" id="chipDevice">…</span>
     <span class="chip" id="chipTranslate">translate: init</span>
     <span class="chip optional" id="chipSeg">SEGMENTS 0</span>
@@ -922,6 +1170,10 @@ footer span { white-space:nowrap; }
   </span>
   <span class="chip" id="chipBacklog" hidden
         title="待转写段数：积压过多时后端自动丢弃旧段追赶实时">积压 0 段</span>
+  <!-- B11：手机/局域网设备的「只读形态」标识——只在 body.mobile 下出现（见 CSS）。
+       它回答"暂停/下课这些按钮去哪了"：控制**这台电脑**的动作留在电脑上按。 -->
+  <span class="chip" id="chipMobile"
+        title="这是手机/局域网设备打开的只读形态：暂停、下课、切课、换模型、打标签等「控制这台电脑」的按钮已收起（字号与「↓ 回到最新」仍可用）。要在电脑上操作，请用电脑窗口。">📱 手机只读模式</span>
   <span class="spacer"></span>
   <button id="btnFontMinus" title="缩小字幕">A−</button>
   <button id="btnFontPlus" title="放大字幕">A＋</button>
@@ -948,7 +1200,7 @@ footer span { white-space:nowrap; }
 </div>
 
 <div id="loadwrap"><div id="loadbox"><div id="loadfill"></div></div><span id="loadstage">…</span></div>
-<div id="pausedBanner">⏸ 已暂停收音 —— 点击工具条「▶ 继续」恢复字幕（暂停期间的语音不会进入笔记）</div>
+<div id="pausedBanner"><span class="pcOnly">⏸ 已暂停收音 —— 点击工具条「▶ 继续」恢复字幕（暂停期间的语音不会进入笔记）</span><span class="mobOnly">⏸ 已暂停收音（在电脑上点「▶ 继续」恢复；手机端是只读的，没有这个按钮）</span></div>
 <div id="errBanner"><span class="msg" id="errMsg"></span>
   <button id="btnRetrySmall" title="切换到 CPU base（int8）小模型重试">切小模型重试</button>
   <button id="errClose" title="关闭提示（状态恢复前每 2s 会重新出现）">✕</button></div>
@@ -1010,6 +1262,8 @@ footer span { white-space:nowrap; }
         <button id="nbBatchInvert" title="反选：当前列表里已勾选的取消、没勾的勾上"
                 disabled>反选</button>
         <span class="nbCount" id="nbCount"></span>
+        <button id="nbTagManage"
+                title="全库管理标签：重命名（合并同义标签）/ 删除（B9）">🏷 标签管理</button>
         <button id="nbTrashBtn" title="回收站：软删除的笔记在这里，可恢复 / 彻底删除 / 清空">🗑 回收站</button>
       </div>
       <!-- §2 批量条：行首勾选 ≥1 篇才出现（多选只作用于**当前列表可见项**）。
@@ -1065,6 +1319,27 @@ footer span { white-space:nowrap; }
         <button id="glNewFile" title="新建一份术语表文件">＋ 新建文件</button>
         <span class="nbCount" id="glMeta"></span>
       </div>
+
+      <!-- B13 术语库包：内置包一键并入某门课的术语表。并入时整块写入并用
+           「# —— 来自包：X ——」/「# —— 结束包：X ——」**双标记**框起；卸载按标记
+           切片整块移除，你自己加的词条（含装完之后加的）一律不受影响。
+           数据来自 GET /api/glossary/packs；装/卸走 POST /api/glossary/packs/*。 -->
+      <div class="card" id="glPackCard">
+        <h2>术语库包</h2>
+        <p class="desc">把整包术语并进某门课的术语表：包内容会写进一个用注释
+          <b>双标记</b>框起的块里（「# —— 来自包：X ——」…「# —— 结束包：X ——」），
+          卸载时整块移除——<b>你自己加的词条（含装完之后随手加的）一条都不会动</b>。<br>
+          合并按<b>并集去重</b>：同一个英文词以你已有的译名为准，包里的同名条目会被跳过
+          （重复安装同一包 = 先卸后装，不会叠成两块）。</p>
+        <div class="glPackBar">
+          <label class="stateline" for="glPackCourse">安装到</label>
+          <select id="glPackCourse"
+                  title="术语库包装进哪门课的术语表（课程未绑定术语表时自动建一份）"></select>
+          <span class="glPackInst" id="glPackState"></span>
+        </div>
+        <div class="glPacks" id="glPacks"></div>
+      </div>
+
       <div class="card">
         <div class="glRow glHead">
           <span class="glCol">英文术语</span><span class="glCol">中文译名</span>
@@ -1116,6 +1391,13 @@ footer span { white-space:nowrap; }
 
     <div class="card" data-set-tab="lesson">
       <h2>识别模型</h2>
+      <!-- B11 评审修复①：手机形态下这一整片"怎么录/怎么认"的控件都被收起（见 CSS
+           body.mobile），这里给手机用户一句**可见的解释**——藏了东西就得说明来源，
+           否则设置页看起来像缺了半页。 -->
+      <p class="desc mobOnly" id="setMobileNote">📱 <b>手机只读模式</b>：当前设备在局域网里
+        （手机/平板），<b>怎么录、怎么认</b>的设置只在这台电脑上改——档位 / 高级模型 /
+        模型下载删除 / 音源 / 识别语言 / 分句调优 / 流式开关都已收起。<br>
+        字幕阅读不受影响：字号 A−/A＋、「↓ 回到最新」、导出这篇、📱 手机同屏面板与主题照常可用。</p>
       <p class="desc">当前态：<span id="setModelCur" class="stateline" style="display:inline">…</span><br>
         切换会立即重建识别器（首次使用某档需下载，可能分钟级；期间字幕暂停）。</p>
       <!-- 档位化（2026-10-13）：普通用户只看四档人话（流畅/标准/高/极致）＋
@@ -1229,6 +1511,30 @@ footer span { white-space:nowrap; }
       </div>
     </div>
 
+    <!-- B15 主题三选（🎨外观 分区）。**纯前端 localStorage**（键 ll_theme）——主题是
+         「这台设备/这个浏览器」的显示偏好：手机端各自记忆，不该被 config.json 同步，
+         因此服务端零改动、白名单零新增键。真正的「应用」在 <head> 的引导脚本里
+         （window.LL_THEME，防首帧闪烁），这里只是控件。
+         选中态复用 .tagChip.on（gold-dim/gold，§六），单选用 radiogroup 语义。 -->
+    <div class="card" data-set-tab="look">
+      <h2>主题 <span class="stateline" style="display:inline">B15 · 本设备</span></h2>
+      <p class="desc">只影响<b>本设备的界面配色</b>；每台设备各记各的（手机扫码同屏时
+        互不干扰）。<br>
+        <b>深色</b> = 原配色（默认，老用户零变化）；<b>浅色</b> = 白底蓝调；
+        <b>跟随系统</b> = 跟着<b>操作系统</b>的「浅色 / 深色」设置走，系统一改界面
+        立刻跟着变（不用刷新）。<br>
+        <b>悬浮字幕条始终是深色</b>：它是盖在视频/课件上的浮层，压在白色课件上的白底
+        字幕条会看不清，深色在任何背景上都清楚。</p>
+      <div class="row" id="themeRow" role="radiogroup" aria-label="主题">
+        <button class="tagChip" id="themeDark" role="radio" aria-checked="false"
+                data-mode="dark" title="深色（默认）：墨蓝黑底 + 金">🌙 深色</button>
+        <button class="tagChip" id="themeLight" role="radio" aria-checked="false"
+                data-mode="light" title="浅色：白底蓝调（中文字幕用深蓝）">☀ 浅色</button>
+        <button class="tagChip" id="themeAuto" role="radio" aria-checked="false"
+                data-mode="auto" title="跟随系统：随操作系统的浅色/深色设置自动切换">🖥 跟随系统</button>
+      </div>
+    </div>
+
     <div class="card" data-set-tab="look">
       <h2>字幕显示 <span class="stateline" style="display:inline">B2 · 历史行渐隐</span></h2>
       <p class="desc">上课时把<b>当前句上方的最近几行</b>做渐隐（半透明 + 缩小），
@@ -1249,8 +1555,10 @@ footer span { white-space:nowrap; }
       <h2>悬浮字幕条 <span class="stateline" style="display:inline">B1 · 桌面版</span></h2>
       <p class="desc">第二块屏场景：独立的无边框置顶小窗，只显示最新一句中英字幕，
         可拖动到任意位置；<b>主窗最小化时它仍显示</b>。
-        点击穿透为尽力而为（Win32 WS_EX_TRANSPARENT）——<b>失败自动降级为可关闭窗口</b>；
-        穿透开启后请用<b>托盘菜单</b>「字幕条点击穿透」解除。</p>
+        点击穿透为尽力而为、<b>仅 Windows 支持</b>（Win32 WS_EX_TRANSPARENT）；
+        macOS 及其它平台自动降级为可关闭窗口（浮窗照常显示，只是不穿透）——
+        失败时同样降级，不静默假成功；穿透开启后请用<b>托盘菜单</b>「字幕条点击穿透」
+        解除。</p>
       <div class="row">
         <label class="chk"><input type="checkbox" id="setFloatChk"> 显示悬浮字幕条</label>
       </div>
@@ -1264,7 +1572,8 @@ footer span { white-space:nowrap; }
       <h2>全局快捷键 <span class="stateline" style="display:inline">B12 · 桌面版</span></h2>
       <p class="desc">全局生效：<b>任何窗口聚焦时</b>都能用，不用先切回本应用。<br>
         格式 <b>ctrl+alt+l</b>：修饰键 ctrl/alt/shift/win <b>至少一个</b> + 主键一个
-        （a-z / 0-9 / f1-f12）；大小写与顺序不限（win/meta/super 等价）。<br>
+        （a-z / 0-9 / f1-f12）；大小写与顺序不限（win/meta/super/cmd/command 等价，
+        macOS 上就是 ⌘ 键）。<br>
         热键被其它程序占用或权限不足时<b>自动降级为仅托盘菜单操作</b>，
         原因见下方状态行；不需要可整个关掉。</p>
       <div class="row">
@@ -1283,17 +1592,21 @@ footer span { white-space:nowrap; }
         <span class="stateline">悬浮字幕条显隐</span>
       </div>
       <p class="stateline" id="setHotkeyState">…</p>
+      <!-- 平台授权说明（服务端按平台下发 hk.hint）：macOS 上提醒先给「辅助功能」
+           授权；Windows 下恒为空串 → 保持 hidden，文案与布局都不变。 -->
+      <p class="stateline" id="setHotkeyHint" hidden></p>
     </div>
 
-    <!-- p3-3（B12）开机自启：开关的事实源是 HKCU 的 Run 注册表项**本身**，不是本地
-         标记——手工删掉启动项后重开设置页就如实变回未勾选；写入/删除失败在状态行
-         里显示原因（权限/策略拦截），不静默假成功。 -->
+    <!-- p3-3（B12）开机自启：开关的事实源是**系统启动项本身**，不是本地标记——
+         Windows = HKCU 的 Run 注册表值，macOS = ~/Library/LaunchAgents 里的 plist
+         （服务端 state()["key_path"] 按平台下发，见 autostart.py）。手工删掉启动项
+         后重开设置页就如实变回未勾选；写入/删除失败在状态行里显示原因
+         （权限/策略拦截），不静默假成功。 -->
     <div class="card" data-set-tab="system">
       <h2>开机自启 <span class="stateline" style="display:inline">B12 · 桌面版</span></h2>
       <p class="desc">开机后自动在<b>托盘</b>待命（不弹主窗；按快捷键或点托盘图标即可
         唤起，<b>Ctrl+Alt+L / Ctrl+Alt+S</b> 全局可用）。<br>
-        写的是<b>当前用户</b>的启动项 <code>HKCU\Software\Microsoft\Windows\
-        CurrentVersion\Run</code>，不需要管理员权限；关闭时只删本应用自己那一项，
+        写的是<b>当前用户</b>的启动项 <code id="setAutostartTarget">HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code>，不需要管理员权限；关闭时只删本应用自己那一项，
         不动其它程序的开机项。</p>
       <div class="row">
         <label class="chk"><input type="checkbox" id="setAutostartChk">
@@ -1381,7 +1694,12 @@ footer span { white-space:nowrap; }
         <b>导出目录 / 课程名 /</b>（如 <b>机器学习/机器学习_20261013.md</b>）——
         「对应的笔记本」的物理版，Obsidian / 同步盘直接可用；课程名为空或「未分类」
         的笔记仍落在你选的目录根下。<br>
-        不设置 / 点「改回浏览器下载」= 维持现在的浏览器下载行为。</p>
+        不设置 / 点「改回浏览器下载」= 维持现在的浏览器下载行为。<br>
+        <b>备份全部笔记（B10）</b>：把库里<b>全部</b>笔记打成一个
+        <b>LectureLens备份_日期.zip</b>（换电脑/保险用）——一次一份整库快照，
+        不受「一次最多 50 篇」的选包上限约束；<b>不含回收站</b>（已删的不进快照），
+        也<b>不含</b> AI 摘要 / 时间轴等派生物（要连摘要一起带走，请在那篇的预览页
+        单独导出）。</p>
       <p class="stateline" id="setExportState">…</p>
       <div class="row" id="setExportRow" hidden>
         <input type="text" id="setExportInput" spellcheck="false"
@@ -1397,6 +1715,39 @@ footer span { white-space:nowrap; }
         <button id="btnExportOpen" title="在文件管理器里打开导出目录（仅本机可用）">打开文件夹</button>
         <span class="spacer"></span>
         <button id="btnExportClear" title="取消自选位置，恢复浏览器下载">改回浏览器下载</button>
+      </div>
+      <!-- B10 一键打包备份：整库快照（换电脑/保险用）。与 A3「导出所选」同一端点，
+           只是 files 换成 all:true——服务端自己枚举全部笔记（.trash 与摘要等派生物
+           天然不在内），且**不受 50 篇的选包上限**约束。设了导出位置就落盘，
+           否则走浏览器下载（与其余导出一致）。 -->
+      <div class="row" style="margin-top:8px">
+        <button id="btnExportBackup"
+                title="把 transcripts/ 里的全部笔记打成一个 zip（换电脑/保险用；只含笔记正文，不含摘要/时间轴等派生物）">备份全部笔记</button>
+      </div>
+    </div>
+
+    <!-- B3 常用标签（预设 chips 自定义）：写 config.tags_presets（白名单键，即时生效）。
+         chips 复用 §8 的 .tagChip 本体与 tagProblem 前置校验（与服务端同一套规则）；
+         增删是**本地工作副本**，点「保存」才整表提交（与 §8 写端点同一条「全量替换」口径）。 -->
+    <div class="card" data-set-tab="notes">
+      <h2>常用标签 <span class="stateline" style="display:inline">B3 · 预设 chips</span></h2>
+      <p class="desc">这里维护的是<b>打标签时的预设 chips</b>——笔记库「🏷 打标签」面板、
+        预览页编辑面板、字幕页快捷面板<b>共用同一份</b>（服务端 config.tags_presets
+        是唯一来源，前端只保存最近一次响应）。<br>
+        出厂四标签是 <b>#重点 #考试 #没听懂 #待复习</b>；可以换成你自己常用的：
+        最多 <b>12</b> 个，每个 <b>≤16 字</b>，不能带空格 / 控制字符 / <b>#</b>
+        （与单篇打标签同一条校验）。<br>
+        点芯片上的 <b>×</b> 或在输入框回车增删，改完点<b>保存</b>即生效——下次打开面板
+        就是新 chips。<b>已经打上的标签不受影响</b>（标签写在笔记文件里，跟着笔记走）。</p>
+      <p class="stateline" id="setTagState">…</p>
+      <div id="setTagBar">
+        <span class="tagRow" id="setTagRow"></span>
+        <input type="text" id="setTagNew" maxlength="16" autocomplete="off"
+               placeholder="新标签（回车加入）">
+        <button id="btnSetTagAdd" title="加入这个标签（先在本地加入，点「保存」才写进配置）">＋ 添加</button>
+        <button id="btnSetTagSave" class="primary"
+                title="写入 config.tags_presets（全量替换，立即生效）">保存</button>
+        <button id="btnSetTagReset" title="恢复出厂四标签（立即写入配置）">恢复默认</button>
       </div>
     </div>
 
@@ -1625,6 +1976,24 @@ footer span { white-space:nowrap; }
       <button id="trashEmpty" class="danger" title="清空回收站：不可恢复">清空回收站</button>
       <span class="sp"></span>
       <button id="trashDone">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- B9 标签管理：全库重命名（合并同义标签）/ 删除一个标签。
+     列表数据 = 笔记库的 tag_counts（NB.tagCounts，与筛选栏同一份「选它能看到几篇」口径）；
+     写操作走 POST /api/notes/tags/manage——**服务端自己枚举** transcripts/ 直属的
+     lecture_*.md（不复用 tags/batch：那支收前端给的文件名，且有 200 篇上限）。
+     遮罩登记进 MASKS（焦点 / 背景 inert / Escape 三件套与其他弹窗同一套纪律）。 -->
+<div id="tagMask" class="dlgMask">
+  <div id="tagBox" class="dlgBox">
+    <button id="tagClose" class="dlgClose" title="关闭">✕</button>
+    <h2>标签管理</h2>
+    <p class="sub" id="tagSub">…</p>
+    <div class="dlgList" id="tagList"></div>
+    <div class="dlgFoot">
+      <span class="sp"></span>
+      <button id="tagDone">关闭</button>
     </div>
   </div>
 </div>
@@ -1978,6 +2347,16 @@ function connect() {
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
+    // —— B11 手机同屏防误触：连上后的**递手帧**（服务端按对端地址判定）——
+    // lan=true = 这台设备在局域网里（手机扫码进来的），给它 body.mobile → CSS 收起
+    // "控制这台电脑"的按钮（暂停/下课/切课/换模型/打标签）；本机窗口拿到 lan=false，
+    // 类被摘掉，界面零变化。放在**最前**并 return：不让它落到下面字幕/向导那几条分支
+    // （那些分支靠 m.en/m.zh/m.audio_ts 判空，未知帧本来也撞不动，这里再明确一层——
+    // 新增帧类型只在第一段处理，绝不给"未知帧恰好命中某条既有分支"留机会）。
+    if (m.type === 'hello') {
+      document.body.classList.toggle('mobile', !!m.lan);
+      return;
+    }
     if (m.type === 'partial') { showPartial(m); return; }  // 条目12③：预览行（final 覆盖）
     // p2-1：课程表变化（另一窗口改课/切课）→ 刷新侧栏与课程卡
     if (m.type === 'courses') {
@@ -1993,6 +2372,9 @@ function connect() {
         const sel = NB.sel;
         refreshNotes().then(() => { if (sel && NB.sel === sel) openNote(sel); });
       }
+      // B6：笔记增删改名/摘要落盘都可能改变"未归档"清单 → 顶栏提醒跟着刷新
+      //（在笔记库里 refreshNotes 已经顺带更新过，这里多一次也无害——本地文件扫描）
+      refreshPending();
       if ($('trashMask').classList.contains('on')) refreshTrash();   // §4：回收站开着就同步
       return;
     }
@@ -2040,10 +2422,13 @@ async function post(path) {
 // 命中关键词给一句可行动的中文；后端本身就是中文的（非法 model/切换进行中）原样展示；
 // 英文堆栈类走兜底（截断原文），绝不吞掉不看。数组保持 JSON 兼容（tests/test_error_map.py 解析回归）。
 // 注意顺序：cublas/cudnn 必须在 cuda 之前（错误串常同时含多个词，specific 优先）。
+// mlx = Apple Silicon 的 MLX 后端失败态（Mac 适配·第二批）——单列一条，别让 Mac
+// 用户只拿到英文兜底原文。
 const ERROR_MAP = [
   ["cublas", "GPU 库（cuBLAS）缺失或损坏——点「切小模型重试」改用 CPU，或重装 NVIDIA 运行库后重启服务"],
   ["cudnn", "GPU 库（cuDNN）缺失——点「切小模型重试」改用 CPU，或重装 NVIDIA 运行库后重启服务"],
   ["cuda", "GPU 初始化失败（CUDA）——点「切小模型重试」改用 CPU；检查显卡驱动后可再切回"],
+  ["mlx", "MLX 加速初始化失败（Apple Silicon）——点「切小模型重试」改用 CPU；或在终端跑 pip install mlx-whisper 后重启 LectureLens"],
   ["memory", "显存不足——点「切小模型重试」换小模型，或关闭其他占显存的程序（游戏/浏览器硬件加速）"],
   ["download", "模型下载失败——检查网络连接（首次使用需联网下载模型）后重试"],
   ["portaudio", "麦克风打开失败——可能被 Teams/Zoom 等占用，关闭后自动恢复；也可在系统设置换输入设备"]
@@ -2230,6 +2615,9 @@ loadDevices();
 
 // 轮询：状态徽章 + 电平条 + 暂停态 + 显存
 let status_ = {};
+// B8：插电小提醒只在**本会话**发一次（不落盘——它是"顺口提一句"，不是设置；
+// 用户看到就去插电了，下次开软件当然可以再提一次）。
+let batteryWarned = false;
 async function pollStatus() {
   try {
     status_ = await jfetch('/api/status');
@@ -2245,7 +2633,10 @@ async function pollStatus() {
     // 并把已渲染字幕按新词表重刷。首次进入 rev 为空串也会命中一次 → 开箱即高亮。
     if ((status_.glossary_rev || '') !== GLOSS.rev) refreshGlossaryTerms();
 
-    const devTxt = status_.device === 'cuda' ? 'GPU' : 'CPU';
+    // Mac 适配：设备徽章按后端实际说——cuda=GPU（NVIDIA）、mlx=MLX（Apple Silicon）、
+    // 其余=CPU。device 是服务端解析后的权威值，前端不自己猜平台。
+    const devTxt = status_.device === 'cuda' ? 'GPU'
+      : (status_.device === 'mlx' ? 'MLX' : 'CPU');
     const tier = tierOfModel(status_.model);   // 档位化：徽章显示档位名，原名进 tooltip
     $('chipDevice').textContent = status_.model
       ? `${devTxt}·${tier ? tier.name : status_.model}${status_.asr === 'ready' ? '' : ' · ' + status_.asr}` : '…';
@@ -2255,6 +2646,19 @@ async function pollStatus() {
     $('chipDevice').classList.toggle('warn', status_.asr !== 'ready');
     $('chipTranslate').textContent = 'translate: ' + (status_.translate || 'init');
     $('chipSeg').textContent = 'SEGMENTS ' + (status_.segments || 0);
+
+    // —— B8 插电小提醒：电池供电 + 正在用 GPU 模型 → 说一句（每会话一次）——
+    // 三个条件缺一不可：
+    //   ① `status_.on_battery === true`——**只有明确是电池**才提醒。服务端给的是三态
+    //      （true=电池 / false=插电 / null=非 Windows 或读不到），null 一律不动声色：
+    //      "说不准就不说话"比"猜一个"重要（插电的台式机被提醒去插电是最糟的误报）。
+    //   ② `device === 'cuda'`：CPU 推理本来就不吃电尖峰，提这句没有意义。
+    //   ③ `!batteryWarned`：本会话只说一次（用户看到就去插电了，反复弹 = 打扰）。
+    const onBattery = status_.on_battery === true;
+    if (!batteryWarned && onBattery && status_.device === 'cuda') {
+      batteryWarned = true;
+      showToast('检测到电池供电，建议插电获得满速', 'warn');
+    }
 
     // 积压徽章：有积压才显示，>2 段黄色警示（后端 >5 段会自动追赶丢弃）
     const bl = status_.backlog || 0;
@@ -2338,6 +2742,7 @@ let _modalOpener = null;
 // 弹窗遮罩白名单（inert 与 Escape 共用一份）：新增弹窗只改这一行——
 // 漏一个的后果是「背景 inert 把弹窗自己也关在门外」或「Escape 关不掉」。
 const MASKS = ['aboutMask', 'wizardMask', 'moveMask', 'editMask', 'renameMask', 'trashMask',
+               'tagMask',    // B9：标签管理（重命名/删除，行内编辑在同一弹窗里）
                'sumMask',    // §6：摘要编辑弹窗（同一套焦点/inert/Escape 纪律）
                'endMask',    // §5：下课归档步骤面板
                'lanMask'];   // §7：手机同屏面板（二维码/开关/排查指引）
@@ -2379,6 +2784,20 @@ function activeMask() {
   return MASKS.map((id) => $(id)).find((m) => m && m.classList.contains('on'));
 }
 
+/** 笔记库键盘流的**三道闸**（A1 的 Ctrl+A 与 B7 的 J/K/Enter/Del 同一口径）：
+ *  ① 只在笔记库视图（上课态/设置页有自己的按键语义）；② 有弹窗开着（背景正 inert，
+ *  别在背后动选择）；③ 焦点在输入控件里（在检索框里打字不能被抢走）。
+ *  true = 这个按键归键盘流。注意：Ctrl+A 那段的三道闸是**内联**写的（
+ *  tests/test_note_select_all.py 用 split 把那段原文夹住钉死），故这里不回头改它。 */
+function notesKeyAllowed() {
+  if (!document.body.classList.contains('view-notes')) return false;
+  if (activeMask()) return false;
+  const el = document.activeElement;
+  if (el && (el.isContentEditable
+             || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return false;
+  return true;
+}
+
 document.addEventListener('keydown', (e) => {
   // —— 波次一 A1：Ctrl+A = 全选当前列表（**只在笔记库视图生效**）——
   // 三道闸门，任一不满足就放行给浏览器默认：① 不在笔记库视图（上课态的 Ctrl+A
@@ -2393,6 +2812,39 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     pickAllVisible();
     return;
+  }
+  // —— 波次二 B7：键盘整理流（J/K 或 ↓/↑ 移动焦点、Enter 打开、Delete 删除）——
+  // 与 Ctrl+A 同一套三道闸（notesKeyAllowed）。三个键各自"吃到才 preventDefault"：
+  // 列表空/没选中时按键原样交回浏览器（方向键照常滚页）。不碰上面 Ctrl+A 与下面
+  // Escape 两条链——它们在同一个处理器里，顺序与语义都保持不变。
+  const plainKey = !e.ctrlKey && !e.metaKey && !e.altKey;
+  const moveKey = (e.key === 'j' || e.key === 'J' || e.key === 'k' || e.key === 'K'
+                   || e.key === 'ArrowDown' || e.key === 'ArrowUp');
+  if (moveKey && plainKey && notesKeyAllowed()) {
+    const down = (e.key === 'j' || e.key === 'J' || e.key === 'ArrowDown');
+    if (focusNoteRow(down ? 1 : -1)) {      // 列表空 → false → 交回浏览器
+      e.preventDefault();
+      return;
+    }
+  }
+  if (e.key === 'Delete' && plainKey && notesKeyAllowed()) {
+    const name = selNoteName();
+    if (name) {                             // 走既有确认框与「可恢复」文案（delNote）
+      e.preventDefault();
+      delNote([name]);
+      return;
+    }
+  }
+  if (e.key === 'Enter' && plainKey && notesKeyAllowed()) {
+    // 焦点已经在按钮/链接上 → **不拦**：原生激活按的就是"这一行"（行按钮自己的
+    // onclick 就是 openNote），拦下来反而会开两次/开错那一篇。只有焦点不在可点
+    // 元素上（刚进笔记库、点了空白处）时，这里才代为打开 NB.sel；没选中就什么都不做。
+    const act = document.activeElement;
+    if ((!act || !['BUTTON', 'A'].includes(act.tagName)) && NB.sel) {
+      e.preventDefault();
+      openNote(NB.sel);
+      return;
+    }
   }
   if (e.key !== 'Escape') return;
   const mask = activeMask();
@@ -2507,7 +2959,7 @@ function wizNoteZh(zh, err) {
   if (!wiz.spoke || wiz.seg === null) return;
   const cap = $('wizCap');
   const zhEl = document.createElement('span');
-  zhEl.style.color = err ? 'var(--text-2)' : 'var(--gold)';
+  zhEl.style.color = err ? 'var(--text-2)' : 'var(--zh)';   // B15：中文色走 --zh（深色=gold，浅色=深蓝）
   zhEl.textContent = ' ｜ 译文：' + zh;
   cap.appendChild(zhEl);
 }
@@ -2646,6 +3098,33 @@ function setActiveTab(tab, save = true) {
   return want;
 }
 
+// —— B15：主题三选（深色 / 浅色 / 跟随系统）——
+// 真正的「应用」（挂 html[data-theme]）在 <head> 的引导脚本里（window.LL_THEME，
+// 必须抢在首帧前，见该脚本的注释）；这里只做设置页控件：读当前值点选中态，
+// 点一下 → LL_THEME.set()（写 localStorage 键 ll_theme + 立即生效）→ 重画选中态。
+// **不写 config.json**：主题是每台设备的显示偏好，手机端各记各的，服务端零改动。
+const THEME_MODES = ['dark', 'light', 'auto'];
+const THEME_LABEL = { dark: '深色', light: '浅色', auto: '跟随系统' };
+const themeBtnId = (mode) => 'theme' + mode[0].toUpperCase() + mode.slice(1);
+
+function renderThemeRow() {
+  // 引导脚本没跑起来（极端情况）也不抛错：按默认深色点亮即可
+  const cur = (window.LL_THEME && window.LL_THEME.get && window.LL_THEME.get()) || 'dark';
+  for (const m of THEME_MODES) {
+    const b = $(themeBtnId(m));
+    if (!b) continue;
+    b.classList.toggle('on', m === cur);
+    b.setAttribute('aria-checked', m === cur ? 'true' : 'false');
+  }
+}
+
+function setThemeMode(mode) {
+  if (!(window.LL_THEME && window.LL_THEME.set)) return;   // 兜底：不动界面，绝不抛错
+  const cur = window.LL_THEME.set(mode);
+  renderThemeRow();
+  showToast(`主题已切换：${THEME_LABEL[cur] || cur}`, 'ok');
+}
+
 function openWorkbench(view, opts) {
   document.body.classList.toggle('settings-on', !!view);
   document.body.classList.toggle('view-notes', view === 'notes');
@@ -2658,6 +3137,8 @@ function openWorkbench(view, opts) {
     refreshNotes();
     refreshCourses();          // 课程徽章/筛选项与侧栏同步
   } else if (view === 'glossary') {
+    // B13：包卡区的「安装到哪门课」下拉与侧栏/课程卡同源 → 课程先到，再画包卡
+    refreshCourses().then(() => refreshPacks());
     refreshGlossary();
   } else if (view === 'settings') {
     // B12：带 tab 进来 = 深链（并把该格记成"上次分区"）；不带 = 回到上次那格
@@ -2702,7 +3183,8 @@ let COURSES = { courses: [], active: null, active_name: '未分类',
 // 没有」为唯一判据，这个缝就不存在了。
 // 代价：请求失败（非空即错）时不会改口成空状态，界面停在「载入中…」+ 一条错误
 // toast；这对用户是更诚实的表达——我们确实没拿到数据。
-const LOADED = { courses: false, notes: false, glossary: false, models: false };
+const LOADED = { courses: false, notes: false, glossary: false, models: false,
+                 packs: false };   // B13：术语库包列表（载入态与空态必须分开）
 
 function emptySlot(box, cls, key, emptyText) {
   const e = document.createElement('div');
@@ -2735,7 +3217,7 @@ function renderCourseSidebar() {
     b.title = cur ? `当前课程：${name}` : `设为当前课程：${name}`;
     const d = document.createElement('span');
     d.className = 'cdot';
-    d.style.background = color;
+    d.style.setProperty('--dot-c', color);   // B15：色值交给 CSS 按主题混（--dot-w/--dot-mix）
     const n = document.createElement('span');
     n.className = 'cname';
     n.textContent = name;
@@ -2831,7 +3313,7 @@ function courseRow(c) {
   for (const col of COURSES.palette) {
     const b = document.createElement('button');
     b.className = 'cSwDot' + (col === c.color ? ' cur' : '');
-    b.style.background = col;
+    b.style.setProperty('--dot-c', col);   // B15：同上，颜色即内容，浅色下压深才看得见
     b.title = `换色：${col}`;
     b.onclick = () => saveCourse(c.id, { color: col });
     sw.appendChild(b);
@@ -3051,6 +3533,68 @@ function trackNoteTasks() {
   }
 }
 
+// —— B6 未归档轻提醒（顶栏 chips 里那条可点的）——
+// 判据在服务端算（notes.pending_payload → /api/notes/list 的 pending 段）：
+// 近 2 天、**有正文**、没有摘要的笔记。前端只负责呈现、点击与收起。
+//   · **正在记录的这篇不算**：它当然还没有摘要（否则每次开课都顶着一条"未归档"）；
+//   · 点过一次即收起，只在本会话有效（pendingMuted，不落盘）——用户的反馈是
+//     "知道了"，不是"每次开课都提醒"；
+//   · 文案只承诺**摘要**这一个维度：本仓没有导出记录，"未导出"口径不做（不说没把握的话）。
+let pendingMuted = false;
+let pendingItems = [];        // 最近一次拿到的待归档项（点击时拼 toast 用）
+
+function renderPendingChip(data) {
+  const el = $('chipPending');
+  if (!el) return;
+  const p = (data && data.pending) || {};
+  const cur = (data && data.current) || null;
+  pendingItems = (p.notes || []).filter((n) => n && n.name && n.name !== cur);
+  const n = pendingItems.length;
+  el.hidden = n === 0 || pendingMuted;
+  el.textContent = `${n} 篇新笔记未归档 · 点此处理`;
+  el.title = n
+    ? `近 ${p.days || 2} 天有 ${n} 篇笔记还没有摘要：\n`
+      + pendingItems.map((x) => `· ${x.date}`).join('\n') + '\n点一下去笔记库处理'
+    : '';
+}
+
+/** 点击后的去向：笔记库**没有**"未归档"这个筛选（筛选只有 检索/课程/标签 三条），
+ *  故走兜底路径——跳列表 + 一条列出篇名的 toast（日期标签 = 列表行上认得出的标识）。
+ *
+ *  评审1③ 修复：点击时**先把三条筛选清掉**。理由：未归档计数是"整库口径"（服务端不受
+ *  检索/课程/标签影响），而列表是筛选后的——不清筛选就会出现"toast 说有 3 篇，列表里
+ *  却只有 1 篇别的课"（实测：课程筛选=别的课 → 列表 1 篇、toast 列 3 篇、其中 2 篇根本
+ *  看不见，toast 4 秒后消失＝唯一的线索也没了）。清筛选是"带我去看它们"这句承诺的
+ *  最小代价；清没清写进 toast（有筛选才提这句，没筛选时别提噪音）。 */
+function pendingToastText(cleared) {
+  const labels = pendingItems.slice(0, 3).map((x) => String(x.date || '').replace(/^\d{4}-/, ''));
+  const more = pendingItems.length > labels.length ? ` 等 ${pendingItems.length} 篇` : '';
+  const how = pendingItems.length > 1
+    ? '（打开任一篇，在预览页点「摘要」即可归档）'      // 多篇并列时不定指"这一篇"
+    : '（打开它，在预览页点「摘要」即可归档）';
+  return `未归档：${labels.join('、')}${more}${cleared ? '｜已清掉筛选，方便你找到它们' : ''}${how}`;
+}
+
+$('chipPending').onclick = () => {
+  pendingMuted = true;                 // 本会话收起（不落盘）
+  $('chipPending').hidden = true;
+  // 清筛选（值 + 三个控件一起，别让界面与 NB 状态对不上）——见 pendingToastText 注释
+  const hadFilter = !!(NB.query || NB.course || NB.tag);
+  NB.query = ''; NB.course = ''; NB.tag = '';
+  $('nbSearch').value = '';
+  $('nbCourseFilter').value = '';
+  $('nbTagFilter').value = '';
+  openWorkbench('notes');              // 内含 refreshNotes()：读的就是清掉后的 NB.*
+  if (pendingItems.length) showToast(pendingToastText(hadFilter), 'ok');
+};
+
+/** 只拉 pending 段（顶栏提醒用），不碰笔记库的渲染状态。启动、笔记事件、
+ *  下课归档收尾各调一次——不做定时轮询（那是每 2s 全量重扫笔记，纯浪费）。 */
+async function refreshPending() {
+  const r = await jfetch('/api/notes/list');
+  if (r && r.ok) renderPendingChip(r);
+}
+
 async function refreshNotes() {
   const p = new URLSearchParams();
   if (NB.query) p.set('q', NB.query);
@@ -3062,6 +3606,7 @@ async function refreshNotes() {
   if (!r || !r.ok) { renderNoteList(); showToast((r && r.error) || '读取笔记列表失败', 'err'); return; }
   NB.notes = r.notes || [];
   NB.current = r.current;
+  renderPendingChip(r);                      // B6：同一份响应顺手更新顶栏提醒（不多拉一次）
   NB.tagCounts = r.tag_counts || [];         // §8：全局标签清单+计数（筛选栏用）
   TAG_PRESETS = r.presets || TAG_PRESETS;    // A2：预设标签随列表下发（服务端为准）
   // —— 波次一 A1：选择集**硬清空**（取代 §2 的「收敛到可见项」）——
@@ -3124,6 +3669,15 @@ function renderTagFilter() {
 
 function renderNoteList() {
   const box = $('nbList');
+  // —— B11 评审修复②：重画前记住"焦点在哪一行"，画完还回去 ——
+  // 为什么必须还：Ctrl+A → pickAllVisible → rerenderPicked → 本函数会把整张列表的
+  // DOM 重建，正聚焦的行按钮被销毁 → activeElement 掉回 body：焦点环消失，紧随其后的
+  // J/K 会从第一行重来（B7 的"从当前行继续走"当场断掉，评审实测 focusAfter=''）。
+  // 只在**焦点原本就落在行按钮上**时还原：焦点在检索框/批量条/别处时一律不碰——
+  // 否则每次后台刷新（轮询/别窗口改笔记）都会把用户从输入框里拽出来，那是更糟的回归。
+  const act = document.activeElement;
+  const keepRow = (act && act.classList && act.classList.contains('nbRow'))
+    ? act.dataset.name : null;
   box.innerHTML = '';
   $('nbCount').textContent = NB.notes.length ? `${NB.notes.length} 篇` : '';
   if (!NB.notes.length) {
@@ -3134,6 +3688,11 @@ function renderNoteList() {
     return;
   }
   for (const n of NB.notes) box.appendChild(noteRow(n));
+  if (keepRow) {
+    const again = [...box.querySelectorAll('button.nbRow')]
+      .find((b) => b.dataset.name === keepRow);
+    if (again) again.focus({ preventScroll: true });   // 焦点自带的滚动会跳，故不滚
+  }
 }
 
 function nbFlag(label, on) {
@@ -3141,6 +3700,29 @@ function nbFlag(label, on) {
   s.className = 'nbFlag' + (on ? '' : ' no');
   s.textContent = label + (on ? '✓' : '·');
   s.title = label + (on ? '：已生成' : '：还没有');
+  return s;
+}
+
+/** B4 体量徽章的「字数」短语：量级越大越粗（四位数取整到百、上万给一位小数"万"）。
+ *  words = EN+ZH 字符数（notes.parse）——中文按字、英文按字符，本来就不是精确的
+ *  「字数」，故一律冠「约」；精确值放 title，想看的人悬停即可。 */
+function nbWordsPhrase(w) {
+  const r = w < 1000 ? w : Math.round(w / 100) * 100;           // 1504 → 1500
+  if (r >= 100000) return `约 ${Math.round(r / 10000)} 万字`;    // 25 万：小数位已是噪音
+  if (r >= 10000) return `约 ${(r / 10000).toFixed(1)} 万字`;    // 23905 → 约 2.4 万字
+  return `约 ${r} 字`;
+}
+
+/** B4 体量徽章：一眼看出这篇多大（段数 + 字数）。段数与预览页头部「N 段 · 已译 M」
+ *  同源（都取 notes.index 的 segments），文案也对齐它，只是把「已译」换成体量。 */
+function nbSize(n) {
+  const s = document.createElement('span');
+  s.className = 'nbFlag size';
+  const seg = n.segments || 0;
+  const w = n.words || 0;
+  s.textContent = w > 0 ? `${seg} 段 · ${nbWordsPhrase(w)}` : `${seg} 段`;
+  s.title = w > 0 ? `体量：${seg} 段 · EN+ZH 共 ${w} 字符`
+                  : `体量：${seg} 段（暂无正文）`;
   return s;
 }
 
@@ -3163,6 +3745,7 @@ function noteRow(n) {
   const b = document.createElement('button');
   b.className = 'nbRow' + (NB.sel === n.name ? ' cur' : '');
   b.title = n.name + (n.name === NB.current ? '（正在记录）' : '');
+  b.dataset.name = n.name;    // B7：键盘流靠它把"焦点所在的行"对回笔记名（不拼选择器）
   const top = document.createElement('div');
   top.className = 'nbRowTop';
   const d = document.createElement('span');
@@ -3174,7 +3757,7 @@ function noteRow(n) {
   c.title = '课程：' + n.course;
   const f = document.createElement('span');
   f.className = 'nbFlags';
-  f.append(nbFlag('摘要', n.has_summary), nbFlag('卡组', n.has_deck));
+  f.append(nbSize(n), nbFlag('摘要', n.has_summary), nbFlag('卡组', n.has_deck));
   if ((n.tags || []).length) {
     const t = document.createElement('span');
     t.className = 'nbTagBadge';
@@ -3577,6 +4160,61 @@ async function exportPickedZip() {
   }
 }
 
+// —— B10 一键打包备份（设置页「导出」卡）：整库快照 → 一个 zip ——
+// 与 A3「导出所选」**同一个端点、同一套两种模式**（设了导出位置 → 落盘 + toast 给
+// 「打开文件夹」；没设 → 浏览器下载），只是请求体从 files 换成 all:true：
+// 由服务端枚举全部笔记（.trash 与摘要等派生物天然不在内），**且不受 50 篇选包上限**。
+// 备份是只读动作、不动任何选择集（与 A3 同口径）。
+let backupBusy = false;     // 提交中：防连点（整库打包 + 落盘在慢机上会有窗口）
+
+async function exportAllBackup() {
+  if (backupBusy) return;
+  const btn = $('btnExportBackup');
+  backupBusy = true;
+  if (btn) btn.disabled = true;
+  try {
+    let r = null;
+    try {
+      r = await fetch(apiURL('/api/notes/export/batch'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ all: true, fmt: 'md' }) });
+    } catch (e) {
+      r = null;                        // 服务不可达：下面统一报错（绝不静默无反应）
+    }
+    if (!r) { showToast('备份失败：服务无响应', 'err'); return; }
+    if (!r.ok) {
+      let msg = `备份失败（HTTP ${r.status}）`;
+      try {
+        const j = await r.json();
+        if (j && j.error) msg = j.error;
+      } catch (e) { /* 非 JSON 错误体：保留默认文案 */ }
+      showToast(msg, 'err');
+      return;
+    }
+    if ((r.headers.get('content-type') || '').includes('application/json')) {
+      const j = await r.json();        // 落盘模式
+      if (!j.ok) { showToast(j.error || '备份失败', 'err'); return; }
+      showToast(`已备份全部 ${j.count} 篇 → ${j.path}`, 'ok',
+                { label: '打开文件夹', fn: openExportDir });
+      return;
+    }
+    const blob = await r.blob();       // 下载模式：名字以服务端 Content-Disposition 为准
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = exportFilename(r, 'LectureLens备份', 'zip');
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 5000);
+    showToast(`已备份全部笔记（${a.download}，${Math.round(blob.size / 1024)} KB）`, 'ok');
+  } finally {
+    backupBusy = false;
+    if (btn) btn.disabled = false;
+  }
+}
+$('btnExportBackup').onclick = () => exportAllBackup();
+
 // —— §5 下课一键归档 ——
 // 一键给一节课收尾：暂停收音 → 生成摘要（已有则跳过、无 API key 明说跳过、正在跑则
 // 等完成）→ 导出这篇笔记（§3：设了导出位置直接落盘，未设置走浏览器下载）。
@@ -3840,6 +4478,7 @@ async function endClass() {
     $('btnEndClass').disabled = false;
     $('endDone').disabled = false;
     endClassSummaryToast();      // 汇总 toast（面板被关掉时的唯一可见结果）
+    refreshPending();            // B6：这篇刚生成摘要 → 顶栏"未归档"提醒跟着更新
   }
 }
 
@@ -3878,6 +4517,37 @@ let moveBusy = false;      // 提交中：防连点（慢网/手机端会有窗�
 // 一篇都没选时就能用（否则没法开始多选）。样式沿用 .nbPick（accent-color=gold）。
 function visibleNames() {
   return NB.notes.map((n) => n.name);
+}
+
+// —— 波次二 B7：键盘整理流的选中移动（J/K 或 ↓/↑）——
+// 「选中行」对键盘用户就是**焦点所在的那一行**：J/K 只移焦点（行按钮自带聚焦环），
+// Enter 才真正打开（走该行自己的 onclick → openNote）。为什么不直接把 NB.sel 挪过去：
+// NB.sel 一变就会拉一次 /api/notes/preview（按住 J 连翻十篇 = 十次请求 + 十次重画），
+// 而翻看不等于打开。到端点**停住**、不绕回（翻过头比"到头了"更让人迷路）。
+
+/** 当前"选中行"的笔记名：焦点在行按钮上就是那一行（刚用 J/K 走过），
+ *  否则回落 NB.sel（鼠标点过 / 预览里打开的那篇）。 */
+function selNoteName() {
+  const el = document.activeElement;
+  if (el && el.tagName === 'BUTTON' && el.classList.contains('nbRow') && el.dataset.name)
+    return el.dataset.name;
+  return NB.sel;
+}
+
+/** J/K（↓/↑）在当前列表里移动焦点 → 移动成功返回 true（列表空 = false，
+ *  把方向键交回浏览器照常滚页）。行到行的定位走 button.nbRow 上的 data-name
+ *  （逐项比对，不拼 CSS 选择器——笔记名里有引号/中文，拼接要转义，没必要）。 */
+function focusNoteRow(delta) {
+  const list = [...$('nbList').querySelectorAll('button.nbRow')];
+  if (!list.length) return false;
+  const cur = list.findIndex((b) => b === document.activeElement);
+  const from = cur >= 0 ? cur : list.findIndex((b) => b.dataset.name === NB.sel);
+  const next = from < 0 ? (delta > 0 ? 0 : list.length - 1)
+                        : Math.min(list.length - 1, Math.max(0, from + delta));
+  const el = list[next];
+  el.focus({ preventScroll: true });   // 焦点自带的滚动会跳得比我们要的远，故先聚焦
+  el.scrollIntoView({ block: 'nearest' });
+  return true;
 }
 
 /** 三态全选 + 反选的可用性，统一跟着「选择集 / 当前列表」现算现画。 */
@@ -3955,7 +4625,8 @@ function renderMoveList() {
     b.title = isCur ? `当前归属：${label}` : `移到「${label}」`;
     const d = document.createElement('span');
     d.className = 'cdot';
-    d.style.background = color;      // 课程色只做 8px 圆点身份标识（同侧栏口径）
+    d.style.setProperty('--dot-c', color);   // 课程色只做 8px 圆点身份标识（同侧栏口径；
+                                             // B15：不直接写 background，交 CSS 按主题混）
     const n = document.createElement('span');
     n.textContent = label;           // 课程名是用户输入：一律 textContent
     b.append(d, n);
@@ -4620,6 +5291,288 @@ $('nbTagFilter').onchange = () => {
 };
 
 $('nbTrashBtn').onclick = () => openTrash();
+
+// —— B3 常用标签：设置页「常用标签」卡（编辑 config.tags_presets）——
+// 增删只动**本地工作副本** SET_TAGS，点「保存」才整表提交（POST /api/config，
+// 全量替换——与 §8 标签写端点同一条口径：重不重要靠配置，不靠追加语义）。
+// 前端预校验直接复用 tagProblem()（与服务端 notes.normalize_tag 同一套规则）：
+// 这里拦下的错法，服务端一定也拒；服务端仍是唯一权威（它 400 就照旧如实回滚）。
+const SET_TAGS_MAX = 12;        // 与服务端 main.TAG_PRESETS_MAX 同值（改一处要改两处）
+let SET_TAGS = [];              // 工作副本（设置页打开时从 SETCFG 播种）
+let SET_TAGS_DIRTY = false;     // 有未保存改动 → 渲染/刷新不得覆盖工作副本
+
+/** 从 SETCFG（服务端快照）播种工作副本；**不覆盖**正在编辑的副本（见 renderSetTagsCard）。
+ *  种子走 cfgTagPresets()：非数组（手改坏的 config.json）→ 回落前端兜底那份，绝不用
+ *  `[...'重点']` 把它拆成单字（评审修复）。 */
+function renderSetTagsCard() {
+  if (!SET_TAGS_DIRTY) {
+    SET_TAGS = cfgTagPresets();
+  }
+  renderSetTags();
+}
+
+/** config 里的 tags_presets → 可用数组（**只认数组**，否则回落前端兜底那份）。
+ *
+ *  服务端读侧（main.tag_presets）对「手改坏的 config.json」是**整体**回落出厂四值，
+ *  前端这份回填必须同口径——否则 `[...'重点']` 会静默变成 ['重','点']（点「保存」就把
+ *  这堆单字写进配置），而 `'重点'.map` 更会抛 TypeError，把 renderSettings() 后半段
+ *  （连接/系统分区的回填）整段掀掉（评审修复）。 */
+function cfgTagPresets() {
+  const raw = SETCFG.tags_presets;
+  if (Array.isArray(raw) && raw.length) return raw.slice();
+  const fb = TAG_PRESETS;
+  return Array.isArray(fb) && fb.length ? fb.slice() : [];
+}
+
+function renderSetTags() {
+  const box = $('setTagRow');
+  box.innerHTML = '';
+  for (const t of SET_TAGS) {
+    const el = tagChipEl(t, true, () => removeSetTag(t));   // 选中态 gold-dim/gold（§六）
+    el.title = `点一下移除 #${t}`;
+    box.appendChild(el);
+  }
+  const saved = cfgTagPresets().map((t) => '#' + t).join(' ');
+  $('setTagState').textContent = SET_TAGS.length
+    ? `${SET_TAGS.length}/${SET_TAGS_MAX} 个 · 当前生效：${saved}`
+      + (SET_TAGS_DIRTY ? ' · 有未保存的改动（点「保存」写入）' : '')
+    : '至少要留一条（先添加再删旧的）';
+  $('btnSetTagSave').disabled = !SET_TAGS_DIRTY || !SET_TAGS.length;
+}
+
+function addSetTag() {
+  const val = $('setTagNew').value.trim().replace(/^#+/, '').trim();
+  if (!val) return;
+  const bad = tagProblem(val);          // §8 那套（长度/空白/控制字符/#/零宽）
+  if (bad) { showToast(bad, 'err'); return; }
+  if (SET_TAGS.includes(val)) { showToast(`#${val} 已经在常用标签里了`, 'warn'); return; }
+  if (SET_TAGS.length >= SET_TAGS_MAX) {
+    showToast(`最多 ${SET_TAGS_MAX} 个常用标签（先删掉不用的）`, 'err');
+    return;
+  }
+  SET_TAGS.push(val);
+  SET_TAGS_DIRTY = true;
+  $('setTagNew').value = '';
+  renderSetTags();
+  $('setTagNew').focus();
+}
+
+function removeSetTag(tag) {
+  if (SET_TAGS.length <= 1) {
+    showToast('至少要留一条常用标签（一个都没有的预设区没法用）', 'warn');
+    return;
+  }
+  SET_TAGS = SET_TAGS.filter((t) => t !== tag);
+  SET_TAGS_DIRTY = true;
+  renderSetTags();
+}
+
+/** 提交整表（全量替换）。label = 保存/恢复默认（toast 文案）；失败**回滚到服务端真值**。 */
+async function saveSetTags(list, label) {
+  if (!list.length) { showToast('至少要留一条常用标签', 'err'); return false; }
+  let r = null;
+  try {
+    r = await jfetch('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags_presets: list }) });
+  } catch (e) {
+    r = null;                      // 服务不可达：下面统一报错（绝不静默无反应）
+  }
+  if (!r || !r.ok) {
+    showToast((r && r.error) || `${label}失败：服务无响应`, 'err');
+    // 回滚到服务端真值（与 glPost/saveSettings 同款纪律：别让界面停在一份没存上的清单）
+    let cfg = null;
+    try { cfg = await jfetch('/api/config'); } catch (e) { cfg = null; }
+    if (cfg) SETCFG = cfg;
+    SET_TAGS_DIRTY = false;
+    renderSetTagsCard();
+    return false;
+  }
+  const saved = r.changed.tags_presets || list;
+  SETCFG.tags_presets = saved;
+  SET_TAGS = [...saved];
+  SET_TAGS_DIRTY = false;
+  TAG_PRESETS = saved;             // 前端缓存：各面板 chips 立即跟到新值（不等下次列表刷新）
+  renderSetTags();
+  showToast(`${label}：` + saved.map((t) => '#' + t).join(' '), 'ok');
+  return true;
+}
+
+$('btnSetTagAdd').onclick = () => addSetTag();
+$('btnSetTagSave').onclick = () => saveSetTags(SET_TAGS, '常用标签已保存');
+$('btnSetTagReset').onclick = () => saveSetTags(
+  ['重点', '考试', '没听懂', '待复习'], '已恢复出厂四标签');
+$('setTagNew').onkeydown = (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); addSetTag(); }
+};
+
+// —— B9 标签管理：全库重命名（合并同义标签）/ 删除一个标签 ——
+// 列表数据 = **不带筛选**地现拉一次 /api/notes/list 的 tag_counts。为什么不用侧栏那份
+// NB.tagCounts：它是「当前课程/检索筛选下」的 facet 口径（"选它能看到几篇"），而这一页
+// 做的是**全库**操作（端点也不受筛选影响）——混用会出现两种错：筛选后只看到本课程的
+// 标签（别的课独有的标签根本管不到），以及二次确认里"3 篇将被更新"其实改了全库 40 篇
+// （那句提示是安全提示，少报比不报更糟）。
+// 写操作**不送文件名**：服务端自己扫 transcripts/ 直属 lecture_*.md
+// （POST /api/notes/tags/manage）——「全库」这件事只有服务端数得准，且该端点
+// 不受 tags/batch 的 200 篇上限约束（全库改名正是会撞那个上限的操作）。
+// 前端预校验复用 tagProblem()（与服务端 notes.normalize_tag 同一套规则）。
+let tagManageBusy = false;
+let tagRenameOld = null;              // 正在内联重命名的那一行（null = 无）
+let tagManageCounts = null;           // 全库标签清单（null = 还没拉到 / 拉失败）
+
+function openTagManage() {
+  tagRenameOld = null;
+  tagManageCounts = null;             // 每次打开重拉（别的窗口可能刚改过标签）
+  renderTagManage();
+  openModal($('tagMask'));            // 统一入口：焦点进弹窗 + 背景 inert + Escape 可关
+  loadTagManageCounts();
+}
+
+async function loadTagManageCounts() {
+  let r = null;
+  try {
+    r = await jfetch('/api/notes/list');      // 不带任何筛选 = 全库
+  } catch (e) {
+    r = null;                                 // 服务不可达：下面如实说，不留"空库"假象
+  }
+  if (!r || !r.ok) {
+    tagManageCounts = [];
+    $('tagSub').textContent = '标签清单加载失败（服务无响应）——关掉本窗口再打开重试。';
+    return;
+  }
+  tagManageCounts = r.tag_counts || [];
+  renderTagManage();
+}
+
+function tagManageRows() {
+  return tagManageCounts || [];
+}
+
+function renderTagManage() {
+  const list = tagManageRows();
+  $('tagSub').textContent = tagManageCounts === null
+    ? '正在读取全库标签…'
+    : (list.length
+        ? `共 ${list.length} 个标签（数字 = 全库用了它的笔记数，不受上面筛选影响）。`
+          + '重命名会把全库的旧名改成新名（某篇本来就有新名时合并成一条）；'
+          + '删除 = 从所有笔记去掉它。两者都只动笔记头的标签行，正文不受影响。'
+        : '还没有任何标签——先在笔记上打几个标签，再回来管理。');
+  const box = $('tagList');
+  box.innerHTML = '';
+  for (const it of list) box.appendChild(tagManageRow(it.tag, it.count));
+}
+
+function tagManageRow(tag, count) {
+  const row = document.createElement('div');
+  row.className = 'tRow';
+  const name = document.createElement('span');
+  name.className = 'tName';
+  name.textContent = '#' + tag;      // 一律 textContent：标签名是用户输入
+  name.title = '#' + tag;
+  const meta = document.createElement('span');
+  meta.className = 'tMeta';
+  meta.textContent = `${count} 篇`;
+  row.append(name, meta);
+  if (tagRenameOld === tag) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = 'tagRenameInput';
+    input.maxLength = 16;
+    input.value = tag;
+    input.placeholder = '新标签名';
+    input.title = `新标签名（≤16 字符；回车确认。确认后全库 ${count} 篇将被更新）`;
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); confirmTagRename(tag, input.value); }
+      else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();          // Escape = 退出内联编辑，不关整个弹窗
+        tagRenameOld = null;
+        renderTagManage();
+      }
+    };
+    const go = document.createElement('button');
+    go.textContent = '确认';
+    go.title = `把全库的 #${tag} 改名（${count} 篇将被更新）`;
+    go.onclick = () => confirmTagRename(tag, input.value);
+    const cancel = document.createElement('button');
+    cancel.textContent = '取消';
+    cancel.onclick = () => { tagRenameOld = null; renderTagManage(); };
+    row.append(input, go, cancel);
+    setTimeout(() => { input.focus(); input.select(); }, 0);   // 出现即可直接改
+  } else {
+    const ren = document.createElement('button');
+    ren.textContent = '重命名';
+    ren.title = `把全库的 #${tag} 改成新名字（合并同义标签就用它）`;
+    ren.onclick = () => { tagRenameOld = tag; renderTagManage(); };
+    const del = document.createElement('button');
+    del.className = 'danger';
+    del.textContent = '删除';
+    del.title = `从全库 ${count} 篇笔记里去掉 #${tag}（正文与其它标签不受影响）`;
+    del.onclick = () => askTagDelete(tag, count);
+    row.append(ren, del);
+  }
+  return row;
+}
+
+async function askTagDelete(tag, count) {
+  if (!confirm(`把 #${tag} 从库里所有笔记上删除？\n\n`
+               + `${count} 篇笔记会移除这个标签（正文与其它标签不受影响）。`)) return;
+  await runTagManage('delete', tag, null);
+}
+
+async function confirmTagRename(oldTag, rawNew) {
+  const next = (rawNew || '').trim().replace(/^#+/, '').trim();
+  if (!next) { showToast('新标签名不能为空', 'err'); return; }
+  const bad = tagProblem(next);       // 与服务端 normalize_tag 同一套规则
+  if (bad) { showToast(bad, 'err'); return; }
+  if (next === oldTag) { tagRenameOld = null; renderTagManage(); return; }
+  const n = (tagManageRows().find((x) => x.tag === oldTag) || {}).count || 0;
+  if (!confirm(`把全库的 #${oldTag} 改名为 #${next}？\n\n`
+               + `${n} 篇笔记将被更新；某篇本来就有 #${next} 时会合并成一条。`)) return;
+  await runTagManage('rename', oldTag, next);
+}
+
+async function runTagManage(op, old, next) {
+  if (tagManageBusy) return false;
+  tagManageBusy = true;
+  try {
+    const payload = { op, old };
+    if (op === 'rename') payload.new = next;
+    let r = null;
+    try {
+      r = await jfetch('/api/notes/tags/manage', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload) });
+    } catch (e) {
+      r = null;                       // 服务不可达：下面统一报错（绝不静默无反应）
+    }
+    if (!r || !r.ok) {
+      showToast((r && r.error) || '标签管理失败：服务无响应', 'err');
+      return false;                   // 弹窗留着：可直接改输入重试
+    }
+    tagRenameOld = null;
+    const bad = (r.failed || []).length;
+    const what = op === 'rename' ? `#${r.old} → #${r.new}` : `去掉 #${r.old}`;
+    showToast(`标签已更新（${what}）：${r.changed} 篇改动 / 扫了 ${r.scanned} 篇`
+              + (bad ? `，${bad} 篇失败（详见日志）` : ''), bad ? 'warn' : 'ok');
+    // 刚管理的标签若正是当前筛选值就跟着走（改名→筛新名；删除→取消筛选）——不跟的话
+    // 筛选栏会停在一个已不存在的标签上、列表空成一片，看着像"笔记被删了"。
+    if (NB.tag === r.old) NB.tag = (op === 'rename' ? r.new : '');
+    await afterNotesChanged();        // 列表 / 筛选栏 / tagCounts / 预览头部一起对齐
+    await loadTagManageCounts();      // 重拉全库清单——旧名那一行必须从弹窗里消失
+    return true;
+  } finally {
+    tagManageBusy = false;
+  }
+}
+
+$('nbTagManage').onclick = () => openTagManage();
+$('tagDone').onclick = () => closeModal($('tagMask'));
+$('tagClose').onclick = () => closeModal($('tagMask'));
+$('tagMask').addEventListener('click', (e) => {
+  if (e.target === $('tagMask')) closeModal($('tagMask'));   // 点遮罩关闭（同其它弹窗）
+});
+
 $('nbBatchDelete').onclick = () => { if (nbPicked.size) delNote([...nbPicked]); };
 $('editSave').onclick = () => saveEdit();
 $('editCancel').onclick = () => closeModal($('editMask'));
@@ -5224,6 +6177,192 @@ $('btnSegReset').onclick = async () => {
 // 渲染一律 textContent（词条是用户输入）。
 let GL = { files: [], sel: null, limits: {}, translate_ready: false };
 
+// —— B13 术语库包 ——
+// 数据源 GET /api/glossary/packs（包名/简介/条目数/已装到哪些表 + 当前课程）。
+// 装：POST /api/glossary/packs/install {pack, course}（course 省略 = 当前课程）；
+// 卸：POST /api/glossary/packs/uninstall {pack, file}（file = 术语页当前选中的表）。
+// 与术语页同一纪律：渲染一律 textContent（包名/简介来自文件，但一律不拼 innerHTML）。
+let PACKS = { packs: [], active: null, active_name: '未分类', limits: {} };
+
+async function refreshPacks() {
+  if (!LOADED.packs) renderPacksWindow();       // 先画「载入中…」（与术语页同款）
+  const r = await jfetch('/api/glossary/packs');
+  if (r && r.ok) {
+    PACKS = r;
+    LOADED.packs = true;
+  }
+  renderPacksWindow();
+  return r;
+}
+
+function packCourseSel() {
+  return $('glPackCourse');
+}
+
+function renderPacksWindow() {
+  const sel = packCourseSel();
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (const c of (COURSES.courses || [])) {
+    const o = document.createElement('option');
+    o.value = c.id;
+    o.textContent = c.name + (c.id === (PACKS.active || COURSES.active) ? '（当前课程）' : '');
+    sel.appendChild(o);
+  }
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  else if (COURSES.active) sel.value = COURSES.active;
+  sel.disabled = sel.options.length === 0;
+  const n = (PACKS.packs || []).length;
+  $('glPackState').textContent = PACKS.error
+    ? `包列表读取失败：${PACKS.error}`     // 服务端兜底字段：绝不把「读不出来」说成「没有包」
+    : (sel.options.length === 0
+        ? '先建一门课程（设置 → 📝 笔记 → 课程管理）才能安装'
+        : (n ? `${n} 个包可用`
+             : (LOADED.packs ? '没有找到术语库包（打包版应随包带上 glossary_packs/）'
+                             : '载入中…')));
+  const box = $('glPacks');
+  box.innerHTML = '';
+  if (!n) return;
+  for (const p of PACKS.packs) box.appendChild(packCard(p));
+}
+
+function packCard(p) {
+  const card = document.createElement('div');
+  const installed = p.installed_in || [];
+  card.className = 'glPack' + (installed.length ? ' on' : '');
+  const head = document.createElement('div');
+  head.className = 'glPackHead';
+  const name = document.createElement('span');
+  name.className = 'glPackName';
+  name.textContent = p.name;
+  const meta = document.createElement('span');
+  meta.className = 'glPackMeta';
+  meta.textContent = p.count + ' 条' + (p.version ? ' · ' + p.version : '');
+  head.append(name, meta);
+  const intro = document.createElement('div');
+  intro.className = 'glPackIntro';
+  intro.textContent = p.error ? p.error : (p.intro || '（这个包没写简介）');
+  intro.title = p.error ? p.error : (p.intro || '');
+  const foot = document.createElement('div');
+  foot.className = 'glPackFoot';
+  const inst = document.createElement('span');
+  inst.className = 'glPackInst';
+  inst.textContent = installed.length ? `已装到：${installed.join('、')}` : '未安装';
+  inst.title = inst.textContent;
+  const add = document.createElement('button');
+  add.textContent = installed.length ? '重新安装' : '安装';
+  // 提示必须与**实际语义**一致：块内条目重新安装时以包的译名为准重写（用户改过的
+  // 译名会被重置，见端点响应 overwritten/dropped），块**外**同名的用户条目才不动。
+  add.title = installed.length
+    ? `重新安装：块内条目重置为「${p.name}」的译名（你改过的译名会被覆盖、包新版删掉的`
+      + '词条会被移除）；块外你自己已有的同名条目跳过、译名不动'
+    : `把整包并入所选课程的术语表（块内条目以包的译名为准；块外你自己已有的同名条目跳过）`;
+  add.disabled = !packCourseSel().value || !p.count || !!p.error;
+  add.onclick = () => installPack(p, add);
+  const del = document.createElement('button');
+  del.textContent = '卸载';
+  const target = packUninstallTarget(p);
+  del.disabled = !target;
+  del.title = target
+    ? `把「${p.name}」并入 ${target} 的整块移除（你自加的词条不受影响）`
+    : '这包还没装进任何术语表';
+  del.onclick = () => uninstallPack(p, del);
+  foot.append(inst);
+  if (installed.length) {
+    const badge = document.createElement('span');
+    badge.className = 'glPackBadge';
+    badge.textContent = '已装';               // 只在已装的卡上显示（gold-dim/gold，§六）
+    foot.appendChild(badge);
+  }
+  foot.append(add, del);
+  card.append(head, intro, foot);
+  return card;
+}
+
+/** 卸载目标 = 术语页当前选中的表（若这包装在它里面），否则列表里的第一份。
+ *
+ *  判据与动作**必须同源**（评审修复）：旧实现「按钮按 GL.sel 启用、请求却打
+ *  installed_in[0]」——同一包装进两门课（选择器的一等路径）后，在 B 表视图里点卸载
+ *  实际卸的是 A 表的块，还顺手把视图切到 A。多课安装是正常用法，不必如此。
+ *  目标文件同时出现在按钮 title 与确认框里（用户看得见要动哪份表）。 */
+function packUninstallTarget(p) {
+  const installed = p.installed_in || [];
+  return installed.includes(GL.sel) ? GL.sel : (installed[0] || GL.sel);
+}
+
+async function installPack(p, btn) {
+  const course = packCourseSel().value;
+  if (!course) { showToast('先建一门课程（设置 → 笔记 → 课程管理）再安装', 'err'); return; }
+  const installed = p.installed_in || [];
+  if (installed.length) {
+    // 重新安装 = 块内条目**以包的译名为准**重写（不是「合并、你已有的译名优先」）。
+    // 这是一次会覆盖用户改译的动作，必须先说清楚——旧提示语恰恰说反了（评审修复）。
+    if (!confirm(`「${p.name}」已装在这份表里（${installed.join('、')}）。\n\n`
+                 + '重新安装会把块内条目重置为包的译名：你改过的译名会被覆盖，'
+                 + '包新版里删掉的词条会被移除。\n'
+                 + '块外你自己已有的同名条目不受影响。\n\n继续？')) return;
+  }
+  btn.disabled = true;
+  try {
+    const r = await jfetch('/api/glossary/packs/install', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pack: p.name, course }) });
+    if (!r || !r.ok) { showToast((r && r.error) || '安装失败', 'err'); return; }
+    const bits = [`「${p.name}」已并入 ${r.file}（新增 ${r.added} 条`];
+    if (r.skipped_count) bits.push(`，跳过 ${r.skipped_count} 条你已有的`);
+    // 覆盖/移除**必须回报**（评审修复）：块内条目按包重写，用户改过的译名会没
+    if (r.overwritten_count) {
+      bits.push(`，${r.overwritten_count} 条译名被包重置：`
+                + briefTagList(r.overwritten.map((x) => x.en)));
+    }
+    if (r.dropped_count) {
+      bits.push(`，移除包内已无的词条 ${r.dropped_count} 条：` + briefTagList(r.dropped));
+    }
+    if (r.created_file) bits.push('，已新建该课术语表');
+    bits.push('）');
+    showToast(bits.join(''), (r.overwritten_count || r.dropped_count) ? 'warn' : 'ok');
+    GL.sel = r.file;                       // 切到刚写入的那份表（用户马上能看到词条）
+    await refreshCourses();
+    await refreshGlossary();
+    await refreshPacks();
+    refreshGlossaryTerms();                 // 高亮立刻跟上（不等下一轮 2s 轮询）
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** 把一批标签名压成一句话（最多 3 个，多的写「等 N 条」）——toast 里够用又不刷屏。 */
+function briefTagList(names, max = 3) {
+  const arr = (names || []).map((x) => '#' + x);
+  if (!arr.length) return '';
+  return arr.length > max ? `${arr.slice(0, max).join('、')} 等 ${arr.length} 条`
+                          : arr.join('、');
+}
+
+async function uninstallPack(p, btn) {
+  const file = packUninstallTarget(p);
+  if (!file) return;
+  if (!confirm(`把「${p.name}」并入的整块从 ${file} 移除？\n`
+               + '（你自己加的词条不受影响）')) return;
+  btn.disabled = true;
+  try {
+    const r = await jfetch('/api/glossary/packs/uninstall', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pack: p.name, file }) });
+    if (!r || !r.ok) { showToast((r && r.error) || '卸载失败', 'err'); return; }
+    showToast(r.shared_count
+      ? `已卸载「${p.name}」（其中 ${r.shared_count} 条也来自其它已装包，`
+        + '如需保留请重装该包）'
+      : `已卸载「${p.name}」（移除 ${r.removed_lines} 行）`, 'ok');
+    GL.sel = file;
+    await refreshGlossary();
+    await refreshPacks();
+    refreshGlossaryTerms();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function refreshGlossary() {
   if (!LOADED.glossary) renderGlossary();       // p3-5：首屏先画「载入中…」
   const r = await jfetch('/api/glossary');
@@ -5388,6 +6527,7 @@ function renderSettings() {
   if (SETCFG.hotkey_pause) $('setHotkeyPause').value = SETCFG.hotkey_pause;
   if (SETCFG.hotkey_float) $('setHotkeyFloat').value = SETCFG.hotkey_float;
   renderExportCard();       // §3：导出位置卡（当前值 + 桌面/浏览器两种交互形态）
+  renderSetTagsCard();      // B3：常用标签编辑条（未保存的工作副本不被覆盖，见该函数）
   $('setLanChk').checked = !!SETCFG.lan_enabled;   // §7：手机同屏（字幕页面板同键）
   $('setHfMirrorChk').checked = !!SETCFG.hf_mirror;  // D2：模型下载镜像（重启应用后生效）
   $('setAuthChk').checked = !!SEC.auth_enabled;
@@ -5403,7 +6543,8 @@ function renderSettings() {
 }
 function updateSettingsLive() {  // 由 pollStatus 每 2s 调（仅 settings-on 时）
   const s = status_ || {};
-  const dev = s.device === 'cuda' ? 'GPU' : 'CPU';
+  // 与工具条徽章同口径：cuda=GPU / mlx=MLX（Apple Silicon）/ 其余=CPU
+  const dev = s.device === 'cuda' ? 'GPU' : (s.device === 'mlx' ? 'MLX' : 'CPU');
   const load = s.load ? `（加载中 ${s.load.pct}% · ${s.load.stage}）` : '';
   $('setModelCur').textContent = s.model ? `${dev} · ${s.model} · ${s.compute_type || '—'}${load}` : '…';
   // p2-4：当前模型变了（切换完成）→ 模型管理器的「使用中」标记要跟着走
@@ -5432,11 +6573,15 @@ function renderAutostart() {
   if (!chk || !el) return;
   const d = AUTOSTART || {};
   chk.checked = !!d.enabled;          // 未启用/读失败都回到未勾选（真实态）
+  // 启动项位置按平台展示（Windows: HKCU Run 值 / macOS: LaunchAgents plist）——
+  // 服务端 key_path 是唯一事实源，前端不自己判平台；它缺失时保留 HTML 里的默认文案。
+  const tgt = $('setAutostartTarget');
+  if (tgt && d.key_path) tgt.textContent = d.key_path;
   el.textContent = '';
   const head = document.createElement('span');
   const rest = document.createElement('span');
   if (d.ok === false) {
-    // 读失败（非 Windows / 权限 / 策略）：**不能显示成「未启用」**——那会让人以为
+    // 读失败（不支持的平台 / 权限 / 策略）：**不能显示成「未启用」**——那会让人以为
     // 一切正常。原因来自后端，用 textContent 拼（错误文本可能含 < >，不拼 HTML）。
     head.className = 'err';
     head.textContent = '状态读取失败';
@@ -5444,7 +6589,10 @@ function renderAutostart() {
   } else if (d.enabled && d.matches) {
     head.className = 'ok';
     head.textContent = '已启用';
-    rest.textContent = `：开机进托盘 — ${d.command || ''}`;
+    // warning 在这里只会是「已写入、但本次会话没加载」（macOS launchctl bootstrap
+    // 降级）——有就如实说；Windows 侧这条分支恒无 warning，渲染不变。
+    rest.textContent = `：开机进托盘 — ${d.command || ''}`
+      + (d.warning ? `（${d.warning}）` : '');
   } else if (d.enabled) {
     // 开着但指向旧命令（换过项目位置/重建过 venv 的典型残留）——说清楚，并给出
     // 唯一有效动作：再保存一次把它改写成当前路径。
@@ -5474,6 +6622,14 @@ function renderHotkeyState(hk) {
   const el = $('setHotkeyState');
   if (!el) return;
   hk = hk || {};
+  // 平台授权说明（服务端按平台下发，macOS 非空）：热键**可用时**也要说清楚
+  // 「先给辅助功能授权」——按了没反应十有八九是这件事。非 darwin 恒空 → 保持隐藏。
+  const hintEl = $('setHotkeyHint');
+  if (hintEl) {
+    const hint = hk.hint || '';
+    hintEl.textContent = hint;
+    hintEl.hidden = !hint;
+  }
   const label = document.createElement('span');
   const rest = document.createTextNode('');
   el.textContent = '';
@@ -5698,6 +6854,7 @@ window.addEventListener('pywebviewready', () => {
 // 就要显示当前课程名，故把启动拉取挪到这里（与其余「启动即拉」同一位置）。
 renderToolbarCourse();   // §1：先画出骨架（未分类 + ＋ 新建课程…），下拉不留空
 refreshCourses();        // p2-1：启动即拉课程表（侧栏 / 课程卡 / 工具条下拉开箱有数据）
+refreshPending();        // B6：启动即判"未归档"（近 2 天有正文没摘要 → 顶栏提醒）
 
 // B12：设置分区——tab 接线，并**先按 localStorage 回到上次那格**（深链时
 // openWorkbench('settings', {tab}) 会覆盖它）；不写回存储（首次打开别凭空写脏）。
@@ -5706,6 +6863,13 @@ for (const _t of SET_TABS) {
   if (_b) _b.onclick = () => setActiveTab(_t);
 }
 setActiveTab(storedSetTab(), false);
+// B15：主题三选接线（三颗按钮 = 三种模式；选中态按 localStorage 里的当前值点亮）。
+// 引导脚本在 head 已执行完，故这里能直接读 window.LL_THEME 的当前值，不写回存储。
+for (const _m of THEME_MODES) {
+  const _tb = $(themeBtnId(_m));
+  if (_tb) _tb.onclick = () => setThemeMode(_m);
+}
+renderThemeRow();
 // B12 深链入口：手机同屏面板「去设置」→ 关面板 + 直达设置页「📶 连接」分区
 if ($('lanGoSet')) {
   $('lanGoSet').onclick = () => {

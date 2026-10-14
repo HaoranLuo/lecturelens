@@ -26,10 +26,12 @@ import build_exe
 
 # ---------------------------------------------------------------- ② 版本注入
 
-def test_app_version_is_release_1_0_0():
-    """D1②：定真版本 1.0.0（首个安装包的版本口径，不再是 -dev 语义）。
-    打包脚本不另立版本——它必须读 branding.APP_VERSION（单一事实源）。"""
-    assert branding.APP_VERSION == "1.0.0"
+def test_app_version_is_release_1_1_0():
+    """D1②：定真版本 1.1.0（波次二以**覆盖升级**方式交付的正式版本口径）。
+    打包脚本不另立版本——它必须读 branding.APP_VERSION（单一事实源）。
+    **这条断言是故意的"人工闸"**：发版升版本时它必红，逼一次有意识的版本决定
+    （下游 test_version_file_reads_back_* 已改成从 branding 派生，不再各抄一份字面量）。"""
+    assert branding.APP_VERSION == "1.1.0"
     assert build_exe.app_version() == branding.APP_VERSION
 
 
@@ -44,9 +46,12 @@ def test_version_quad_parses_release_and_strips_suffix():
         build_exe.version_quad("banana")          # 解析不了要炸，不能默默写 0.0.0.0
 
 
-def test_version_file_reads_back_as_1_0_0(tmp_path):
+def test_version_file_reads_back_as_app_version(tmp_path):
     """生成物必须能被 PyInstaller 的解析器原样读回（版本资源经 eval 解析），
-    且内容保持纯 ASCII（版本资源走 Windows codepage 表，中文在别的机器上会乱码）。"""
+    且内容保持纯 ASCII（版本资源走 Windows codepage 表，中文在别的机器上会乱码）。
+
+    断言口径**从 branding.APP_VERSION 派生**（不再抄一份 '1.0.0' 字面量）：升级版本号时
+    这里跟着变，不会变成第二条需要人工同步的地方。"""
     from PyInstaller.utils.win32.versioninfo import load_version_info_from_text_file
 
     text = build_exe.version_info_text(branding.APP_VERSION)
@@ -60,13 +65,14 @@ def test_version_file_reads_back_as_1_0_0(tmp_path):
     for table in info.kids[0].kids:          # StringFileInfo → StringTable
         for s in table.kids:
             strings[s.name] = s.val
-    assert strings["FileVersion"] == "1.0.0", "资源管理器「详细信息」的 FileVersion"
-    assert strings["ProductVersion"] == "1.0.0"
+    assert strings["FileVersion"] == branding.APP_VERSION, \
+        "资源管理器「详细信息」的 FileVersion"
+    assert strings["ProductVersion"] == branding.APP_VERSION
     assert strings["OriginalFilename"] == "LectureLens.exe"
-    # ffi 里的四段版本（filevers/prodvers）也必须是 1.0.0.0
+    # ffi 里的四段版本（filevers/prodvers）也必须是 APP_VERSION 补零后的四段
     quad = (info.ffi.fileVersionMS >> 16, info.ffi.fileVersionMS & 0xFFFF,
             info.ffi.fileVersionLS >> 16, info.ffi.fileVersionLS & 0xFFFF)
-    assert quad == (1, 0, 0, 0)
+    assert quad == build_exe.version_quad(branding.APP_VERSION)
     assert (info.ffi.productVersionMS, info.ffi.productVersionLS) == \
         (info.ffi.fileVersionMS, info.ffi.fileVersionLS)
 
@@ -127,7 +133,49 @@ def _full_dist(tmp_path: Path, bundle_model: str = "small") -> Path:
         (dist / "_internal" / "web" / page).write_text("<html></html>", encoding="utf-8")
     (dist / "models" / bundle_model).mkdir(parents=True)
     (dist / "models" / bundle_model / "model.bin").write_bytes(b"stub")
+    # B13：术语库包（随包数据；抽查项见 REQUIRED_DIST_FILES）
+    (dist / "_internal" / "glossary_packs").mkdir(parents=True)
+    (dist / "_internal" / "glossary_packs" / "数学.md").write_text(
+        "a = 甲\n", encoding="utf-8")
     return dist
+
+
+def test_pack_data_collected_and_required_in_dist():
+    """B13：术语库包必须 ① 显式 --add-data 收进包；② 产物断言里抽查得到。
+
+    缺①=打包版术语页的「术语库包」区永远空白；缺②=这种缺失在开发机上完全看不出来
+    （开发态读的是仓库根的 glossary_packs/，永远都在）。"""
+    args = build_exe.pyinstaller_args(False)
+    add_data = {args[i + 1] for i, a in enumerate(args) if a == "--add-data"}
+    assert f"{build_exe.ROOT / 'app' / 'web'};web" in add_data          # 既有口径不动
+    assert f"{build_exe.ROOT / 'glossary_packs'};glossary_packs" in add_data
+    # 包目录必须真的有东西可收（空目录 = 白收）
+    packs = build_exe.ROOT / "glossary_packs"
+    assert packs.is_dir() and list(packs.glob("*.md")), "包目录为空，打包版会没有包可装"
+    # 抽查项落在 _internal/glossary_packs/ 下，且指向一个真实存在的包
+    spot = [rel for rel in build_exe.REQUIRED_DIST_FILES
+            if rel.startswith("_internal/glossary_packs/")]
+    assert spot, "REQUIRED_DIST_FILES 必须含一条包文件抽查"
+    for rel in spot:
+        src = build_exe.ROOT / "glossary_packs" / Path(rel).name
+        assert src.is_file(), f"抽查的包文件在仓库里不存在: {rel}"
+    # 随包模型名单独拼的口径不受影响（models/ 不进 REQUIRED_DIST_FILES）
+    assert all("models/" not in rel for rel in build_exe.REQUIRED_DIST_FILES)
+
+
+def test_assert_dist_tree_rejects_missing_pack_file(tmp_path, monkeypatch):
+    """B13：产物里少了术语库包 → 构建失败（不产出「术语库包区空白」的半成品）。"""
+    dist = _full_dist(tmp_path)
+    monkeypatch.setattr(build_exe, "DIST", dist)
+    monkeypatch.setattr(build_exe, "DESKTOP_SHELL_ARTIFACTS", ())
+    (dist / "_internal" / "glossary_packs" / "数学.md").unlink()
+    with pytest.raises(SystemExit) as err:
+        build_exe.assert_dist_tree(False, "small")
+    assert "glossary_packs" in str(err.value)
+    # 补回来即过（断言不是「永远红」）
+    (dist / "_internal" / "glossary_packs" / "数学.md").write_text("a = 甲\n",
+                                                                   encoding="utf-8")
+    build_exe.assert_dist_tree(False, "small")
 
 
 def test_assert_dist_tree_rejects_missing_web_page(tmp_path, monkeypatch):
@@ -174,13 +222,59 @@ def test_forbidden_list_covers_every_root_anchored_write():
 
     盘点（main.ROOT = exe 所在目录）：config.json（配置）、courses.json（课程表，
     main.py:52）、.env（向导写 key，main.py:1593/1636）、transcripts（笔记）、logs（日志）、
-    glossary（术语表，glossary.py:53 root=ROOT）、desktop.lock（单实例锁，desktop.py:87）。
+    glossary（术语表，glossary.py:53 root=ROOT）、desktop.lock（单实例锁，desktop.py:87）、
+    webview_profile（B15 评审修复①：桌面壳持久化 profile，desktop.py 的
+    WEBVIEW_PROFILE_DIR——内含 localStorage：主题/字号/分区记忆 + 扫码配对缓存的
+    LAN token，随包发出去等于把配对凭据一起发出去）。
     评审2 实测：glossary 与 courses.json 曾在清单外 →「在打包目录里建过术语表/课程」
     留下的东西就能混进分发目录。"""
     for name in (".env", "config.json", "courses.json", "transcripts", "logs",
-                 "glossary", "desktop.lock"):
+                 "glossary", "desktop.lock", "webview_profile"):
         assert name in build_exe.FORBIDDEN_DIST_ENTRIES, f"{name} 必须进禁用清单"
     assert ".log" in build_exe.FORBIDDEN_DIST_SUFFIXES
+
+
+def test_tool_state_dirs_are_forbidden_and_pruned(tmp_path):
+    """评审④：工具态目录（.mimosa/.zcode）既进黑名单兜底、又被主动摘掉。
+
+    实测成因：扫描器会在**源目录**里落 `.mimosa/`，而 `--add-data app/web;web`、
+    `--add-data glossary_packs;glossary_packs` 是**整目录复制**（PyInstaller 无排除
+    语法）→ 它被搬进 `_internal/web/`、`_internal/glossary_packs/` → 再被 .iss 的
+    `Source: {#SourceRoot}\\*` 带进安装包（v1.1.0 首轮实测混进 2 个
+    `.mimosa/hook-state/sess_<本机会话 id>.json`）。危害：分发物里带外人看不懂的脏
+    数据；且这些目录被 .gitignore 忽略 → 干净 clone 重打产出不同字节、**已发布的
+    SHA256 不可复现**。
+    """
+    for name in (".mimosa", ".zcode"):
+        assert name in build_exe.TOOL_STATE_DIRS
+        assert name in build_exe.FORBIDDEN_DIST_ENTRIES, f"{name} 必须进黑名单兜底"
+
+    # prune 真能摘掉（含嵌套的多处），且**不误伤**同名的无关文件
+    dist = tmp_path / "dist"
+    hit_a = dist / "_internal" / "web" / ".mimosa" / "hook-status"
+    hit_b = dist / "_internal" / "glossary_packs" / ".mimosa" / "hook-state"
+    hit_c = dist / ".mimosa"
+    for d in (hit_a, hit_b, hit_c):
+        d.mkdir(parents=True)
+        (d / "sess_x.json").write_text("{}", encoding="utf-8")
+    keep = dist / "_internal" / "web" / "index.html"
+    keep.parent.mkdir(parents=True, exist_ok=True)
+    keep.write_text("<html>", encoding="utf-8")
+    # 名字**不等于**工具目录的隐藏文件不许被误删（只精确匹配 TOOL_STATE_DIRS）
+    near_miss = dist / "_internal" / "web" / ".mimosa-notes.json"
+    near_miss.write_text("{}", encoding="utf-8")
+
+    removed = build_exe.prune_tool_state(dist)
+    assert len(removed) == 3, removed
+    assert keep.is_file() and near_miss.is_file(), "prune 误伤了无关文件"
+    assert not list(dist.rglob(".mimosa")), "工具态目录没摘干净"
+
+    # 摘干净之后 forbidden_hits 才是干净的（两道闸口径一致）
+    assert build_exe.forbidden_hits(dist) == []
+    # 而漏摘时必须被黑名单抓到（兜底那一道真的在工作）
+    (hit_b / "sess_y.json").parent.mkdir(parents=True, exist_ok=True)
+    (hit_b / "sess_y.json").write_text("{}", encoding="utf-8")
+    assert build_exe.forbidden_hits(dist), "漏摘的工具态目录必须被黑名单抓住"
 
 
 @pytest.mark.parametrize("rel", [

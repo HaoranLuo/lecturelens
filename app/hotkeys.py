@@ -23,25 +23,50 @@
          | "import: ..."         → 库导入失败（未安装/权限/环境异常）
          | "register: ..."       → 注册失败（键被其它程序钩子占用等）
          | "starting" / "stopped"→ 尚未启动 / 已注销（生命周期边界）
+**macOS**：import/register 失败时 reason 追加一句「需辅助功能授权」（见
+accessibility_hint——没有该授权时键盘监听收不到事件，这是 Mac 上最常见的成因）；
+同一句话也随 state()["hint"] 下发，让设置页在热键**可用时**也讲清楚要先授权。
+非 darwin 平台这段提示恒为空串，文案与之前逐字一致。
 """
 import logging
+import sys
 import threading
 
 log = logging.getLogger("hotkeys")
 
 # —— 键名白名单（ask：可在设置页改键，白名单校验键名）——
-# 修饰键别名 → 规范名。keyboard 库内部把 win/meta 都归一到 windows
-# （实测 keyboard.parse_hotkey('win+alt+1') == parse_hotkey('windows+alt+1')），
-# 这里跟它对齐，用户写 win/super/meta 都能存成同一份规范形。
-MODIFIER_ALIASES: dict = {
-    "ctrl": "ctrl", "control": "ctrl",
-    "alt": "alt",
-    "shift": "shift",
-    "win": "windows", "windows": "windows", "super": "windows", "meta": "windows",
-}
-# 规范输出顺序固定：同一组合的两种写法必须产出同一个字符串，否则
-# 「改键后去重/冲突比较」会因书写顺序不同而漏判。
-MODIFIER_ORDER = ("ctrl", "alt", "shift", "windows")
+# 修饰键别名 → 规范名。keyboard 库内部把 win/meta/cmd/command 归一到同一个键
+# （实测 keyboard.parse_hotkey('cmd+alt+l') == parse_hotkey('command+alt+l') ==
+# parse_hotkey('windows+alt+l')），这里跟它对齐：用户写 win/super/meta/cmd/command
+# 都能存成同一份规范形。**规范名按平台取**：
+#   - darwin：command（库在 Darwin 上把 windows/win/cmd/command 全部归一到
+#     'command'，见 keyboard/_canonical_names.py 的 platform-specific overrides；
+#     设置页显示 command 才是用户键盘上真有的那个键）；
+#   - 其它：windows（库的默认归一目标）。
+def _meta_key_name() -> str:
+    """meta/⌘ 键的规范名（按**调用时**平台取；模块常量见下方快照）。"""
+    return "command" if sys.platform == "darwin" else "windows"
+
+
+def modifier_aliases() -> dict:
+    """修饰键别名 → 规范名（按调用时平台现算——单测才能在 Windows 上验 darwin 分支）。"""
+    meta = _meta_key_name()
+    return {"ctrl": "ctrl", "control": "ctrl",
+            "alt": "alt",
+            "shift": "shift",
+            "win": meta, "windows": meta, "super": meta, "meta": meta,
+            "cmd": meta, "command": meta}
+
+
+def modifier_order() -> tuple:
+    """规范输出顺序固定：同一组合的两种写法必须产出同一个字符串，否则
+    「改键后去重/冲突比较」会因书写顺序不同而漏判。"""
+    return ("ctrl", "alt", "shift", _meta_key_name())
+
+
+#: 导入时快照（与本平台一致；对外引用请用它们，_parse 内部走上面的函数）
+MODIFIER_ALIASES: dict = modifier_aliases()
+MODIFIER_ORDER: tuple = modifier_order()
 # 主键白名单：字母 / 数字 / F1-F12。刻意收窄——keyboard 库对逗号、加号、
 # 空格等有「用名字不用符号」的额外规矩（add_hotkey 文档：'comma'/'plus'/
 # 'space'），那些键留给后续按需扩，不在这里一次放进来承担解析歧义。
@@ -60,8 +85,33 @@ DEFAULT_BINDINGS: dict = {"toggle_pause": "ctrl+alt+l", "toggle_float": "ctrl+al
 BINDING_LABELS: dict = {"toggle_pause": "暂停/恢复字幕",
                         "toggle_float": "悬浮字幕条显隐"}
 
-#: 白名单的可读描述（错误文案与设置页提示共用，避免两处措辞不一致）
-WHITELIST_HINT = "修饰键 " + "/".join(MODIFIER_ORDER) + " 至少一个 + 主键一个（a-z / 0-9 / f1-f12）"
+#: macOS 上全局键盘钩子要「辅助功能」授权（TCC），否则键盘库的监听收不到事件；
+#: 这句同时是**降级 reason 的后缀**与**设置页说明**（state()["hint"]）的单一事实源。
+MAC_ACCESSIBILITY_HINT = ("macOS 需在 系统设置 → 隐私与安全性 → 辅助功能 "
+                          "里授权 LectureLens（或运行它的终端/Python）后重试")
+
+
+def accessibility_hint() -> str:
+    """本平台的授权提示；**非 darwin 一律空串**（Windows/Linux 文案逐字不变）。"""
+    return MAC_ACCESSIBILITY_HINT if sys.platform == "darwin" else ""
+
+
+def _with_accessibility_hint(reason: str) -> str:
+    """降级原因 + 本平台授权提示（非 darwin 原样返回——Windows 原因文案逐字不变）。
+    设置页状态行会把 reason 原样显示，这是「按了没反应」在 Mac 上最常见的成因：
+    没有辅助功能授权时 keyboard 的监听收不到任何按键。"""
+    hint = accessibility_hint()
+    return f"{reason}（{hint}）" if hint else reason
+
+
+def whitelist_hint() -> str:
+    """白名单的可读描述（错误文案与设置页提示共用，避免两处措辞不一致）。"""
+    return ("修饰键 " + "/".join(modifier_order())
+            + " 至少一个 + 主键一个（a-z / 0-9 / f1-f12）")
+
+
+#: 导入时快照（同上；错误文案统一用它，保证同一进程内措辞一致）
+WHITELIST_HINT = whitelist_hint()
 
 
 def _parse(combo) -> tuple:
@@ -76,11 +126,13 @@ def _parse(combo) -> tuple:
     tokens = [t.strip() for t in raw.lower().split("+")]
     if any(not t for t in tokens):
         return None, "有空的键名（如 'ctrl++l' 或末尾多一个 +）"
+    aliases = modifier_aliases()          # 按调用时平台取（darwin: command）
+    order = modifier_order()
     mods: list = []
     mains: list = []
     for t in tokens:
-        if t in MODIFIER_ALIASES:
-            m = MODIFIER_ALIASES[t]
+        if t in aliases:
+            m = aliases[t]
             if m in mods:
                 return None, f"重复的修饰键 {m}"
             mods.append(m)
@@ -95,7 +147,7 @@ def _parse(combo) -> tuple:
     if not mods:
         # 单键热键会让打字时处处误触发（本应用是常驻后台的），必须挡在配置层
         return None, f"至少需要一个修饰键（{WHITELIST_HINT}）"
-    return "+".join([m for m in MODIFIER_ORDER if m in mods] + mains), None
+    return "+".join([m for m in order if m in mods] + mains), None
 
 
 def normalize(combo) -> str | None:
@@ -129,9 +181,11 @@ def bindings_from_config(cfg: dict) -> dict:
 
 def idle_state() -> dict:
     """未启动时的 state 形状（main.status 初始化用）。
-    UI 读的是同一份形状，避免「启动前字段缺失 → 前端 undefined」这类闪烁。"""
+    UI 读的是同一份形状，避免「启动前字段缺失 → 前端 undefined」这类闪烁。
+    hint = 本平台的授权说明（macOS 才非空，见 accessibility_hint）。"""
     return {"enabled": True, "active": False, "reason": "starting",
-            "bindings": dict(DEFAULT_BINDINGS), "labels": dict(BINDING_LABELS)}
+            "bindings": dict(DEFAULT_BINDINGS), "labels": dict(BINDING_LABELS),
+            "hint": accessibility_hint()}
 
 
 class HotkeyManager:
@@ -203,7 +257,8 @@ class HotkeyManager:
                 import keyboard
             except Exception as e:
                 self._active = False
-                self._reason = f"import: {type(e).__name__}: {e}"
+                self._reason = _with_accessibility_hint(
+                    f"import: {type(e).__name__}: {e}")
                 log.warning(f"[hotkeys] ⚠ 全局快捷键不可用（import keyboard 失败）"
                             f"——已降级为仅托盘操作: {self._reason}")
                 return self.state()
@@ -220,8 +275,9 @@ class HotkeyManager:
                     # 全有或全无：清掉已注册的，整体降级
                     self._unregister_all()
                     self._active = False
-                    self._reason = (f"register: {action}={combo}: "
-                                    f"{type(e).__name__}: {e}")
+                    self._reason = _with_accessibility_hint(
+                        f"register: {action}={combo}: "
+                        f"{type(e).__name__}: {e}")
                     log.warning(f"[hotkeys] ⚠ 全局快捷键注册失败"
                                 f"——已降级为仅托盘操作: {self._reason}")
                     return self.state()
@@ -240,8 +296,9 @@ class HotkeyManager:
             return self.state()
 
     def state(self) -> dict:
-        """给 status / 设置页的快照（JSON 可序列化）。"""
+        """给 status / 设置页的快照（JSON 可序列化）。
+        hint = 本平台授权说明（macOS 非空；其它平台空串 → 前端不显示，文案不变）。"""
         with self._lock:
             return {"enabled": self._enabled, "active": self._active,
                     "reason": self._reason, "bindings": dict(self._bindings),
-                    "labels": dict(BINDING_LABELS)}
+                    "labels": dict(BINDING_LABELS), "hint": accessibility_hint()}

@@ -7,15 +7,22 @@
   /* B1 悬浮字幕条（p1-7）：桌面壳第二窗口载入（frameless/on_top/transparent）。
      窗口透明由 WebView2 原生支持（winforms.py:281-287），此处 rgba 半透明深底 +
      圆角 = 浮动卡片观感；色值走 docs/design-spec.md §2 令牌。
-     浏览器直接打开本页亦可预览（穿透按钮会提示仅桌面版可用）。 */
+     浏览器直接打开本页亦可预览（穿透按钮会提示仅桌面版可用）。
+
+     B15 深浅主题：**本页钉死深色，不响应主题**（不读 localStorage 的 ll_theme，也没有
+     data-theme 浅色块）。理由：它是盖在视频/课件上的浮层，白底条压在白色 PPT 上会
+     看不清——深色在任何背景上都清楚是这块屏的功能要求，不是审美偏好。故这里的
+     令牌只有深色一套；半透明深底也单列成 --bar-bg 令牌（原先写死在 #bar 上），
+     以后要调只改这一处。 */
   :root { --surface:#12161D; --surface-2:#171C24; --border:#232B35;
           --border-strong:#2E3844; --text-1:#E8EEF5; --text-2:#93A1B0;
-          --text-3:#5C6B7A; --gold:#FFD97A; --err:#FF6B6B; }
+          --text-3:#5C6B7A; --gold:#FFD97A; --err:#FF6B6B;
+          --bar-bg:rgba(18, 22, 29, .82); }   /* --surface 82%：半透明深底 */
   html, body { height:100%; margin:0; background:transparent; overflow:hidden; }
   body { font-family:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
          display:flex; align-items:stretch; }
   #bar { flex:1; margin:6px;                 /* 6px 边距=圆角外露桌面 */
-         background:rgba(18, 22, 29, .82);    /* --surface 82%：半透明深底 */
+         background:var(--bar-bg);            /* B15：半透明深底走 --bar-bg 令牌（钉死深色） */
          border:1px solid var(--border); border-radius:12px;
          padding:10px 18px; position:relative; overflow:hidden;
          display:flex; flex-direction:column; justify-content:center; gap:2px;
@@ -57,7 +64,7 @@
     <div id="zh" class="idle"></div>
     <div class="actions">
       <button id="btnThru"
-              title="点击穿透（尽力而为）：鼠标将穿过本窗口，不挡视频控制；解除请用托盘菜单的「字幕条点击穿透」">📌</button>
+              title="点击穿透（尽力而为，仅 Windows）：鼠标将穿过本窗口，不挡视频控制；macOS 及其它平台自动降级为可关闭窗口；解除请用托盘菜单的「字幕条点击穿透」">📌</button>
       <button id="btnHide" title="关闭字幕条（托盘菜单 / 设置页可重新开启）">✕</button>
     </div>
     <div id="hint"></div>

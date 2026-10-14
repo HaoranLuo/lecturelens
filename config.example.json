@@ -29,5 +29,6 @@
   "export_dir": null,
   "class_end_confirm": true,
   "lan_enabled": false,
-  "hf_mirror": false
+  "hf_mirror": false,
+  "tags_presets": ["重点", "考试", "没听懂", "待复习"]
 }

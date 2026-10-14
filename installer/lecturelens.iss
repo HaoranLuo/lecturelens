@@ -22,14 +22,16 @@
 #define MyAppExeName "LectureLens.exe"
 
 ; 版本**单一来源** = dist 内 exe 的版本资源（由 scripts/build_exe.py 从
-; app/branding.py 的 APP_VERSION 写入版本资源，实测 FileVersion=1.0.0）。
+; app/branding.py 的 APP_VERSION 写入版本资源，实测 FileVersion=1.1.0）。
 ; 不在此处再写一份版本号，避免两处漂移。
 ;
 ; 为什么还要裁一刀：Windows 的**固定版本信息**恒为四段，build_exe.version_quad
-; 把 APP_VERSION="1.0.0" 补成 "1.0.0.0"，而文件名口径要三段语义版本
-; （产出 LectureLens-1.0.0-setup.exe）。故只在末段为 0 时去掉它；
+; 把 APP_VERSION="1.1.0" 补成 "1.1.0.0"，而文件名口径要三段语义版本
+; （产出 LectureLens-1.1.0-setup.exe）。故只在末段为 0 时去掉它；
 ; 末段非 0（如 1.2.3.4）原样保留，不会被误裁。
-; 实测（Compression=none 探针）：GetVersionNumbersString → "1.0.0.0"，裁后 "1.0.0"。
+; 实测：v1.0.0 那轮用 Compression=none 探针读到 "1.0.0.0"、裁后 "1.0.0"；
+; v1.1.0 正式包（lzma2/max）从 exe 资源读出四段后同样裁成 "1.1.0"，
+; 产出文件名 LectureLens-1.1.0-setup.exe（"Successful compile (483.953 sec)"）。
 #ifdef TEST_VERSION
 ; ── 测试专用钩子（**发版绝不能带**）─────────────────────────────────
 ; verify_installer.py --upgrade-from 验「跨版本覆盖升级」时需要"另一个版本"的安装包。

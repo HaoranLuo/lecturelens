@@ -3,7 +3,7 @@
 
 交付面（docs/notes-batch.md B12 行）：
 - 设置页分五区：🎙上课（识别模型/音源/识别语言/高级·分句调优/流式字幕/DeepSeek key）、
-  📝笔记（课程管理/下课归档/导出）、📶连接（手机同屏/安全）、🎨外观（字幕显示/悬浮字幕条）、
+  📝笔记（课程管理/下课归档/导出/常用标签）、📶连接（手机同屏/安全）、🎨外观（字幕显示/悬浮字幕条）、
   ⚙系统（全局快捷键/开机自启/数据去向，含重开首启向导）；
 - tab 条复用 .tagChip/.tagChip.on（选中态 gold-dim/gold，design-spec §六 令牌）；
 - **记住上次分区**（localStorage 键 `ll_settings_tab`）；
@@ -22,9 +22,9 @@ HTML = (ROOT / "app" / "web" / "index.html").read_text(encoding="utf-8")
 #: 分区 → 该分区必须包含的卡片标题（以 <h2> 的**首个**片段匹配）
 PANES = {
     "lesson": ("识别模型", "音源", "识别语言", "高级 · 分句调优", "流式字幕", "DeepSeek API key"),
-    "notes": ("课程管理", "下课归档", "导出"),
+    "notes": ("课程管理", "下课归档", "导出", "常用标签"),
     "link": ("手机同屏", "安全"),
-    "look": ("字幕显示", "悬浮字幕条"),
+    "look": ("主题", "字幕显示", "悬浮字幕条"),   # B15 加了「主题」卡（深浅/跟随系统）
     "system": ("全局快捷键", "开机自启", "数据去向"),
 }
 TABS = ("lesson", "notes", "link", "look", "system")
@@ -58,7 +58,7 @@ def test_five_tabs_exist_with_labels():
 
 def test_every_settings_card_belongs_to_exactly_one_pane():
     cards = card_tabs(settings_section())
-    assert len(cards) == sum(len(v) for v in PANES.values()) == 16
+    assert len(cards) == sum(len(v) for v in PANES.values()) == 18
     assert all(t in TABS for _, t in cards), [c for c in cards if c[1] not in TABS]
     for pane, titles in PANES.items():
         got = [name for name, t in cards if t == pane]

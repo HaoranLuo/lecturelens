@@ -18,18 +18,36 @@
 这是硬规矩⑨意义上的按事实调整，非无视规范。
 
 **依赖**：fpdf2（模块名 fpdf）与 python-docx（模块名 docx）在 requirements.txt
-的 P2 段；PDF 中文必须注册系统字体 msyh.ttc（见 main 的字体常量与 p2-deps 结论）。
+的 P2 段；PDF 中文必须注册系统字体（Windows = msyh.ttc，macOS = PingFang/Hiragino，
+见 _register_pdf_fonts 的平台分支）。
 """
 import io
 import json
 import logging
+import os
 from pathlib import Path
 
 log = logging.getLogger("exporters")
 
 #: 系统字体（PDF 中文必需；fpdf2 会子集化嵌入，勿整字库嵌入）
+#: Windows = 微软雅黑（常规 + 粗体两个文件），既有口径逐字未动。
 FONT_REGULAR = "C:/Windows/Fonts/msyh.ttc"
 FONT_BOLD = "C:/Windows/Fonts/msyhbd.ttc"
+
+#: macOS 候选（按优先序）。**没有独立粗体文件**——粗体回落常规字面（与 Windows 上
+#: 「粗体缺失回落常规」是同一条代码路径）。
+#: PingFang.ttc 在 macOS ≤14 是标准路径；macOS 15（Sequoia）起 Apple 把部分系统字体
+#: 收进 asset bundle（只经 CoreText 按名暴露，文件系统上可能不存在），故还有
+#: Hiragino Sans GB 与 _mac_font_scan() 的兜底扫描。三条路都不中 → 报错文案给指引。
+MAC_FONT_CANDIDATES: tuple = (
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+)
+#: 兜底扫描的目录与「像中文字体」的文件名关键字（小写子串）
+MAC_FONT_DIRS: tuple = ("/System/Library/Fonts",
+                        "/System/Library/Fonts/Supplemental")
+MAC_FONT_KEYWORDS: tuple = ("pingfang", "hiragino", "songti", "heiti",
+                            "stheiti", "noto sans cjk", "sourcehansans")
 
 #: 打印版配色（见模块 docstring 的对比度说明）
 INK = (26, 32, 40)          # 英文原文/标题
@@ -196,8 +214,50 @@ def build_srt(pairs: list, sidecar: dict | None = None,
 
 # —— PDF（fpdf2 + 系统字体） ——
 
+def _mac_font_scan() -> str | None:
+    """macOS 兜底：在系统字体目录里扫一个「像中文字体」的文件（按文件名关键字）。
+
+    为什么需要它：macOS 15 起部分系统字体不再是可直接读的文件（收进 asset bundle），
+    硬编码路径会随系统版本失效；扫目录至少能覆盖把字体放在标准目录的机器。
+    目录是**只读系统目录**、关键字是源码常量——不读任何用户输入，无注入面。
+    找不到 → None（交给 _register_pdf_fonts 的报错文案）。"""
+    for d in MAC_FONT_DIRS:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for n in names:
+            low = n.lower()
+            if low.endswith((".ttc", ".ttf", ".otf")) and \
+                    any(k in low for k in MAC_FONT_KEYWORDS):
+                return os.path.join(d, n)
+    return None
+
+
+def regular_font_candidates() -> tuple:
+    """PDF 常规字面的候选路径（按优先序）。
+
+    Windows 恒为 `(FONT_REGULAR,)`——**读模块属性**（不是冻结的快照），故既有
+    测试打桩 FONT_REGULAR 后仍然生效、报错文案报的是实际路径。"""
+    if os.name == "nt":
+        return (FONT_REGULAR,)
+    found = tuple(p for p in MAC_FONT_CANDIDATES if Path(p).is_file())
+    if found:
+        return found
+    scan = _mac_font_scan()
+    if scan:
+        return (scan,)
+    return MAC_FONT_CANDIDATES      # 都不在：原样返回标准路径，让报错文案指名道姓
+
+
 def _register_pdf_fonts(pdf) -> tuple[str, str]:
-    """注册微软雅黑（含粗体）。返回 (常规字体名, 粗体字体名)。
+    """注册中文字体（含粗体）。返回 (常规字体名, 粗体字体名)。
+
+    平台分支：
+    - **Windows**：微软雅黑（FONT_REGULAR / FONT_BOLD）——路径、别名、文案逐字未动；
+    - **macOS**：PingFang SC（PingFang.ttc）→ Hiragino Sans GB → 目录扫描兜底；
+      候选都没有独立粗体文件 → 粗体回落常规字面（与「Windows 粗体缺失」同一条降级）。
+    别名（fpdf2 里的字体标签）只是引用符，真正嵌进 PDF 的是文件本身。
 
     字体缺失时抛 **RuntimeError 带明确指引**——导出失败必须让用户看见可操作的原因，
     而不是静默出一个豆腐块 PDF。
@@ -206,20 +266,32 @@ def _register_pdf_fonts(pdf) -> tuple[str, str]:
     `FileNotFoundError: TTF Font file not found: ...`——既不是 RuntimeError、也没有
     任何指引（中文界面里就露出一句英文异常），与本函数 docstring 的承诺不符。现按
     docstring 兑现：常规字面缺失 → RuntimeError + 可操作指引；粗体缺失 → 回落常规。"""
-    reg, bold = "msyh", "msyhbd"
-    if not Path(FONT_REGULAR).is_file():
+    reg = "msyh" if os.name == "nt" else "cjk"
+    bold = "msyhbd" if os.name == "nt" else "cjkbd"
+    cands = regular_font_candidates()
+    reg_file = next((p for p in cands if Path(p).is_file()), None)
+    if reg_file is None:
+        if os.name == "nt":
+            raise RuntimeError(
+                f"PDF 中文字体缺失：找不到 {FONT_REGULAR}。"
+                f"请确认运行环境是 Windows 且已安装微软雅黑（Microsoft YaHei），"
+                f"或把 exporters.FONT_REGULAR 指向本机可用的中文字体（.ttf/.ttc）。")
         raise RuntimeError(
-            f"PDF 中文字体缺失：找不到 {FONT_REGULAR}。"
-            f"请确认运行环境是 Windows 且已安装微软雅黑（Microsoft YaHei），"
-            f"或把 exporters.FONT_REGULAR 指向本机可用的中文字体（.ttf/.ttc）。")
+            "PDF 中文字体缺失：在 macOS 上依次找过 "
+            + "、".join(cands)
+            + "，都没有可用字体。请确认「字体册」里已装 PingFang SC 或 Hiragino "
+              "Sans GB；若你是 macOS 15+（系统字体已收进 asset bundle、文件系统上"
+              "可能没有 PingFang.ttc），请把 exporters.FONT_REGULAR 指向本机任意"
+              "可用的中文字体文件（.ttf/.ttc）。")
     try:
-        pdf.add_font(reg, "", FONT_REGULAR)
+        pdf.add_font(reg, "", reg_file)
     except Exception as e:
         raise RuntimeError(
-            f"注册中文字体失败：{FONT_REGULAR}（{type(e).__name__}: {e}）。"
+            f"注册中文字体失败：{reg_file}（{type(e).__name__}: {e}）。"
             f"请确认该文件是有效的 TTF/TTC 字体。") from e
-    if Path(FONT_BOLD).is_file():
-        pdf.add_font(bold, "", FONT_BOLD)
+    bold_file = FONT_BOLD if os.name == "nt" else None
+    if bold_file and Path(bold_file).is_file():
+        pdf.add_font(bold, "", bold_file)
     else:
         bold = reg            # 粗体可选：缺失就回落常规字面，不阻断导出
     return reg, bold
@@ -292,7 +364,10 @@ def build_pdf(pairs: list, meta: dict, sidecar: dict | None = None) -> bytes:
 
 # —— Word（python-docx） ——
 
-DOCX_EA_FONT = "Microsoft YaHei"
+#: Word 的东亚字体名（w:eastAsia）。Windows = 微软雅黑；macOS = PingFang SC
+#: （系统自带）。只换**名字**——python-docx 把名字写进 document.xml，由 Word 去解析，
+#: 字体缺失时 Word 自己回退，不影响导出成功。
+DOCX_EA_FONT = "Microsoft YaHei" if os.name == "nt" else "PingFang SC"
 
 
 def _docx_run(paragraph, text: str, *, size=None, color=None, bold=False):

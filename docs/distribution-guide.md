@@ -30,9 +30,10 @@
 - **直传（微信/QQ/移动硬盘）当兜底**：只有一两个朋友、或网盘也卡时用。
   注意微信对超大文件不友好，**优先用 U 盘或直接让朋友从你电脑上拷**。
 
-> **本项目当前体积的实测结论**：安装包 **1.408 GiB（1,511,627,489 字节）**，
+> **本项目当前体积的实测结论**（v1.1.0）：安装包 **1.408 GiB（1,511,742,229 字节）**，
 > 距 GitHub 的 2 GiB 单附件上限还有约 **0.59 GiB** 余量，所以**现在可以
 > 直接挂 Release**，不必分卷。
+> （v1.0.0 那轮是 1,511,627,489 字节——同一量级；下面是 turbo 的估算，不是实测。）
 > ⚠️ 但余量不算大：如果哪天改用 `--bundle-model large-v3-turbo` 重打
 > （随包模型从 small 的 ≈460 MB 换成 turbo 的 ≈1.6 GB，模型权重几乎压不动），
 > 按当前压缩比**估算**包会涨到 ≈2.4 GiB、**超过 2 GiB 上限**（这是估算，不是实测
@@ -72,7 +73,7 @@ exe 属性、安装包名、关于页显示全部跟着走。
 :: ③ 产物门禁（秒级）：必需文件齐不齐、有没有混进 config.json/transcripts 之类
 .venv\Scripts\python.exe scripts\build_exe.py --check-dist
 
-:: ④ 编安装包（ISCC 不在 PATH，必须绝对路径；实测约 405 秒）
+:: ④ 编安装包（ISCC 不在 PATH，必须绝对路径；实测 405～484 秒，随机器负载浮动）
 "%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" installer\lecturelens.iss
 ```
 
@@ -91,19 +92,23 @@ Get-Content "$p.sha256"      # 应打印：<64位小写哈希>  LectureLens-1.1.
 ```
 
 ```bat
-:: ⑥ 先生成一个「旧版」测试包（只为验跨版本升级；不压缩，约 20 秒）
-::    用 .iss 里的 TEST_VERSION 钩子；输出到 upgrade-test\ 子目录，
+:: ⑥ 只有「首次发版、手上没有真旧版包」时才需要合成一个旧版测试包
+::    （不压缩，约 20 秒；用 .iss 里的 TEST_VERSION 钩子）。输出到 upgrade-test\ 子目录，
 ::    免得它被 verify_installer 当成"最新的正式包"误选。
+::    ⚠️ 从 v1.1.0 起**不需要**这一步——直接用真实的 1.0.0 安装包（见 ⑦）。
 "%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" /DTEST_VERSION=0.9.0 /O"dist\installer\upgrade-test" installer\lecturelens.iss
 ```
 
 ```bat
 :: ⑦ 真装真卸实测（分钟级）：静默装→--check→造数据探针→卸载→断言 exe 删了但笔记
-::    还在→重装→【装 0.9.0 → 在旧版下造探针 → 用正式版覆盖它】→清理
-.venv\Scripts\python.exe scripts\verify_installer.py --upgrade-from dist\installer\upgrade-test\LectureLens-0.9.0-setup.exe
+::    还在→重装→【装真旧版 → 在旧版下造探针 → 用新版覆盖它】→清理
+::    ★ 优先用**真实**旧版安装包（比合成的测试包硬）：
+.venv\Scripts\python.exe scripts\verify_installer.py --upgrade-from dist\installer\LectureLens-1.0.0-setup.exe
+::    没有真旧版时才退回第 ⑥ 步的合成包：
+::    .venv\Scripts\python.exe scripts\verify_installer.py --upgrade-from dist\installer\upgrade-test\LectureLens-0.9.0-setup.exe
 ```
 
-⑦ 必须打出 **「全部 N 项通过」并 exit 0** 才算这一版可发（当前 N=28；脚本加了检查项
+⑦ 必须打出 **「全部 N 项通过」并 exit 0** 才算这一版可发（当前 N=32；脚本加了检查项
 N 会变，认「全部通过 + exit 0」这个结论，别认数字）。它会自己校验
 `.sha256` 是否存在且与安装包一致——**忘了第 ⑤ 步这里会当场红**。
 
@@ -112,6 +117,12 @@ N 会变，认「全部通过 + exit 0」这个结论，别认数字）。它会
 > 这句话。第一次发版没有真正的旧版，就用上面第 ⑥ 步合成一个测试包。
 > `/DTEST_VERSION` 是 `.iss` 里的**测试专用钩子**：发版命令**不带**它，版本仍严格
 > 取自 exe 版本资源（`tests/test_verify_installer.py` 有断言钉住这一点）。
+>
+> 🔒 **旧版安装包是发版资产，打新包时不许删**：`dist\installer\LectureLens-1.0.0-setup.exe`
+> 要**一直留着**——它是 v1.1.0 及以后每一轮跨版本升级实测的输入。ISCC 按
+> `LectureLens-<版本>-setup.exe` 命名，打 1.1.0 不会覆盖 1.0.0；但仍请打完后
+> `dir dist\installer` 确认两个包都在（v1.1.0 那轮的实测：1.0.0 的 SHA256 在重打后
+> 逐字节未变 = `b3c9fada…`）。
 
 ### 2.3 打标签 + 建 Release
 
@@ -173,7 +184,7 @@ gh release create v1.1.0 --verify-tag "dist\installer\LectureLens-1.1.0-setup.ex
 > 这一节的内容已经作为 **`新手指引.txt` 随包发出去**（装完就在安装目录里，
 > 开始菜单也有一项）。下面是同一套流程的完整版，你发给朋友前自己过一遍。
 
-1. **下载**：拿到 `LectureLens-1.0.0-setup.exe`（+ 可选的 `.sha256`）。
+1. **下载**：拿到 `LectureLens-1.1.0-setup.exe`（+ 可选的 `.sha256`）。
    ⚠️ 别在压缩包里直接双击——先解压到硬盘再装。
 2. **过 SmartScreen**：双击后若弹蓝色「Windows 已保护你的电脑」→
    点「**更多信息**」→ 再点「**仍要运行**」。这是"没买数字签名证书"的正常现象，
@@ -208,7 +219,7 @@ gh release create v1.1.0 --verify-tag "dist\installer\LectureLens-1.1.0-setup.ex
  用这个得我先把你加成协作者，你告诉我 GitHub 用户名）
 
 怎么装（三步）：
-1. 双击 LectureLens-1.0.0-setup.exe。如果 Windows 弹蓝色的
+1. 双击 LectureLens-1.1.0-setup.exe。如果 Windows 弹蓝色的
    "Windows 已保护你的电脑"，点「更多信息」→「仍要运行」。
    这个程序我没买代码签名证书，所以 Windows 会先拦一下，不是病毒。
 2. 一路下一步。装完第一次启动，如果防火墙弹窗问是否允许联网，
@@ -235,7 +246,7 @@ gh release create v1.1.0 --verify-tag "dist\installer\LectureLens-1.1.0-setup.ex
 这是 **SmartScreen**，因为安装包没有代码签名（本阶段刻意不买，£100-400/年）。
 点「**更多信息**」→「**仍要运行**」。
 如果压根没看到这两个按钮，确认你是在**硬盘上的 .exe**（不是压缩包内预览），
-文件名叫 `LectureLens-1.0.0-setup.exe`。
+文件名叫 `LectureLens-1.1.0-setup.exe`。
 
 ### Q2. 杀毒软件报毒
 PyInstaller 打的包 + 无签名，确实常被启发式规则误报。处理办法：
@@ -248,17 +259,18 @@ PowerShell（推荐，Windows 自带）：
 
 ```powershell
 cd "$env:USERPROFILE\Downloads"
-(Get-FileHash -Algorithm SHA256 .\LectureLens-1.0.0-setup.exe).Hash.ToLower()
+(Get-FileHash -Algorithm SHA256 .\LectureLens-1.1.0-setup.exe).Hash.ToLower()
 ```
 
 或用 `certutil`（实测可用）：
 
 ```bat
-certutil -hashfile "%USERPROFILE%\Downloads\LectureLens-1.0.0-setup.exe" SHA256
+certutil -hashfile "%USERPROFILE%\Downloads\LectureLens-1.1.0-setup.exe" SHA256
 ```
 
 把输出与 `.sha256` 文件里的第一串（64 位十六进制）逐字比对，**一致即完好**。
-> 当前 v1.0.0 的值：`b3c9fada9e4791d15a15609ed6a632037f03ddc11bc0488dad33fbdc786cd881`
+> 当前 v1.1.0 的值：`0b41d0a04b7f4fd93b25a96f8315f3ead00d4124a6d613cb792b6b192b2b3f14`
+> （v1.0.0 那版是 `b3c9fada9e4791d15a15609ed6a632037f03ddc11bc0488dad33fbdc786cd881`，那个包仍留在 dist\installer 里当跨版本升级实测的输入。）
 > 注意 PowerShell 默认输出大写、`certutil` 输出小写，比对时别看粗细——大小写
 > 不影响一致性，但字母得对得上。
 > 这个值随每次重打安装包都会变，**以同目录 `.sha256` 文件为准**（本文件这里只是
@@ -273,7 +285,7 @@ certutil -hashfile "%USERPROFILE%\Downloads\LectureLens-1.0.0-setup.exe" SHA256
   `%LocalAppData%\LectureLens`），**不弹 UAC**。如果它要你提权，说明拿到的不是
   这个包，别继续。
 - 还是不行：把报错截图发我，安装日志可以这样留：
-  `LectureLens-1.0.0-setup.exe /VERYSILENT /LOG="%TEMP%\ll-install.log"`，
+  `LectureLens-1.1.0-setup.exe /VERYSILENT /LOG="%TEMP%\ll-install.log"`，
   然后把 `%TEMP%\ll-install.log` 发我。
 
 ### Q5. 装了但**没声音 / 一直没字幕**
@@ -308,7 +320,7 @@ certutil -hashfile "%USERPROFILE%\Downloads\LectureLens-1.0.0-setup.exe" SHA256
 不需要先卸载。
 > 数据保留是**实测过的**，不是口头承诺。`scripts/verify_installer.py` 真装真卸并断言：
 > - 卸载后 `LectureLens.exe` 已删除，而 `transcripts\`（笔记）与 `config.json` 原样还在；
-> - **跨版本覆盖升级**也是实测的（`0.9.0 → 1.0.0`：先装旧版 → **在旧版下**造笔记 →
+> - **跨版本覆盖升级**也是实测的（v1.1.0 那轮走的是**真实** `1.0.0 → 1.1.0`：先装旧版 → **在旧版下**造笔记 →
 >   再用新版**不卸载直接覆盖**）→ 旧版下造的笔记依然原样、程序自检仍退 0；
 >   这条路径**不传 `--upgrade-from` 会判失败**，防止"没测也敢说"；
 > - 卸载器在**卸载前**、**卸载后**、以及"文件被占用需重启才能清完"那条路径上，
@@ -351,7 +363,7 @@ certutil -hashfile "%USERPROFILE%\Downloads\LectureLens-1.0.0-setup.exe" SHA256
 - **已实测**（本机，命令与输出都留有记录）：
   - 构建 → 编安装包（ISCC 实测 397 秒，exit 0）→ 生成 SHA256 → 与安装包核对一致；
   - `verify_installer.py` 真装真卸全流程：静默装 / `--check` / 造数据探针 / 静默卸载
-    / 断言 exe 已删但笔记还在 / 重装 / **跨版本覆盖升级（实测 0.9.0 → 1.0.0）** / 清理。
+    / 断言 exe 已删但笔记还在 / 重装 / **跨版本覆盖升级（实测 1.0.0 → 1.1.0）** / 清理。
     清理那四条**也是断言**（卸载器已退出、临时目录已删净、无残留进程、无新增 Inno
     临时目录），不是只打印一行日志。
 - **未实测**（属你本人操作、或需要另一台机器 / GUI，我做不了）：

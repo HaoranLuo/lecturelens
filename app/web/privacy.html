@@ -7,7 +7,19 @@
 <style>
   /* 令牌 = docs/design-spec.md §2（本页为 p1-3 新页面，直接按令牌表落地） */
   :root { --bg:#0B0E13; --surface:#12161D; --surface-2:#171C24; --border:#232B35;
-          --text-1:#E8EEF5; --text-2:#93A1B0; --gold:#FFD97A; --ok:#5FD08A; }
+          --text-1:#E8EEF5; --text-2:#93A1B0; --gold:#FFD97A; --ok:#5FD08A;
+          /* B15：合规红线卡的描边（原先是散在 .redline 里的字面量 #4a3d1c）——
+             浅色下金色描边压在白底上几乎看不见，故提为令牌、浅色给蓝调淡描边。 */
+          --gold-border:#4a3d1c; }
+  /* —— B15 浅色主题（与 index.html 同一套取值：白底蓝调，DeepSeek 风）——
+     只在 <html data-theme="light"> 时生效；data-theme 由 <head> 的 ll_theme 引导脚本
+     在首帧前挂上。**默认深色零变化**：无键/非法值/存储被禁 → 不挂属性 → 上面那块
+     逐字节不变。键集合必须与深色块**完全一致**（tests/test_theme_tokens.py 钉着这条：
+     只加在深色块里的令牌，浅色下会静默继承深色值 = 看不见的回归）。 */
+  html[data-theme="light"] {
+          --bg:#F7F8FA; --surface:#FFFFFF; --surface-2:#F1F3F7; --border:#E2E6EE;
+          --text-1:#1B2430; --text-2:#55606E; --gold:#2B4BF2; --ok:#12805C;
+          --gold-border:#C7D2FE; }
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:var(--bg); color:var(--text-1);
          font-family:'Microsoft YaHei','PingFang SC',sans-serif;
@@ -22,12 +34,39 @@
   .card h2 .tag { font-size:12px; font-weight:400; color:var(--ok); margin-left:8px; }
   .card p { font-size:13px; line-height:1.8; color:var(--text-2); }
   .card p b { color:var(--text-1); font-weight:600; }
-  .redline { border-color:#4a3d1c; }
+  .redline { border-color:var(--gold-border); }
   .redline h2 { color:var(--gold); }
   footer { margin-top:22px; color:var(--text-2); font-size:12px; line-height:1.8; }
   a { color:var(--gold); text-decoration:none; }
   a:hover { text-decoration:underline; }
 </style>
+<script>
+/* —— B15 深浅主题 · 引导脚本（**必须留在 head**）——
+   与字幕页同一套：localStorage 键 ll_theme ∈ dark | light | auto，默认 dark；
+   抢在首帧前给 <html> 挂 data-theme，否则浅色用户会先看到一帧深色再被翻白（闪屏）。
+   本页没有设置入口（主题在字幕页的「设置 → 🎨外观」里选），这里只负责**读**。
+   存储被禁/取值非法一律回落 dark，且绝不抛错（隐私模式下 localStorage 会抛）。 */
+(function () {
+  var KEY = 'll_theme';
+  var MODES = ['dark', 'light', 'auto'];
+  var MQ = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  var cur = 'dark';
+  function normalize(v) { return MODES.indexOf(v) >= 0 ? v : 'dark'; }
+  try { cur = normalize(localStorage.getItem(KEY)); } catch (e) { cur = 'dark'; }
+  function resolve(mode) {
+    if (mode !== 'auto') return mode;
+    if (!MQ) return 'dark';          // 探不到系统偏好 → 回落默认深色（不凭空翻白）
+    return MQ.matches ? 'dark' : 'light';
+  }
+  function paint() { document.documentElement.dataset.theme = resolve(cur); }
+  paint();
+  if (MQ) {
+    var onSysChange = function () { if (cur === 'auto') paint(); };
+    if (MQ.addEventListener) MQ.addEventListener('change', onSysChange);
+    else if (MQ.addListener) MQ.addListener(onSysChange);   // 老 WebView2 兜底
+  }
+})();
+</script>
 </head>
 <body>
 <div class="wrap">

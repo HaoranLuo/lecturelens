@@ -9,6 +9,7 @@
 
 三层：notes.py 纯函数 / 端点行为 / index.html 结构断言。
 """
+import json
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -207,7 +208,7 @@ async def test_get_tags_defaults_to_current_note(global_hub):
         body = (await c.get("/api/notes/tags")).json()      # 不给 name = 当前笔记
         assert body["ok"] and body["file"] == global_hub.transcript_path.name
         assert body["tags"] == ["没听懂"]
-        assert body["presets"] == list(main.TAG_PRESETS)
+        assert body["presets"] == main.tag_presets()
         assert body["sha"] and body["mtime_us"]
 
 
@@ -305,7 +306,7 @@ async def test_preview_and_raw_expose_tags():
         assert (await c.get("/api/notes/preview",
                             params={"name": p.name})).json()["tags"] == ["待复习"]
         raw = (await c.get("/api/notes/raw", params={"name": p.name})).json()
-        assert raw["tags"] == ["待复习"] and raw["presets"] == list(main.TAG_PRESETS)
+        assert raw["tags"] == ["待复习"] and raw["presets"] == main.tag_presets()
 
 
 async def test_tags_write_broadcasts_notes_event(monkeypatch):
@@ -569,7 +570,7 @@ async def test_tags_batch_add_then_remove_roundtrip():
         assert body["failed"] == [] and body["tags"] == ["重点", "考试"]
         assert {x["file"] for x in body["results"]} == {a.name, b.name}
         assert all(x["action"] == "inserted" for x in body["results"])
-        assert body["presets"] == list(main.TAG_PRESETS)
+        assert body["presets"] == main.tag_presets()
         back = [notes_mod.note_tags((await c.get("/api/notes/file",
                                                 params={"name": n})).text)
                 for n in (a.name, b.name)]
@@ -707,11 +708,17 @@ async def test_tags_batch_broadcasts_notes_once(monkeypatch):
 
 
 async def test_list_endpoint_carries_presets():
-    """A2：预设标签随列表下发（面板 chips 的服务端来源；B3 自定义预设时同一条路）。"""
+    """A2：预设标签随列表下发（面板 chips 的服务端来源）。
+
+    B3 起「唯一来源」从模块常量变成 **config.tags_presets**（取值函数 main.tag_presets()）
+    ——默认仍是出厂四标签，用户自定义后同一条下发路径带来新值（四个下发点的跟随
+    见本文件 §9）。"""
     async with asgi_client() as c:
         body = (await c.get("/api/notes/list")).json()
-    assert body["presets"] == list(main.TAG_PRESETS)
-    assert main.TAG_PRESETS == ("重点", "考试", "没听懂", "待复习")
+    assert body["presets"] == main.tag_presets()
+    assert main.DEFAULT_TAG_PRESETS == ("重点", "考试", "没听懂", "待复习")
+    assert main.DEFAULT_CONFIG["tags_presets"] == list(main.DEFAULT_TAG_PRESETS)
+    assert main.tag_presets() == list(main.DEFAULT_TAG_PRESETS)   # 默认 = config 的四标签
 
 
 # ---------------- 8) A2：批量打标签（index.html 结构断言） ----------------
@@ -785,3 +792,186 @@ def test_batch_tag_styles_use_tokens_and_scope_buttons():
     assert ".nbTagBar > button" in whole and ".nbTagBar button {" not in whole
     assert ".nbTagBar.on { display:flex; }" in whole
     assert '<div class="nbTagBar" id="nbTagBar">' in HTML         # 不带 nbBatch 类
+
+
+# ---------------- 9) B3：常用标签自定义（config.tags_presets） ----------------
+# 交付面（docs/notes-batch.md B3 行）：设置页维护预设 chips（chips 增删 + 保存），
+# 默认仍是 重点/考试/没听懂/待复习。落地要点（评审口径）：
+#  ① config 白名单新键 tags_presets（list[str]）——**必须走专项校验**：取值是列表，
+#     塞不进 CONFIG_VALUE_CHOICES，未特判键会在 set_config 里 KeyError（500 而非 400）；
+#  ② main.tag_presets() 是唯一取值口径（读 runtime config，坏值回落出厂四值）；
+#  ③ 四个下发点（list / raw / tags_view / batch）跟随自定义值。
+
+@pytest.fixture
+def tags_env(monkeypatch):
+    """隔离 runtime['config']（POST /api/config 会就地改它）——与 test_fade_lines 同款。"""
+    monkeypatch.setitem(main.runtime, "config", dict(main.DEFAULT_CONFIG))
+    monkeypatch.setitem(main.runtime, "reloading", False)
+    return main.runtime
+
+
+def test_config_key_whitelisted_and_not_an_enum():
+    """B3：白名单 + 默认值 + 「不能进枚举表」这三件事一起锁。
+
+    最后一条是**根因防复现**：tags_presets 一旦被当成枚举键，set_config 会走到
+    `CONFIG_VALUE_CHOICES[k]` 直接 KeyError——那是 500 而不是 400，且运行时与文件
+    都还没动，最难查的一类故障。"""
+    assert "tags_presets" in main.ALLOWED_CONFIG_KEYS
+    assert main.DEFAULT_CONFIG["tags_presets"] == ["重点", "考试", "没听懂", "待复习"]
+    assert "tags_presets" not in main.CONFIG_VALUE_CHOICES
+    assert "tags_presets" not in main.CONFIG_NUM_RANGES
+    assert main.TAG_PRESETS_MAX == 12
+
+
+def test_tags_presets_norm_rules():
+    """专项校验的规则表：必须 list / 1–12 条 / 逐项过 notes.normalize_tag / 去重保序。"""
+    norm, err = main.tags_presets_norm(["重点", "考试"])
+    assert (norm, err) == (["重点", "考试"], None)
+    # 规范化：去首尾空白、剥开头的 #（宽松接受用户最自然的写法）
+    assert main.tags_presets_norm(["  #重点  ", "考试"])[0] == ["重点", "考试"]
+    # 去重保序（同一标签的两种写法算一条）
+    assert main.tags_presets_norm(["重点", "#重点", "考试"])[0] == ["重点", "考试"]
+    # 类型/长度闸
+    for bad in ("重点", 5, None, {"a": 1}, ("重点",)):
+        norm, err = main.tags_presets_norm(bad)
+        assert norm is None and err and "tags_presets" in err, bad
+    assert main.tags_presets_norm([])[1] is not None                  # 空表非法
+    assert main.tags_presets_norm(["x"] * main.TAG_PRESETS_MAX)[1] is None
+    assert main.tags_presets_norm(["x"] * (main.TAG_PRESETS_MAX + 1))[1] is not None
+    # 逐项校验用服务端同一套规则（空白 / 控制字符 / 内部 # / 超长）
+    for bad_item in ("机器 学习", "a#b", "x" * 17, "a\u2028b", "\u200b"):
+        norm, err = main.tags_presets_norm(["重点", bad_item])
+        assert norm is None and "非法标签" in err, bad_item
+    assert main._tags_presets_problem(["重点"]) is None               # 错误文案视图同源
+    assert main._tags_presets_problem("重点") is not None
+
+
+def test_tag_presets_reads_config_and_falls_back_on_broken_values(tags_env):
+    """取值口径：读 runtime config；**手改坏的 config.json** 整体回落出厂四值。
+
+    config.json 是用户可手改的文件：半截坏值（字符串/混入非法项/超长表）流到前端
+    只会渲染出一排看不出问题的怪 chip，故读侧宁可回到已知可用的一套。"""
+    assert main.tag_presets() == ["重点", "考试", "没听懂", "待复习"]      # 默认
+    tags_env["config"]["tags_presets"] = ["论文", "考试周"]
+    assert main.tag_presets() == ["论文", "考试周"]                       # 自定义生效
+    for broken in ("重点", ["重点", "机器 学习"], ["x"] * 99, [], None, 5):
+        tags_env["config"]["tags_presets"] = broken
+        assert main.tag_presets() == list(main.DEFAULT_TAG_PRESETS), broken
+    # 返回的是**副本**：调用方改动不得污染 runtime config（否则下一处下发就串味）
+    tags_env["config"]["tags_presets"] = ["论文"]
+    got = main.tag_presets()
+    got.append("污染")
+    assert main.tag_presets() == ["论文"]
+
+
+async def test_post_config_roundtrips_tags_presets(tags_env):
+    """POST /api/config 写列表：规范化后落盘，GET /api/config 回读同一份。"""
+    async with asgi_client() as c:
+        r = await c.post("/api/config",
+                         json={"tags_presets": ["  #论文 ", "考试周", "论文"]})
+        assert r.status_code == 200, r.text
+        assert r.json()["changed"]["tags_presets"] == ["论文", "考试周"]   # 规范形
+        body = (await c.get("/api/config")).json()
+    assert body["tags_presets"] == ["论文", "考试周"]
+    assert main.runtime["config"]["tags_presets"] == ["论文", "考试周"]
+    saved = json.loads(main.CONFIG_PATH.read_text(encoding="utf-8"))
+    assert saved["tags_presets"] == ["论文", "考试周"]
+
+
+async def test_post_config_rejects_bad_tags_presets_without_pollution(tags_env):
+    """非法值一律 400（**不是 500**——未特判键的 KeyError 就是那条故障），且零污染。"""
+    snapshot = dict(tags_env["config"])
+    for bad in ("重点", [], ["x"] * (main.TAG_PRESETS_MAX + 1), ["机器 学习"], [5], None):
+        async with asgi_client() as c:
+            r = await c.post("/api/config", json={"tags_presets": bad})
+        assert r.status_code == 400, (bad, r.status_code, r.text)
+        assert "tags_presets" in r.json()["error"] or "非法标签" in r.json()["error"]
+        assert tags_env["config"] == snapshot, bad        # 整体校验先行：运行时零污染
+    assert not main.CONFIG_PATH.exists()                  # 也未落盘
+
+
+async def test_all_four_dispatch_points_follow_custom_presets(tags_env):
+    """B3 的核心：自定义之后，**四个下发点**同时跟随（同一取值函数，零分支）。"""
+    custom = ["论文", "考试周", "周会"]
+    async with asgi_client() as c:
+        assert (await c.post("/api/config", json={"tags_presets": custom})).status_code == 200
+        p = write_note("lecture_20261013_0300.md")
+        got_list = (await c.get("/api/notes/list")).json()["presets"]
+        got_raw = (await c.get("/api/notes/raw", params={"name": p.name})).json()["presets"]
+        got_tags = (await c.get("/api/notes/tags", params={"name": p.name})).json()["presets"]
+        got_batch = (await c.post("/api/notes/tags/batch",
+                                  json={"files": [p.name], "tags": ["论文"]})).json()["presets"]
+    assert got_list == got_raw == got_tags == got_batch == custom
+    # 落盘确认（重启后仍是自定义值——config.json 是唯一持久化）
+    assert json.loads(main.CONFIG_PATH.read_text(encoding="utf-8"))["tags_presets"] == custom
+
+
+async def test_presets_noop_when_unchanged(tags_env):
+    """喂**同一个值**（含顺序）→ no-op：不落盘、不改 changed（与其余键同一条语义）。"""
+    async with asgi_client() as c:
+        r = await c.post("/api/config",
+                         json={"tags_presets": list(main.DEFAULT_TAG_PRESETS)})
+    assert r.status_code == 200 and r.json() == {"ok": True, "changed": {}}
+    assert not main.CONFIG_PATH.exists()
+
+
+def test_settings_card_tolerates_non_array_config_value():
+    """评审修复⑤：手改 config.json 把 tags_presets 写成字符串等非数组时，设置页不许
+    半渲染（旧实现 `[...'重点']` 静默变 ['重','点']、`'重点'.map` 抛 TypeError 把
+    renderSettings() 后半段整段掀掉，用户还能把单字保存进配置）。
+
+    口径必须与服务端读侧（main.tag_presets：非数组/含非法项 → **整体**回落出厂四值）
+    一致——同一份数据的前后端两半不能各说各话。"""
+    fn = HTML.split("function cfgTagPresets() {", 1)[1].split("\n}", 1)[0]
+    assert "Array.isArray(raw)" in fn and "raw.slice()" in fn      # 只认数组，且给的是副本
+    assert "Array.isArray(fb)" in fn                               # 前端兜底那份同样验
+    card = HTML.split("function renderSetTagsCard() {", 1)[1].split("\n}", 1)[0]
+    assert "SET_TAGS = cfgTagPresets();" in card                   # 播种不再裸展开
+    render = HTML.split("function renderSetTags() {", 1)[1].split("\n}", 1)[0]
+    assert "cfgTagPresets().map((t) => '#' + t)" in render         # 「当前生效」也不裸 map
+    assert "SETCFG.tags_presets || TAG_PRESETS" not in HTML        # 旧写法：字符串会抛
+    assert "[...src]" not in HTML                                  # 旧播种：字符串被拆成单字
+
+
+def test_settings_card_wired_in_notes_tab():
+    """设置页 📝笔记 分区有「常用标签」卡：chips 工作副本 + 增删 + 保存 + 恢复默认。"""
+    section = HTML.split('<section id="viewSettings">', 1)[1].split("</section>", 1)[0]
+    card = section.split('<div class="card" data-set-tab="notes">', 4)[4].split(
+        "</div>\n\n    <div", 1)[0]
+    assert "常用标签" in card and 'id="setTagBar"' in card
+    for anchor in ('id="setTagRow"', 'id="setTagNew"', 'id="btnSetTagAdd"',
+                   'id="btnSetTagSave"', 'id="btnSetTagReset"', 'id="setTagState"'):
+        assert anchor in card, anchor
+    for binding in ("$('btnSetTagAdd').onclick", "$('btnSetTagSave').onclick",
+                    "$('btnSetTagReset').onclick", "$('setTagNew').onkeydown"):
+        assert binding in HTML, binding
+    render_fn = HTML.split("function renderSettings() {", 1)[1].split("\n}", 1)[0]
+    assert "renderSetTagsCard();" in render_fn             # 设置页渲染时回填编辑条
+
+
+def test_settings_card_reuses_chips_rules_and_posts_config():
+    """复用既有 chips 交互与**服务端同一套**预校验；保存走 POST /api/config（全量替换）。
+
+    另锁两条约束：① 工作副本不被刷新覆盖（未保存的编辑不能被别的卡片的刷新吃掉）；
+    ② chips 样式用 #setTagBar 提权——`.card button`(0,1,1) 比 `.tagChip`(0,1,0) 高，
+    不提权就会长出一排方 chip（A2 面板抬头记过同一条教训）。"""
+    add_fn = HTML.split("function addSetTag() {", 1)[1].split("\n}", 1)[0]
+    assert "tagProblem(val)" in add_fn                     # 与服务端 normalize_tag 同规则
+    assert "SET_TAGS.length >= SET_TAGS_MAX" in add_fn
+    assert "SET_TAGS_DIRTY = true;" in add_fn
+    save_fn = HTML.split("async function saveSetTags(list, label) {", 1)[1].split(
+        "\n}", 1)[0]
+    assert "'/api/config'" in save_fn
+    assert "JSON.stringify({ tags_presets: list })" in save_fn
+    assert "TAG_PRESETS = saved;" in save_fn               # 各面板 chips 立即跟随
+    assert "SET_TAGS_DIRTY = false;" in save_fn
+    assert "jfetch('/api/config')" in save_fn              # 失败回滚到服务端真值
+    card_fn = HTML.split("function renderSetTagsCard() {", 1)[1].split("\n}", 1)[0]
+    assert "if (!SET_TAGS_DIRTY)" in card_fn               # 不覆盖未保存的工作副本
+    assert "const SET_TAGS_MAX = 12;" in HTML              # 与服务端 TAG_PRESETS_MAX 同值
+    css = HTML.split("/* —— B3：设置页「常用标签」编辑条 ——", 1)[1].split("/*", 1)[0]
+    assert "#setTagBar .tagChip" in css and "border-radius:999px" in css
+    assert "#setTagBar > button" in css                    # 只吃本条自己的按钮
+    assert not re.search(r":\s*#[0-9a-fA-F]{3,6}", css), "不得写死色值（§一-4）"
+    assert "animation" not in css and "transition" not in css, "§5：不加动效"
+    assert "var(--gold-dim)" in css                        # 选中态仍走 §六 口径

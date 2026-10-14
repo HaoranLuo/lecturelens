@@ -174,8 +174,39 @@ def test_healthy() -> None:
 
 
 # ---------------------------------------------------------------- 2. TTS + ASR
+def _synth_tts_macos(text: str, path: Path) -> np.ndarray:
+    """macOS 合成英文语音 → 16k 单声道 wav（系统自带 say + afconvert，无需装包）。
+
+    固定 argv、不经 shell；`say` 先出 AIFF，再由 afconvert 转成 16k/单声道/16-bit WAV
+    （-f WAVE 容器格式、-d LEI16@16000 采样格式、-c 1 单声道）。任一命令失败都会抛
+    （check=True）——由调用方记成 ❌，绝不静默降级成静音/空音频。"""
+    aiff = Path(path).with_suffix(".aiff")
+    subprocess.run(["say", "-o", str(aiff), text], check=True, timeout=60,
+                   capture_output=True)
+    subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
+                    str(aiff), str(path)], check=True, timeout=60, capture_output=True)
+    aiff.unlink(missing_ok=True)
+    with wave.open(str(path), "rb") as w:
+        sr = w.getframerate()
+        channels = w.getnchannels()
+        audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+    audio = audio.astype(np.float32) / 32768.0
+    if channels > 1:      # 上面已要单声道；真要到了立体声就按通道均值收口（同 loopback）
+        audio = audio.reshape(-1, channels).mean(axis=1).astype(np.float32)
+    if sr != SR:
+        idx = np.arange(0, len(audio), sr / SR)
+        audio = np.interp(idx, np.arange(len(audio)), audio).astype(np.float32)
+    return audio
+
+
 def synth_tts(text: str, path: Path) -> np.ndarray:
-    """Windows SAPI 合成英文 wav，读回并重采样到 16k float32。"""
+    """合成英文 wav，读回并重采样到 16k float32。
+
+    平台分支（Mac 适配·第三批）：Windows = SAPI（System.Speech，PowerShell）；
+    macOS = `say` + `afconvert`（见 _synth_tts_macos）。两条支路都产出同一个形状
+    （16k float32 单声道），调用点零感知。"""
+    if sys.platform == "darwin":
+        return _synth_tts_macos(text, path)
     ps = (
         "Add-Type -AssemblyName System.Speech; "
         "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
@@ -236,6 +267,14 @@ def gpu_vram_mb() -> str:
 
 def test_gpu() -> None:
     print("\n[3] GPU 基准（large-v3-turbo / CUDA）")
+    if sys.platform != "win32":
+        # Mac 适配·第三批：这一段是 Windows + NVIDIA 专用的（nvidia-smi 显存读数 +
+        # 「device 必须解析成 cuda」的断言）。macOS 的加速后端是 MLX（见 app/asr.py），
+        # 基准口径不同，不在本脚本里假装能测——**如实跳过且不记入结果**
+        # （跳过 ≠ 通过：结果汇总的项数会少这一段，看得到差别）。
+        print(f"  ⏭ 该段仅 Windows（CUDA/nvidia-smi 基准）：当前平台 {sys.platform}，跳过"
+              "——macOS 的加速是 MLX，基准不在此脚本")
+        return
     wav_path = ROOT / "scripts" / "_tts_gpu.wav"
     try:
         audio = synth_tts(SENTENCE, wav_path)
@@ -363,6 +402,15 @@ def _ws_open(host: str, port: int, token: str | None = None):
 
     host 参数是 §7 评审修复（评审2①）后新增的：设备数只数**非环回**对端，所以用例
     必须能指定「经 127.0.0.1 连（本机窗口）」与「经 LAN IP 连（手机形态）」两种来源。"""
+    s, _ = _ws_open2(host, port, token)
+    return s
+
+
+def _ws_open2(host: str, port: int, token: str | None = None):
+    """同 _ws_open，但把 101 响应之后**已经一并收到的那几个字节**交回 → (socket, 余量)。
+
+    B11 起服务端 accept 后立刻补发一帧 hello：一次 `recv()` 完全可能把 101 响应与这帧
+    吃进同一个 TCP 段（实测常见）。把余量交回，后面按"第一帧"解析才不会空等。"""
     try:
         s = socket.create_connection((host, port), timeout=5)
         key = "dGhlIHNhbXBsZSBub25jZQ=="
@@ -371,13 +419,52 @@ def _ws_open(host: str, port: int, token: str | None = None):
                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n")
         s.sendall(req.encode())
-        resp = s.recv(200).decode(errors="replace")
-        if resp and "101" in resp.splitlines()[0]:
-            return s
+        buf = b""
+        while b"\r\n\r\n" not in buf:          # 读到响应头结束（101 很短，通常一次就到）
+            chunk = s.recv(200)
+            if not chunk:
+                s.close()
+                return None, b""
+            buf += chunk
+        head, rest = buf.split(b"\r\n\r\n", 1)
+        if b"101" in head.splitlines()[0]:
+            return s, rest
         s.close()
     except Exception:
         pass
-    return None
+    return None, b""
+
+
+def _ws_first_frame(sock, leftover: bytes = b""):
+    """读服务端发来的**第一帧文本帧** → JSON dict（读不到/不是文本帧 → None）。
+
+    服务端→客户端的帧**不加掩码**：byte0 = FIN|opcode（0x1 = 文本），byte1 低 7 位 =
+    载荷长度（<126 直给；126/127 走 2/8 字节扩展长度，这里一并兜底）。"""
+    try:
+        buf = bytes(leftover)
+
+        def need(n: int) -> None:
+            nonlocal buf
+            while len(buf) < n:
+                chunk = sock.recv(max(n - len(buf), 16))
+                if not chunk:
+                    raise EOFError
+                buf += chunk
+
+        need(2)
+        op, n, pos = buf[0] & 0x0F, buf[1] & 0x7F, 2
+        if n == 126:
+            need(4)
+            n, pos = int.from_bytes(buf[2:4], "big"), 4
+        elif n == 127:
+            need(10)
+            n, pos = int.from_bytes(buf[2:10], "big"), 10
+        need(pos + n)
+        if op != 0x1:                          # 非文本帧（ping/pong/close）：不解析
+            return None
+        return json.loads(buf[pos:pos + n].decode("utf-8"))
+    except Exception:
+        return None
 
 
 def _ws_clients_now(base: str, headers: dict) -> int | None:
@@ -575,6 +662,12 @@ def test_server(port: int = 8799) -> None:
         # 条目9④：前端 ui_metrics 上行并入 status（默认 0，浏览器端才有非零值）
         record("status 含 ui_zh_dropped 字段", isinstance(st.get("ui_zh_dropped"), int),
                f"ui_zh_dropped={st.get('ui_zh_dropped')}")
+        # B8：供电状态现算进 status——三态（True=电池 / False=插电 / None=非 Windows 或
+        # 读不到）。真机上到底哪个值取决于插没插电，故只断言"字段在且取值合法"。
+        bat = st.get("on_battery")
+        record("B8 status 含 on_battery 三态字段（供电状态现算）",
+               "on_battery" in st and (bat is None or isinstance(bat, bool)),
+               f"on_battery={bat!r}")
 
         html = httpx.get(f"{base}/", timeout=5).text
         record("字幕页可访问（/ 不拦，token 粘贴入口）", "LectureLens" in html and "btnPause" in html)
@@ -598,12 +691,40 @@ def test_server(port: int = 8799) -> None:
                                        "indeterminate", "pickAllVisible", "clearNotePick",
                                        "view-notes")),
                "工具条三态全选 + 反选 + Ctrl+A 闸门 + 筛选硬清空齐备")
+        # B7：键盘整理流同理——J/K 与方向键分支、三道闸、两个动作（Enter 开篇 / Delete
+        # 走 delNote）必须真的在**服务端发出去的页面**里。按键的实际行为不进自动化
+        # （本仓无 JS 运行器，见 tests/test_note_keyboard.py 抬头），由真机手测覆盖。
+        record("B7 键盘整理流在页面里（J/K/方向键 + Enter/Delete + 三道闸）",
+               all(k in html for k in ("focusNoteRow", "selNoteName", "notesKeyAllowed",
+                                       "ArrowDown", "ArrowUp", "scrollIntoView",
+                                       "delNote([name])", "openNote(NB.sel)",
+                                       "b.dataset.name = n.name;")),
+               "移动分支 + 打开/删除接线 + 三道闸齐备")
         # B14：课程管理卡同样必须真的在**服务端发出去的页面**里——标题/统计/查看笔记
         # 跳转/删除确认的那句承诺（服务端行为由上面 B14 段真服务往返覆盖）。
         record("B14 课程管理卡在页面里（统计/查看笔记/删除确认写归属）",
                all(k in html for k in ("课程管理", "cStat", "条术语", "cOpen", "查看笔记",
                                        "openCourseNotes", "篇笔记将归入", "courseRows")),
                "标题 + 统计 + 跳转 + 删除确认文案齐备")
+        # B3：常用标签编辑卡（📝笔记 分区）同样必须真的在**服务端发出去的页面**里
+        # ——标题/编辑条/chips 容器/输入框/三个按钮（服务端行为由下面 B3 段真服务往返覆盖）。
+        record("B3 常用标签卡在页面里（编辑条/chips/增删/保存/恢复默认）",
+               all(k in html for k in ("常用标签", "setTagBar", "setTagRow", "setTagNew",
+                                       "btnSetTagAdd", "btnSetTagSave",
+                                       "btnSetTagReset", "/api/config")),
+               "标题 + 编辑条 + chips 容器 + 输入框 + 三个按钮齐备")
+        # B9：标签管理入口与弹窗（服务端行为见下面 B9 段真服务往返）
+        record("B9 标签管理在页面里（工具条按钮/弹窗/重命名与删除接线）",
+               all(k in html for k in ("nbTagManage", "tagMask", "tagList", "tagSub",
+                                       "/api/notes/tags/manage", "tagRenameInput",
+                                       "篇笔记将被更新", "篇笔记会移除这个标签")),
+               "工具条按钮 + 弹窗 + 内联重命名 + 二次确认文案齐备")
+        # B13：术语库包卡区同样必须真的在**服务端发出去的页面**里——标题/目标课程下拉/
+        # 卡片容器/双标记说明（服务端行为由下面 B13 段真服务往返覆盖）。
+        record("B13 术语库包卡区在页面里（安装到/包卡/双标记说明）",
+               all(k in html for k in ("术语库包", "glPackCourse", "glPackCard", "glPacks",
+                                       "glPackState", "来自包", "结束包", "并集去重")),
+               "标题 + 安装到下拉 + 卡片容器 + 双标记说明齐备")
         # A2：批量打标签的按钮与面板（服务端行为见下面 §8 之后的 A2 真服务往返）
         record("A2 批量打标签面板在页面里（按钮/chips/自定义/方向/应用）",
                all(k in html for k in ("nbBatchTag", "nbTagBar", "nbTagModeSel",
@@ -645,15 +766,27 @@ def test_server(port: int = 8799) -> None:
         if not isinstance(n0, int):
             record(rec_name, False, f"status 无 ws_clients: {n0!r}")
         else:
-            ws_lo = _ws_open("127.0.0.1", port, token)
+            ws_lo, lo_rest = _ws_open2("127.0.0.1", port, token)
             samples = []
             t0 = time.time()
             while time.time() - t0 < 1.0:        # 本机窗口连上后，设备数必须**不动**
                 samples.append(_ws_clients_now(base, H))
                 time.sleep(0.2)
-            ws_lan = _ws_open(lan_ip, port, token) if lan_ip else None
+            ws_lan, lan_rest = (_ws_open2(lan_ip, port, token) if lan_ip else (None, b""))
             n_lan = (_wait_ws_clients(base, H, lambda n: n >= n0 + 1)
                      if ws_lan is not None else None)
+            # —— B11 递手帧：accept 后服务端补发 {"type":"hello","lan":<对端是否 LAN>} ——
+            # 环回（本机窗口）必须是 false（桌面界面零变化），经 LAN IP 连的必须是 true
+            # （手机形态 → 前端给 body.mobile 收起控制按钮）。真 socket + 真帧：
+            # "由服务端按对端地址判定、不由客户端自报"这条在这里被钉死。
+            hello_lo = _ws_first_frame(ws_lo, lo_rest) if ws_lo is not None else None
+            hello_lan = _ws_first_frame(ws_lan, lan_rest) if ws_lan is not None else None
+            record("B11 WS 递手帧 hello（lan 按对端地址判定）",
+                   hello_lo == {"type": "hello", "lan": False}
+                   and (hello_lan == {"type": "hello", "lan": True}
+                        if ws_lan is not None else True),
+                   f"环回={hello_lo} · LAN={hello_lan}"
+                   + ("" if lan_ip else "（无 LAN 地址，LAN 分支跳过）"))
             for sock in (ws_lo, ws_lan):
                 if sock is not None:
                     sock.close()
@@ -999,6 +1132,100 @@ def test_server(port: int = 8799) -> None:
                                           headers=H).json()["courses"]),
                "三件都清干净")
 
+        # —— B13 术语库包：装 → 读回 → 卸 往返（真服务，文件为事实来源）——
+        # ① 包列表：每包有名字/简介/条目数（条目数 = 现算实数）；
+        # ② 未绑定术语表的课程 → 端点**自动建表**并写回绑定；
+        # ③ 装上后：文件里出现双标记、/api/glossary 的条目数 = 包条目数；
+        # ④ 用户自加一条（EOF 追加）→ 卸载 → 用户那一条必须完好、包标记消失。
+        # 收尾删掉临时课程与它自动建的那份术语表（glossary/ 与课程表零残留）。
+        b13_course = f"smoke-术语包-{int(time.time())}"
+        b13_id = None
+        b13_file = None
+        b13_user_en, b13_user_zh = "smoke owned term", "smoke 自有词条"
+        b13_ok = False
+        try:
+            packs_list = httpx.get(f"{base}/api/glossary/packs", timeout=5, headers=H).json()
+            pk_items = packs_list.get("packs") or []
+            record("B13 术语库包列表（名称/简介/条目数）",
+                   bool(pk_items) and all(p.get("name") and p.get("intro")
+                                          and isinstance(p.get("count"), int)
+                                          and p["count"] > 0 for p in pk_items),
+                   f"{len(pk_items)} 个包 · "
+                   f"首包 {pk_items[0]['name']}/{pk_items[0]['count']} 条"
+                   if pk_items else "⚠ 没有包（dist 缺 glossary_packs？）")
+            pk = pk_items[0]
+            r_c = httpx.post(f"{base}/api/courses", timeout=5, headers=H,
+                             json={"name": b13_course})
+            b13_id = ((r_c.json().get("course") or {}).get("id")
+                      if r_c.status_code == 200 else None)
+            r_i = httpx.post(f"{base}/api/glossary/packs/install", timeout=10, headers=H,
+                             json={"pack": pk["name"], "course": b13_id})
+            inst = r_i.json() if r_i.status_code == 200 else {}
+            b13_file = inst.get("file")
+            gpath = (ROOT / "glossary" / b13_file) if b13_file else None
+            text = gpath.read_text(encoding="utf-8") if (gpath and gpath.is_file()) else ""
+            record("B13 安装术语库包（未绑定术语表的课自动建表 + 双标记块）",
+                   r_i.status_code == 200 and inst.get("created_file") is True
+                   and inst.get("count") == pk["count"]
+                   and f"# —— 来自包：{pk['name']} ——" in text
+                   and f"# —— 结束包：{pk['name']} ——" in text,
+                   f"HTTP {r_i.status_code} · 新增 {inst.get('added')} 条 · "
+                   f"文件 {b13_file} · 双标记={'齐' if text else '缺'}")
+            # 读回：条目数与课程卡的术语数同源（同一份解析器）
+            view = httpx.get(f"{base}/api/glossary", timeout=5, headers=H).json()
+            row = next((f for f in view["files"] if f["name"] == b13_file), {})
+            crow = next((c for c in httpx.get(f"{base}/api/courses", timeout=5,
+                                              headers=H).json()["courses"]
+                         if c.get("id") == b13_id), {})
+            record("B13 装后读回（/api/glossary 与课程卡条数一致）",
+                   row.get("count") == pk["count"] and crow.get("terms") == pk["count"]
+                   and b13_file in (crow.get("glossary") or ""),
+                   f"术语页 {row.get('count')} 条 · 课程卡 {crow.get('terms')} 条")
+            # 评审修复②：重新安装会把块内条目**以包的译名为准**重写——改过的译名必须
+            # 在响应里如实回报（旧实现静默覆盖，UI 提示语还说反了）。
+            b13_en = (row.get("entries") or [{}])[0].get("en")
+            httpx.post(f"{base}/api/glossary", timeout=5, headers=H,
+                       json={"file": b13_file, "op": "update", "old_en": b13_en,
+                             "en": b13_en, "zh": "smoke改过的译名"})
+            r_re = httpx.post(f"{base}/api/glossary/packs/install", timeout=10, headers=H,
+                              json={"pack": pk["name"], "course": b13_id})
+            re_body = r_re.json() if r_re.status_code == 200 else {}
+            ow = (re_body.get("overwritten") or [{}])[0]
+            record("B13 重新安装回报被重置的译名（评审修复）",
+                   r_re.status_code == 200 and re_body.get("overwritten_count") == 1
+                   and ow.get("en") == b13_en and ow.get("was") == "smoke改过的译名"
+                   and b13_en + " = " in gpath.read_text(encoding="utf-8"),
+                   f"overwritten={ow}")
+            # 用户自加一条（走既有 POST /api/glossary 的 EOF 追加路径）
+            httpx.post(f"{base}/api/glossary", timeout=5, headers=H,
+                       json={"file": b13_file, "op": "add",
+                             "en": b13_user_en, "zh": b13_user_zh})
+            r_u = httpx.post(f"{base}/api/glossary/packs/uninstall", timeout=10, headers=H,
+                             json={"pack": pk["name"], "file": b13_file})
+            left = gpath.read_text(encoding="utf-8") if (gpath and gpath.is_file()) else ""
+            after = next((f for f in httpx.get(f"{base}/api/glossary", timeout=5,
+                                               headers=H).json()["files"]
+                          if f["name"] == b13_file), {})
+            record("B13 卸载术语库包（整块移除 · 用户自加词条完好）",
+                   r_u.status_code == 200 and f"{b13_user_en} = {b13_user_zh}" in left
+                   and f"# —— 来自包：{pk['name']} ——" not in left
+                   and after.get("count") == 1,
+                   f"HTTP {r_u.status_code} · 移除 {r_u.json().get('removed_lines')} 行 · "
+                   f"余 {after.get('count')} 条（用户那一条）")
+            b13_ok = True
+        except Exception as e:                      # 子用例失败不该带走整条 smoke
+            record("B13 术语库包往返", False, f"⚠ 异常: {type(e).__name__}: {e}")
+        finally:
+            if b13_id:
+                with contextlib.suppress(Exception):
+                    httpx.delete(f"{base}/api/courses/{b13_id}", timeout=5, headers=H)
+            if b13_file:
+                with contextlib.suppress(Exception):
+                    (ROOT / "glossary" / b13_file).unlink()
+        record("B13 测试零残留（临时课程 + 自动建的术语表）",
+               not (ROOT / "glossary" / b13_file).exists() if b13_file else True,
+               f"{b13_file} 已清理" if b13_ok or b13_file else "未产生文件")
+
         # —— 条目②（§2 课后改归属）：笔记头课程行的定稿改写 + 批量 + 往返 ——
         # 真服务上跑完整往返：两篇临时笔记（本进程直接落盘，服务只按名字认库内文件）
         # → 单篇改写 → 改回「未分类」→ 批量两篇 → 再批量改回 → 400 文案 → WS 'notes'
@@ -1123,6 +1350,35 @@ def test_server(port: int = 8799) -> None:
                    and "smoke manage line" in txt_ren
                    and (ROOT / "transcripts" / f"{renamed[:-3]}.times.json").is_file(),
                    f"to={ren.get('to')} · sidecars={ren.get('sidecars')}")
+            # —— B4 体量徽章：列表每条带 words（= EN+ZH 字符数），段数与预览页同源 ——
+            # 这篇此刻只有一行 EN「smoke manage line」（无 ZH）→ 段数 1、体量 17。
+            # 断言压在**真服务**上：索引层漏接/写错字段，这里立刻现形。
+            size_row = next((n for n in httpx.get(f"{base}/api/notes/list", timeout=5,
+                                                  headers=H).json()["notes"]
+                             if n["name"] == renamed), {})
+            record("B4 体量徽章（list 每条带 words = EN+ZH 字符数）",
+                   size_row.get("segments") == 1
+                   and size_row.get("words") == len("smoke manage line"),
+                   f"segments={size_row.get('segments')} · words={size_row.get('words')}")
+            # —— B6 未归档提醒：近 2 天、有正文、没摘要的笔记应出现在 list.pending 里 ——
+            # 造一篇「今天」的临时笔记（一行正文、无摘要）→ 必须被算作未归档；上面那两篇
+            # 1999 年的（renamed/mg_notes）不在 2 天窗口内 → 不该被算。只断言**集合关系**
+            # 与自洽（count == notes 条数），不对总篇数下结论——开发机 transcripts/ 里
+            # 还有别人的今天笔记，篇数不是本用例的因变量。
+            pend_name = f"lecture_{time.strftime('%Y%m%d')}_0801.md"
+            (ROOT / "transcripts" / pend_name).write_text(
+                f"# 双语课堂笔记 {time.strftime('%Y%m%d')}_0801\n\n"
+                "> LectureLens 自动生成（EN 原文 / ZH 翻译）\n"
+                "> 课程：未分类\n\n---\n\n- `10:00:00` pending smoke line\n",
+                encoding="utf-8")
+            mg_all.add(pend_name)
+            pend = httpx.get(f"{base}/api/notes/list", timeout=5, headers=H).json()["pending"]
+            pend_names = [x["name"] for x in pend["notes"]]
+            record("B6 未归档提醒（近 2 天有正文没摘要 → 进 list.pending）",
+                   pend_name in pend_names and renamed not in pend_names
+                   and pend["count"] == len(pend_names)
+                   and all({"name", "date"} <= set(x) for x in pend["notes"]),
+                   f"count={pend['count']} ∈{pend_name in pend_names} · days={pend.get('days')}")
             raw = httpx.get(f"{base}/api/notes/raw", timeout=5, headers=H,
                             params={"name": renamed}).json()
             edited = raw["text"].replace("smoke manage line", "edited by smoke")
@@ -1320,6 +1576,115 @@ def test_server(port: int = 8799) -> None:
         record("A2 测试零残留（临时笔记）", not bt_left,
                "临时笔记已删" if not bt_left else f"残留 {bt_left}")
 
+        # —— B9 标签管理：全库重命名（合并语义）往返 + 非法值 400 ——
+        # 真服务上跑完整往返：两篇临时笔记打上**唯一**标签 → 全库重命名 → 读回（以文件
+        # 为准）→ 再改回来 → 删掉临时笔记。标签名带 smoke 前缀，绝不碰真机已有标签；
+        # `changed` 必须正好等于这两篇（服务端扫的是**整个** transcripts/，故用 files 钉死）。
+        b9_old, b9_new = "smoke旧标", "smoke新标"
+        b9_notes = ["lecture_19990101_0012.md", "lecture_19990101_0013.md"]
+        try:
+            for i, name in enumerate(b9_notes):
+                (ROOT / "transcripts" / name).write_text(
+                    f"# 双语课堂笔记 19990101_00{12 + i:02d}\n\n"
+                    "> LectureLens 自动生成（EN 原文 / ZH 翻译）\n"
+                    "> 课程：未分类\n"
+                    f"> 标签：#重点 #{b9_old}\n\n---\n\n- `10:00:00` b9 smoke line\n",
+                    encoding="utf-8")
+            r_m = httpx.post(f"{base}/api/notes/tags/manage", timeout=20, headers=H,
+                             json={"op": "rename", "old": b9_old, "new": b9_new})
+            mg = r_m.json() if r_m.status_code == 200 else {}
+            txts = [httpx.get(f"{base}/api/notes/file", timeout=5, headers=H,
+                              params={"name": n}).text for n in b9_notes]
+            record("B9 全库重命名标签（服务端自枚举 · 读回以文件为准）",
+                   r_m.status_code == 200 and mg.get("changed") == 2
+                   and sorted(mg.get("files") or []) == sorted(b9_notes)
+                   and all(f"#重点 #{b9_new}" in t for t in txts),
+                   f"HTTP {r_m.status_code} · 改 {mg.get('changed')} 篇 / "
+                   f"扫 {mg.get('scanned')} 篇 · 正文保留="
+                   f"{all('b9 smoke line' in t for t in txts)}")
+            # 合并语义：把新名并回旧名（同一篇里两者都在 → 只剩一条，不写重复）
+            r_m2 = httpx.post(f"{base}/api/notes/tags/manage", timeout=20, headers=H,
+                              json={"op": "rename", "old": b9_new, "new": "重点"})
+            t2 = httpx.get(f"{base}/api/notes/file", timeout=5, headers=H,
+                           params={"name": b9_notes[0]}).text
+            t2_tag = next((ln for ln in t2.splitlines() if ln.startswith("> 标签")), "")
+            record("B9 重命名即合并（同名去重，不写出重复标签）",
+                   r_m2.status_code == 200 and "> 标签：#重点" in t2
+                   and t2.count("#重点") == 1 and b9_new not in t2,
+                   f"标签行={t2_tag!r}")
+            # 非法名 → 400（整单先校验后动手，一篇都不动）
+            r_bad = httpx.post(f"{base}/api/notes/tags/manage", timeout=5, headers=H,
+                               json={"op": "rename", "old": "有 空格", "new": "x"})
+            t3 = httpx.get(f"{base}/api/notes/file", timeout=5, headers=H,
+                           params={"name": b9_notes[0]}).text
+            record("B9 非法标签名 400（整单不动）",
+                   r_bad.status_code == 400 and "非法标签" in (r_bad.json().get("error") or "")
+                   and t3 == t2,
+                   f"HTTP {r_bad.status_code} · 文件未变={t3 == t2}")
+        finally:
+            for n in b9_notes:
+                with contextlib.suppress(Exception):
+                    (ROOT / "transcripts" / n).unlink()
+        b9_left = [n for n in b9_notes if (ROOT / "transcripts" / n).exists()]
+        tags_now = {it["tag"] for it in (httpx.get(f"{base}/api/notes/list", timeout=10,
+                                                   headers=H).json().get("tag_counts") or [])}
+        record("B9 测试零残留（临时笔记 + 临时标签）",
+               not b9_left and b9_old not in tags_now and b9_new not in tags_now,
+               f"临时笔记已删 · 标签表里无 {b9_old}/{b9_new}")
+
+        # —— B3 常用标签自定义：改 config.tags_presets → **四个下发点**跟随 → 还原 ——
+        # 真服务上验的正是 B3 的核心承诺：预设 chips 不再写死，改一处配置、四个入口
+        # （列表 / raw / tags_view / 批量）同时换新值。顺带钉住「列表键必须走专项校验」
+        # ——非法值要 400，而不是 CONFIG_VALUE_CHOICES[k] 的 KeyError（500）。
+        # 收尾把 tags_presets 还原成 smoke 开始时的值（真机 config.json 零残留）。
+        b3_custom = ["论文", "考试周"]
+        b3_note = "lecture_19990101_0011.md"
+        b3_prev = None
+        try:
+            cfg0 = httpx.get(f"{base}/api/config", timeout=5, headers=H).json()
+            b3_prev = cfg0.get("tags_presets")
+            (ROOT / "transcripts" / b3_note).write_text(
+                "# 双语课堂笔记 19990101_0011\n\n"
+                "> LectureLens 自动生成（EN 原文 / ZH 翻译）\n"
+                "> 课程：未分类\n\n---\n\n- `10:00:00` b3 smoke line\n",
+                encoding="utf-8")
+            r_cfg = httpx.post(f"{base}/api/config", timeout=5, headers=H,
+                               json={"tags_presets": b3_custom})
+            got = {
+                "list": httpx.get(f"{base}/api/notes/list", timeout=5,
+                                  headers=H).json().get("presets"),
+                "raw": httpx.get(f"{base}/api/notes/raw", timeout=5, headers=H,
+                                 params={"name": b3_note}).json().get("presets"),
+                "tags": httpx.get(f"{base}/api/notes/tags", timeout=5, headers=H,
+                                  params={"name": b3_note}).json().get("presets"),
+                "batch": httpx.post(f"{base}/api/notes/tags/batch", timeout=10, headers=H,
+                                    json={"files": [b3_note],
+                                          "tags": ["论文"]}).json().get("presets"),
+            }
+            record("B3 常用标签自定义（四个下发点跟随 config.tags_presets）",
+                   r_cfg.status_code == 200
+                   and all(v == b3_custom for v in got.values()),
+                   " · ".join(f"{k}=" + ("✓" if v == b3_custom else str(v))
+                              for k, v in got.items()))
+            r_bad = httpx.post(f"{base}/api/config", timeout=5, headers=H,
+                               json={"tags_presets": "重点"})
+            after_bad = httpx.get(f"{base}/api/config", timeout=5,
+                                  headers=H).json().get("tags_presets")
+            record("B3 非法值 400（列表键专项校验，不是 500）且配置零污染",
+                   r_bad.status_code == 400 and after_bad == b3_custom,
+                   f"HTTP {r_bad.status_code} · 现值 {after_bad}")
+        finally:
+            if b3_prev is not None:
+                with contextlib.suppress(Exception):
+                    httpx.post(f"{base}/api/config", timeout=5, headers=H,
+                               json={"tags_presets": b3_prev})
+            with contextlib.suppress(Exception):
+                (ROOT / "transcripts" / b3_note).unlink()
+        b3_after = httpx.get(f"{base}/api/config", timeout=5,
+                             headers=H).json().get("tags_presets")
+        record("B3 收尾还原（tags_presets 回到 smoke 开始前）",
+               b3_after == b3_prev, f"{b3_prev} → {b3_after}")
+
         # —— 条目③（§3 导出位置自选 + 文件名）：落盘往返 + 清回后仍走浏览器下载 ——
         # 真服务上跑完整链：设 export_dir（临时目录，成功即自动建目录）→ 导出 md 断言
         # JSON {ok, path} 与盘上文件（名 = {课程}_{日期}.md）→ 同名再导得 -2（绝不覆盖）
@@ -1425,6 +1790,28 @@ def test_server(port: int = 8799) -> None:
                        r_zip_empty.status_code == 400
                        and "不能为空" in (r_zip_empty.json().get("error") or ""),
                        f"HTTP {r_zip_empty.status_code}")
+                # —— B10 一键打包备份：all:true 打**整库**（含刚造的两篇临时笔记），
+                # 不受 50 篇选包上限约束。条数与"按同一规则（非递归 glob + 排除派生物）
+                # 独立数出来的库内笔记数"对齐——.trash/ 是子目录（非递归看不到）、
+                # *.summary.md 是派生物，两边都不该出现在包里。
+                r_all = httpx.post(f"{base}/api/notes/export/batch", timeout=120, headers=H,
+                                   json={"all": True, "fmt": "md"})
+                aj = r_all.json() if r_all.status_code == 200 else {}
+                apath = Path(aj.get("path") or "")
+                all_names: list = []
+                if apath.is_file():
+                    with zipfile_mod.ZipFile(apath) as zf:
+                        all_names = zf.namelist()
+                lib_notes = [p for p in (ROOT / "transcripts").glob("lecture_*.md")
+                             if not p.name.endswith((".summary.md", ".bak.md"))]
+                record("B10 全库备份（all:true → 整库 zip，含临时篇、不含 .trash/派生物）",
+                       r_all.status_code == 200 and aj.get("all") is True
+                       and (aj.get("name") or "").startswith("LectureLens备份_")
+                       and aj.get("count") == len(lib_notes) == len(all_names) >= 2
+                       and apath.is_file() and apath.parent == ex_dir
+                       and set(want_entries) <= set(all_names)
+                       and not any(".trash" in n for n in all_names),
+                       f"count={aj.get('count')}（库内 {len(lib_notes)} 篇）· {aj.get('name')}")
             finally:
                 with contextlib.suppress(Exception):
                     (ROOT / "transcripts" / b3_note).unlink()
@@ -1936,15 +2323,93 @@ def test_streaming_server(port: int = 8798) -> None:
 
 
 # ---------------------------------------------------------------- 8. 打包契约（D1）
+def test_build_contract_macos() -> None:
+    """[8] 打包契约（macOS 侧）：与 Windows 的 [8] 同款目的——把「打包脚本被改坏」
+    拦在构建之前（不跑 PyInstaller，分钟级构建归 scripts/build_macos.py 实跑）。
+
+    Windows 那一支依赖 PyInstaller 的 win32 版本资源模块
+    （PyInstaller.utils.win32.versioninfo 模块级 `from PyInstaller.compat import win32api`，
+    而 win32api 只在 is_win 分支里存在——非 Windows 直接 ImportError），故 macOS 走这一支：
+    断言 build_macos 的纯函数（参数构造 / Info.plist 补丁 / 产物清单 / 数据面口径）。"""
+    print("\n[8] 打包契约（macOS：入口/Info.plist/依赖收集/产物断言）")
+    problems: list[str] = []
+    try:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import build_macos as bm
+        sys.path.insert(0, str(ROOT / "app"))
+        import branding
+    except Exception as e:
+        record("打包契约（macOS）", False, f"导入失败 {type(e).__name__}: {e}")
+        return
+
+    # ① 入口 + .app 形态
+    args = bm.pyinstaller_args()
+    if args[-1] != str(bm.ENTRY) or bm.ENTRY.name != "desktop.py":
+        problems.append(f"打包入口不是桌面壳: {args[-1]}")
+    if "--windowed" not in args:
+        problems.append("缺 --windowed（macOS 上不会产出 .app 包）")
+    if "--osx-bundle-identifier" not in args or bm.BUNDLE_ID not in args:
+        problems.append(f"缺 --osx-bundle-identifier {bm.BUNDLE_ID}")
+    # ② --add-data 分隔符必须是 ":"（写成 Windows 的 ";" 会静默丢掉两个数据目录）
+    add_data = [args[i + 1] for i, a in enumerate(args) if a == "--add-data"]
+    if not add_data or not all(bm.DATA_SEP in a for a in add_data):
+        problems.append(f"--add-data 分隔符不是 {bm.DATA_SEP!r}: {add_data}")
+    for want in (f"{bm.DATA_SEP}web", f"{bm.DATA_SEP}glossary_packs"):
+        if not any(a.endswith(want) for a in add_data):
+            problems.append(f"缺 --add-data {want}（页面 404 / 术语库包区为空）")
+    # ③ 依赖收集：清单 ↔ 一一对应；且不得收 Windows 专属包
+    collect_all = {args[i + 1] for i, a in enumerate(args) if a == "--collect-all"}
+    packages = {pkg for pkg, _why in bm.DARWIN_SHELL_PACKAGES}
+    if packages - collect_all:
+        problems.append(f"未显式收集: {sorted(packages - collect_all)}")
+    if {"pythonnet", "pyaudiowpatch", "clr_loader"} & collect_all:
+        problems.append("macOS 包不该收 Windows 专属依赖（pythonnet/pyaudiowpatch/clr_loader）")
+    hidden = {args[i + 1] for i, a in enumerate(args) if a == "--hidden-import"}
+    for mod in ("webview.platforms.cocoa", "keyboard._darwinkeyboard", "pystray._darwin"):
+        if mod not in hidden:
+            problems.append(f"缺 darwin 后端 hidden-import: {mod}")
+    # ④ Info.plist：版本与 branding.APP_VERSION 同源 + 麦克风用途说明（macOS 强制）
+    patch = bm.info_plist_patch(branding.APP_VERSION)
+    for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+        if patch.get(key) != branding.APP_VERSION:
+            problems.append(f"Info.plist {key} 不是 {branding.APP_VERSION}: {patch.get(key)!r}")
+    if not str(patch.get("NSMicrophoneUsageDescription") or "").strip():
+        problems.append("缺 NSMicrophoneUsageDescription（TCC 会直接拒绝麦克风）")
+    # ⑤ 产物断言清单：可执行 + 三个页面 + 术语库包
+    for rel in (f"Contents/MacOS/{bm.APP_NAME}", "Contents/Resources/web/index.html",
+                "Contents/Resources/web/float.html", "Contents/Resources/web/privacy.html",
+                "Contents/Resources/glossary_packs/数学.md"):
+        if rel not in bm.REQUIRED_APP_FILES:
+            problems.append(f"产物断言缺 {rel}")
+    # ⑥ 数据面口径：与 app/main.py 的 _frozen_root('darwin') 必须一致（两处不许漂移）
+    try:
+        import main as main_mod
+        want = Path.home() / bm.MAC_DATA_DIR_REL
+        if main_mod._frozen_root("darwin") != want:
+            problems.append("数据目录口径不一致: "
+                            f"main={main_mod._frozen_root('darwin')} vs build={want}")
+    except Exception as e:
+        problems.append(f"main._frozen_root 不可用: {type(e).__name__}: {e}")
+    record("打包契约（macOS）", not problems,
+           "；".join(problems) or (f"入口/版本 {branding.APP_VERSION}/"
+                                   f"bundle {bm.BUNDLE_ID}/依赖 {len(packages)} 件"))
+
+
 def test_build_contract() -> None:
     """[8] 打包契约（D1 分发工程）：这些是"打包版能不能开窗"的硬前提，秒级可验——
     **不跑 PyInstaller**（分钟级，归 scripts/build_exe.py 实跑 + D3 产物探针），只断言
     脚本与版本口径没被改坏：
     ① 打包入口 = app/desktop.py（自启命令写的 --minimized 只有它认）；
-    ② 版本注入 = branding.APP_VERSION，生成物是合法 VSVersionInfo（exe 属性带 1.0.0）；
+    ② 版本注入 = branding.APP_VERSION，生成物是合法 VSVersionInfo（exe 属性带版本号）；
     ③ 桌面壳依赖（webview/pythonnet/clr_loader/pystray/PIL/qrcode/keyboard/fpdf/
        docx/genanki/pyaudiowpatch）的收集清单与构建后抽查清单一一对应；
-    ④ 必需产物含 float.html/privacy.html，随包模型默认 small。"""
+    ④ 必需产物含 float.html/privacy.html，随包模型默认 small。
+
+    Mac 适配·第三批：非 Windows 走 test_build_contract_macos()（同一目的、平台专属断言；
+    理由见该函数）。"""
+    if sys.platform == "darwin":
+        test_build_contract_macos()
+        return
     print("\n[8] 打包契约（D1：入口/版本注入/桌面壳依赖/产物断言）")
     problems: list[str] = []
     try:

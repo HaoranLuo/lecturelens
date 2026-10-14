@@ -8,3 +8,11 @@ pytest-asyncio>=1.0
 # 条目20（PyInstaller onedir 打包）：构建工具，仅开发机需要——运行依赖仍见 requirements.txt
 # 用 scripts/build_exe.py 出 dist/LectureLens/（onedir + console）
 pyinstaller>=6.10
+
+# Mac 适配·第二批（说明，不在这里加依赖）：
+# - 运行依赖带平台 marker —— pyaudiowpatch ; sys_platform == "win32"（Windows 专有）、
+#   mlx-whisper ; sys_platform == "darwin"（Apple Silicon 专有），见 requirements.txt；
+# - 在 macOS 上开发本仓库时，本文件的 pyinstaller 仍照装（打包工具与平台无关），
+#   mlx-whisper 由 requirements.txt 的 darwin marker 自动带进来；
+# - 改动依赖清单后跑一次 `.venv/Scripts/python.exe -m pip install -r requirements.txt`
+#   确认 Windows 侧解析结果不变（Windows 上 mlx-whisper 必须被 marker 跳过）。

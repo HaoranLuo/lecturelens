@@ -88,7 +88,8 @@ async def test_download_endpoint_ignores_frozen_uses_explicit_offline(
     download_model(local_files_only=True) → 本地没缓存必抛。"""
     seen: list = []
 
-    def fake_download(name, cache, on_progress, local_files_only=False):
+    def fake_download(name, cache, on_progress, local_files_only=False,
+                      backend="ctranslate2"):
         seen.append(local_files_only)
         return cache
 

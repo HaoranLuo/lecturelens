@@ -10,8 +10,9 @@
 检测口径（对用户的承诺「检测可能不准，故保守 + 随时可手动覆盖」）：
 - NVIDIA 显卡/显存只信 nvidia-smi（WMI 对大显存读数不准——本机实测 8GB 报成
   4GB，故不用 WMI 读显存；nvidia-smi 缺失/超时按「无加速卡」处理）
-- Apple Silicon 按 platform 判断（arm64）；当前 Mac 走 CPU 推理，与 Windows
-  共用同一套阈值（Mac 的 MLX 加速是后续独立工程，届时只调阈值不改接口）
+- Apple Silicon 按 platform 判断（arm64）；Mac 上的加速后端是 MLX（mlx-whisper），
+  是否就绪由 asr.mlx_available() 现场问（不缓存、**不影响阈值**——阈值仍与 Windows
+  共用同一套，只把推荐理由里的「推理口径」改成后端实际：MLX 就绪 / 按 CPU）
 - 内存：Windows 用 GlobalMemoryStatusEx（ctypes，零新依赖），其余平台 sysconf
 
 推荐阈值（宁小勿大，可手动覆盖）：
@@ -90,6 +91,17 @@ def _nvidia() -> tuple[str | None, float | None]:
         return None, None
 
 
+def _mlx_ready() -> bool:
+    """MLX 后端是否就绪（darwin + arm64 + mlx_whisper 可导入）。**延迟导入 asr**：
+    正常路径 main 已经 import 过 asr（模块缓存命中，零开销）；本模块被单独 import
+    时也不会连带拉起重依赖。任何异常 → False（只影响推荐理由的措辞，不拦启动）。"""
+    try:
+        import asr as asr_mod
+        return bool(asr_mod.mlx_available())
+    except Exception:
+        return False
+
+
 def detect_hardware() -> dict:
     """本机硬件画像（纯读、不联网、绝不抛异常——检测失败只降级推荐，不拦启动）。"""
     gpu, vram = _nvidia()
@@ -100,6 +112,9 @@ def detect_hardware() -> dict:
         "cpu": os.cpu_count() or 0,
         "apple": (platform.system() == "Darwin"
                   and platform.machine().lower() in ("arm64", "aarch64")),
+        # Mac 适配：加速后端是否真就绪（非 darwin 恒 False）。**只改推荐理由的措辞**，
+        # 不参与阈值判断——宁小勿大的保守口径与 Windows 完全一致。
+        "mlx": _mlx_ready(),
     }
 
 
@@ -110,6 +125,9 @@ def recommend(hw: dict) -> dict:
     跑得动的最大值——用户嫌小可在设置页一键换档（换档只是重载模型，代价低）。"""
     vram = hw.get("vram_gb") or 0
     ram = hw.get("ram_gb") or 0
+    # Mac 适配：Apple 机器上「推理口径」按后端实际说——MLX 就绪就说 MLX，
+    # 否则如实说按 CPU（缺 mlx-whisper / Intel Mac / mlx 装不上都会走到后者）。
+    accel = "MLX 加速已就绪" if hw.get("mlx") else "按 CPU 推理口径"
     if hw.get("gpu") and vram >= 10:
         tier, why = (MODEL_TO_TIER["large-v3"],
                      f"检测到显卡 {hw['gpu']}（{vram:.1f} GB 显存）")
@@ -122,12 +140,12 @@ def recommend(hw: dict) -> dict:
                      "按保守档推荐")
     elif hw.get("apple") and ram >= 16:
         tier, why = (MODEL_TO_TIER["large-v3-turbo"],
-                     f"检测到 Apple 芯片（{ram:.0f} GB 统一内存）")
+                     f"检测到 Apple 芯片（{ram:.0f} GB 统一内存，{accel}）")
     elif ram >= 8:
         tier, why = (MODEL_TO_TIER["small"],
                      f"未检测到可加速的 NVIDIA 显卡（内存约 {ram:.0f} GB）"
                      if not hw.get("apple")
-                     else f"Apple 芯片内存约 {ram:.0f} GB（按 CPU 推理口径保守推荐）")
+                     else f"Apple 芯片内存约 {ram:.0f} GB（{accel}，保守推荐）")
     else:
         tier, why = (MODEL_TO_TIER["base"],
                      f"未检测到可加速显卡，内存约 {ram:.0f} GB（按最省档推荐）")

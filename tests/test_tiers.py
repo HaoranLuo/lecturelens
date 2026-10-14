@@ -82,10 +82,12 @@ def test_recommend_is_conservative_no_overreach():
 
 def test_detect_hardware_runs_and_shapes():
     hw = tiers_mod.detect_hardware()                     # 绝不抛（检测失败只降级）
-    assert set(hw) == {"gpu", "vram_gb", "ram_gb", "cpu", "apple"}
+    # Mac 适配：+ mlx = 加速后端是否就绪（非 darwin 恒 False；只影响推荐理由措辞）
+    assert set(hw) == {"gpu", "vram_gb", "ram_gb", "cpu", "apple", "mlx"}
     assert isinstance(hw["cpu"], int) and hw["cpu"] >= 0
     assert isinstance(hw["ram_gb"], float)
     assert isinstance(hw["apple"], bool)
+    assert isinstance(hw["mlx"], bool)
     rec = tiers_mod.recommend(hw)                        # 真实画像也能给出档位
     assert rec["tier"]["model"] in main.MODEL_CHOICES
 

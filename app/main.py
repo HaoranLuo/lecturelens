@@ -41,12 +41,39 @@ sys.path.insert(0, str(Path(__file__).parent))
 # （只读），且 exe 的 cwd 语义与开发态不同；ROOT 必须是 exe 所在目录（config.json/token/
 # transcripts/logs 跟着 exe 走、可写、换版不丢），WEB 用打包进 _internal 的只读数据
 # （--add-data app/web;web）。
+# Mac 适配·第三批：**数据面**的 ROOT 在 macOS 上不能用 exe 目录——frozen 的 macOS 产物是
+# 一个 .app 包（Contents/ 是签名覆盖的只读包体），往包内写 config/笔记会破坏代码签名、
+# 也让「换新 .app」变成「把数据一起换掉」。故 darwin 用用户数据目录
+# ~/Library/Application Support/LectureLens（macOS 规范位置，Time Machine 照常备份），
+# 只读资源（web/glossary_packs）仍走 _MEIPASS——与开发/Windows 完全同一套读取代码。
+def _frozen_root(platform_name: str | None = None) -> Path:
+    """frozen 下的数据根（ROOT）。纯函数（平台名可注入）——这是「用户数据落在哪」的
+    唯一决定点，必须在 Windows 上也能对 darwin 分支做单测（本机跑不了 Mac）。
+
+    platform_name=None 时**在调用时**读 sys.platform（而不是 def 时绑成默认值）：
+    否则 monkeypatch sys.platform 的测试拿到的是导入那一刻的平台，形同虚设。"""
+    if platform_name is None:
+        platform_name = sys.platform
+    if platform_name == "darwin":
+        return Path.home() / "Library" / "Application Support" / "LectureLens"
+    return Path(sys.executable).resolve().parent
+
+
 if getattr(sys, "frozen", False):
-    ROOT = Path(sys.executable).resolve().parent
+    ROOT = _frozen_root()
+    if sys.platform == "darwin":
+        # 首次运行要有这个目录，否则后面 save_config/日志/笔记全部写失败。
+        # 建不出来（权限/磁盘）在这里不抛：后续那条真正的写盘会给出更具体的错误。
+        with contextlib.suppress(OSError):
+            ROOT.mkdir(parents=True, exist_ok=True)
     WEB = Path(getattr(sys, "_MEIPASS", ROOT)) / "web"
+    # B13：术语库包目录——打包版是**只读数据**（--add-data glossary_packs;glossary_packs
+    # → _internal/glossary_packs），开发态读仓库根。与 WEB 同款双路径，见 packs.packs_dir。
+    PACKS_DIR = Path(getattr(sys, "_MEIPASS", ROOT)) / "glossary_packs"
 else:
     ROOT = Path(__file__).resolve().parent.parent
     WEB = Path(__file__).resolve().parent / "web"
+    PACKS_DIR = ROOT / "glossary_packs"
 TRANSCRIPTS = ROOT / "transcripts"
 CONFIG_PATH = ROOT / "config.json"
 COURSES_PATH = ROOT / "courses.json"   # p2-1：课程表（与 config.json 同放根目录）
@@ -65,6 +92,7 @@ from applog import setup_logging, uvicorn_log_config  # noqa: E402
 from ankideck import build_deck  # noqa: E402  条目18：Anki 复习卡生成
 from branding import APP_VERSION  # noqa: E402  p1-3：版本号单一来源（status/关于页）
 from asr import WhisperASR          # noqa: E402
+import asr as asr_mod               # noqa: E402  Mac 适配：后端判定/MLX 就绪（active_backend）
 import autostart as autostart_mod   # noqa: E402  p3-3：开机自启（HKCU Run 项读写）
 import courses as courses_mod       # noqa: E402  p2-1：课程管理（courses.json 存储/校验）
 import notes as notes_mod           # noqa: E402  p2-2：笔记库（transcripts 解析/索引/检索）
@@ -73,8 +101,10 @@ import exporters                    # noqa: E402  p2-3：导出中心（md/SRT/P
 import models as models_mod         # noqa: E402  p2-4：模型管理器（缓存/下载/删除）
 import tiers as tiers_mod           # noqa: E402  档位化：硬件检测与模型档位推荐
 import glossary as glossary_mod     # noqa: E402  p2-6：术语库（glossary/*.md 增删改）
+import packs as packs_mod           # noqa: E402  B13：术语库包（glossary_packs/*.md → 课程术语表）
 import hotkeys as hotkeys_mod       # noqa: E402  p3-1：全局快捷键（键名白名单/注册/降级）
 import lan as lan_mod               # noqa: E402  §7：手机同屏（绑定决策/主网卡探测/配对二维码）
+import system_info as system_info_mod   # noqa: E402  B8：系统级只读事实（供电状态）
 from capture import SR, MicSegmenter  # noqa: E402
 from loopback import LoopbackSegmenter  # noqa: E402  条目14（scipy 依赖一并就位）
 from scheduler import DecodeScheduler  # noqa: E402
@@ -144,19 +174,25 @@ def hf_mirror_active() -> bool:
     return os.environ.get(hfenv.ENDPOINT_ENV) == hfenv.MIRROR_ENDPOINT
 
 
-def resolve_model_ref(name: str) -> tuple:
+def resolve_model_ref(name: str, backend: str = "ctranslate2") -> tuple:
     """D2(b)：模型解析次序 → 返回 `(本地路径或 None, 来源标签)`。
 
     ① `bundled`：随包目录（frozen）——**永远离线可用**，与任何 HF 开关无关；
     ② `cache`：HF 缓存里**已完成**的 snapshot（models.snapshot_dir）——「已经下载过
        的档位」离线也能加载，不必联网复核；
-    ③ `hub`（None）：交给 faster-whisper 按模型名取（首次使用联网下载）；调用点在
-       离线开关开启时给可读错误（见 build_asr 的异常分支），不静默挂网。"""
-    p = bundled_model_path(name)
-    if p is not None:
-        return str(p), "bundled"
+    ③ `hub`（None）：交给后端按模型名/仓库 id 取（首次使用联网下载）；调用点在
+       离线开关开启时给可读错误（见 build_asr 的异常分支），不静默挂网。
+
+    Mac 适配：backend="mlx" 时**跳过 ①**（随包目录里放的是 ctranslate2 权重，
+    MLX 读不了），②的判据换成 weights.safetensors（models.snapshot_dir(backend)），
+    ③交给 mlx_whisper 按 mlx-community 仓库 id 取（它内部走 huggingface_hub，
+    hfenv 的镜像/离线开关同样生效）。"""
+    if backend != "mlx":
+        p = bundled_model_path(name)
+        if p is not None:
+            return str(p), "bundled"
     snap = models_mod.snapshot_dir(
-        models_mod.entry_dir(models_mod.cache_dir(), name))
+        models_mod.entry_dir(models_mod.cache_dir(), name, backend), backend)
     if snap is not None:
         return str(snap), "cache"
     return None, "hub"
@@ -213,7 +249,13 @@ DEFAULT_CONFIG = {"model": "large-v3-turbo", "device": "auto",
                   # 值**，见 hfenv.py）；国内网络下载模型加速。**非即时键**：HF 的 endpoint
                   # 常量在 import 时读入，改这个键只是写进配置，**重启应用**才生效
                   # （设置页文案与 /api/models 的 mirror 字段都按此如实说）。
-                  "hf_mirror": False}
+                  "hf_mirror": False,
+                  # B3（常用标签自定义）：笔记「预设 chips」的标签表（设置页 📝笔记 可增删）。
+                  # 出厂值 = 旧的写死四标签（老用户零变化）。**即时键**：四个下发点都走
+                  # main.tag_presets() 现读 runtime['config']，保存后下一次响应即新值。
+                  # 取值是**列表**，塞不进 CONFIG_VALUE_CHOICES 那种静态枚举表，故走专项
+                  # 校验 tags_presets_norm（非特判键会撞 CONFIG_VALUE_CHOICES[k] KeyError）。
+                  "tags_presets": ["重点", "考试", "没听懂", "待复习"]}
 
 # —— 条目4：/api/config 全键白名单（键集合 + 每键取值范围）——
 # 新增键必须进 ALLOWED_CONFIG_KEYS + CONFIG_VALUE_CHOICES（白名单校验）
@@ -243,14 +285,22 @@ ALLOWED_CONFIG_KEYS = ("model", "device", "compute_type", "vad", "lang", "stream
                        "lan_enabled",
                        # D2：模型下载镜像（布尔枚举；**非即时键**——HF endpoint 在库
                        # 导入时读入，重启应用才生效，见 hfenv.py）
-                       "hf_mirror")
+                       "hf_mirror",
+                       # B3：常用标签（预设 chips）。取值是**列表**（list[str]），走专项
+                       # 校验 tags_presets_norm——不在 CONFIG_VALUE_CHOICES（那是枚举表，
+                       # 对未特判键直接 KeyError，见 set_config 的专项分支）
+                       "tags_presets")
 # 条目13：lang 码表 = auto + en/zh + 常用语言码（whisper 语言码，UI 下拉为其常用子集）
 LANG_CHOICES = ("auto", "en", "zh", "ja", "ko", "fr", "de", "es", "ru", "pt", "it")
 # 条目16：translate.model 配置化——切档位前以 DeepSeek 官方定价页为准
 TRANSLATE_MODEL_CHOICES = ("deepseek-chat", "deepseek-reasoner")
 CONFIG_VALUE_CHOICES: dict = {
     "model": MODEL_CHOICES,
-    "device": ("auto", "cpu", "cuda"),
+    # Mac 适配·第二批：device 加 "mlx"（Apple Silicon 的 mlx-whisper 后端）。
+    # auto 的解析次序在 asr._resolve_device：darwin+arm64+mlx_whisper → mlx，
+    # 否则维持原有的 CUDA 探测（Windows 行为零变化）；显式 "mlx" 而本机不具备
+    # → 自动回落 CPU（不因后端缺失起不来）。
+    "device": ("auto", "cpu", "cuda", "mlx"),
     "compute_type": (None, "int8", "float16", "int8_float16"),
     "vad": ("silero", "energy"),
     "lang": LANG_CHOICES,          # 条目13：变更热生效（改 asr.language，无需重建模型）
@@ -389,6 +439,53 @@ def _hotkey_problem(key: str, value) -> str | None:
     if problem:
         return f"非法 {key}: {value!r}（{problem}）"
     return None
+
+
+#: B3（常用标签自定义）：预设 chips 的条数上限。不是产品限制而是**版面**限制——
+#: 笔记库批量面板一行放 12 个 chip 已经很挤，且这份表每次列表刷新都要随响应带回前端。
+TAG_PRESETS_MAX = 12
+
+
+def tags_presets_norm(value) -> tuple[list[str] | None, str | None]:
+    """B3：常用标签（config.tags_presets）的校验 + 规范化 → (标签表, 错误文案)。
+
+    「专项校验」家族的一员（与 _hotkey_problem / _config_number_problem / export_dir
+    同款）：取值是**列表**，塞不进 CONFIG_VALUE_CHOICES 那种静态枚举表——**不特判就会在
+    set_config 里撞 `CONFIG_VALUE_CHOICES[k]` 直接 KeyError（500）**，这就是本分支存在的
+    理由。
+
+    规则（B3 口径）：必须是 list（不是字符串——`"重点"` 会被 Python 拆成一串单字，
+    这种「看起来像成功了」的坏值最难查）；长度 1–TAG_PRESETS_MAX；每项过
+    notes.normalize_tag（≤16 字符、禁一切空白/控制字符与 `#`，宽松接受开头的 `#`）；
+    同名去重（保序）。
+
+    **为什么返回规范化值而不是纯 bool**：与 export_dir（校验即原值）不同，这一支要
+    去首尾空白/开头的 `#` 并去重——校验通过后**存规范形**，否则 config 里会留下
+    `["重点", "#重点"]` 这种前端还得自己再兜一次的重复项（与 POST /api/notes/tags 的
+    normalize_tags 同一条口径）。"""
+    if not isinstance(value, list):
+        return None, (f"非法 tags_presets: {value!r}"
+                      f"（须为标签数组，如 ['重点', '考试']）")
+    if not (1 <= len(value) <= TAG_PRESETS_MAX):
+        return None, (f"非法 tags_presets: {len(value)} 条"
+                      f"（允许 1–{TAG_PRESETS_MAX} 条；要清空请留一条或恢复默认）")
+    out: list[str] = []
+    for one in value:
+        tag = notes_mod.normalize_tag(one)
+        if tag is None:
+            return None, (f"非法标签: {one!r}（≤{notes_mod.TAG_MAX_LEN} 字符；"
+                          f"禁一切空白/控制字符与 #）")
+        if tag not in out:          # 同名去重（保序：用户排的顺序有意义）
+            out.append(tag)
+    return out, None
+
+
+def _tags_presets_problem(value) -> str | None:
+    """B3：tags_presets 的错误文案视图（None = 合法）。规范化结果见 tags_presets_norm。
+
+    单独留这一支是为了与其余 _problem 函数**同名同形**（错误文案一律走 400 的 error
+    字段），调用方在 set_config 里成对使用：先 norm 拿规范形、problem 只用于报错。"""
+    return tags_presets_norm(value)[1]
 
 
 def _config_cross_problem(merged: dict) -> str | None:
@@ -1102,7 +1199,10 @@ def build_asr(overrides: dict | None = None) -> None:
     D2(b)：模型来源交给 resolve_model_ref 的三档次序（随包 → 本地缓存 snapshot → 按名
     联网），故「已下载的档位」离线也能加载；只有本地没有且不在离线态时才真去联网。"""
     cfg = _resolve_build_cfg(overrides)
-    ref, src = resolve_model_ref(cfg["model"])
+    # Mac 适配：后端由 device 解析规则唯一决定（Mac arm64 + mlx-whisper → mlx）。
+    # 模型来源的两张表/两种完整性判据都跟着它走（见 resolve_model_ref）。
+    backend = asr_mod.active_backend(cfg.get("device"))
+    ref, src = resolve_model_ref(cfg["model"], backend)
     stage = {"bundled": "随包模型", "cache": "本地缓存"}.get(src, "首次运行需下载")
     set_load_progress(12, f"加载模型 {cfg['model']}（{stage}）", "asr")
     try:
@@ -1152,7 +1252,11 @@ def apply_segmenter() -> None:
         # 故改这三个键必须走重建；backlog_* 是每轮现读的，不在此列。
         seg_kw = segment_kwargs(cfg)
         if cfg.get("source") == "loopback":
+            # Mac 适配：内录设备覆盖（macOS = BlackHole 的 /api/devices 索引，与麦克风
+            # 同一条 config.input_device 事实源）。Windows 的 WASAPI 路径不读它——仍走
+            # 系统默认扬声器的 loopback，行为逐字不变。
             seg = LoopbackSegmenter(runtime["seg_q"], stream_q=runtime["stream_q"],
+                                    device=cfg.get("input_device", ARGS.device),
                                     **seg_kw)
         else:
             seg = MicSegmenter(runtime["seg_q"],
@@ -1230,6 +1334,12 @@ async def api_status():
     # 窗口（桌面窗口/浏览器标签/悬浮条都连 WS），算进来会让这个数字恒 ≥1、失去诊断意义。
     # 现算不缓存：集合在 ws 端点 accept/断开时维护，len() 是 O(1)。
     status["ws_clients"] = len(hub.lan_clients)
+    # B8：供电状态现算（glossary_rev 同款：不进 config、不挂钩子、不缓存——读的就是
+    # "这一刻"的事实；挂钩子的话「用户拔掉电源」这类系统事件我们根本收不到）。
+    # 一次 GetSystemPowerStatus 是 µs 级本地 syscall，比 status_loop 里那个被降频到
+    # 每 5 轮的 nvidia-smi 轻三个数量级（那个要起子进程），故不做节流。
+    # 三态：True=电池 / False=插电 / None=非 Windows 或读不到（前端只在 True 上提醒）。
+    status["on_battery"] = system_info_mod.on_battery()
     return JSONResponse(status)
 
 
@@ -1393,6 +1503,19 @@ async def set_config(req: Request):
                 elif cfg.get(k) is None:
                     continue      # null 且本来就没设 = no-op
                 changes[k] = v
+                continue
+            if k == "tags_presets":
+                # B3：常用标签数组。特判放在 no-op 判空**之前**（列表永远不是 None/""，
+                # 落下去会撞 CONFIG_VALUE_CHOICES[k] KeyError——500 而不是 400）。
+                # 校验通过后存**规范形**（去首尾 #/空白 + 去重保序），与 notes.normalize_tags
+                # 同一条口径：config.json 里不留 `["重点", "#重点"]` 这类前端还得再兜的重复项。
+                norm, problem = tags_presets_norm(v)
+                if problem:
+                    return JSONResponse({"ok": False, "error": problem},
+                                        status_code=400)
+                if norm == cfg.get(k):
+                    continue  # 与现值相同（含顺序）= no-op
+                changes[k] = norm
                 continue
             if v is None or v == "" or v == cfg.get(k):
                 continue  # 未提供/空串/与现值相同 = no-op（前端下拉占位语义）
@@ -1886,7 +2009,7 @@ async def notes_list(q: str = "", course: str = "", tag: str = ""):
     # A2：预设标签随列表一起下发（笔记库的「🏷 打标签」面板 chips 直接吃它）。
     # 为什么不写死在前端：预设是**服务端的**口径（将来可在设置页自定义，见 B3），
     # 前端只保存一份启动兜底；列表每次刷新都带来现值的，面板就不会显示过期 chips。
-    data["presets"] = list(TAG_PRESETS)
+    data["presets"] = tag_presets()
     return data
 
 
@@ -2091,6 +2214,32 @@ def zip_export_name(today: datetime.date | None = None) -> str:
     return f"笔记导出_{(today or datetime.date.today()).strftime('%Y%m%d')}.zip"
 
 
+def backup_zip_name(today: datetime.date | None = None) -> str:
+    """B10 全库备份 zip 的文件名：`LectureLens备份_YYYYMMDD.zip`。
+
+    与 `zip_export_name` 分开两个纯函数而不是共用一个：两者的**读者不同**——
+    「笔记导出_」是"我挑的这几篇"，「LectureLens备份_」是"整库快照（换电脑/保险）"，
+    名字本身就是这两种东西的标签，混用会让人分不清手里这个包是什么。"""
+    return f"LectureLens备份_{(today or datetime.date.today()).strftime('%Y%m%d')}.zip"
+
+
+def all_note_paths() -> list[Path]:
+    """B10：库里**全部**笔记 → 路径列表（按名排序，前缀过滤）。
+
+    枚举口径 = `notes.index` 同一套：transcripts/ 下**非递归** glob `lecture_*.md`
+    + `notes.is_note_file`——于是回收站（`.trash/` 是子目录）与派生物
+    （`*.summary.md` / `*.bak.md`）**结构上**就不可能进来，不靠这里记得过滤。
+    **不套 NOTE_ZIP_MAX**：那是"一次挑几篇"的选包上限，整库备份的价值恰恰在于
+    "一篇不落"（本仓实测 176 篇笔记，超过 50 的库多得是）。
+    排序只为**确定性**（同一库每次打包条目顺序一致，测试与跨机比对都省事）；
+    条目名最终由 export_filename 按课程/日期生成，不依赖这个顺序。"""
+    d = Path(TRANSCRIPTS)
+    if not d.is_dir():
+        return []
+    return sorted((p for p in d.glob(notes_mod.NOTE_GLOB) if notes_mod.is_note_file(p)),
+                  key=lambda p: p.name)
+
+
 def zip_targets(raw_files) -> tuple[list[Path] | None, str | None]:
     """校验批量导出请求里的 files → (路径列表, 错误文案)。
 
@@ -2121,12 +2270,17 @@ def zip_targets(raw_files) -> tuple[list[Path] | None, str | None]:
 
 @app.post("/api/notes/export/batch")
 async def notes_export_batch(req: Request):
-    """A3 批量导出：{files[], fmt: md|srt} → 打成**一个 zip**（标准库 zipfile，零新依赖）。
+    """A3 批量导出 / B10 全库备份：{files[], fmt: md|srt} 或 {all: true, fmt} →
+    打成**一个 zip**（标准库 zipfile，零新依赖）。
 
-    - export_dir 已设 → zip 直接落盘（`笔记导出_日期.zip`，写盘走 exportdir.write_export
-      = 原子抢占 + os.replace，同名自动 `-2`：与单篇导出同一条并发安全口径）；
-    - 未设 → 临时文件 zip 经 FileResponse 下载（文件名走同一个 export_disposition，
-      中文名按 RFC 5987 编码），响应发完由后台任务删掉临时文件。
+    - `all: true`（B10 一键打包备份）= 服务端自己枚举**库里全部**笔记
+      （`all_note_paths`：与 notes.index 同款非递归 glob + is_note_file，故 .trash 与
+      派生物天然不在内），**不受 NOTE_ZIP_MAX=50 约束**（那是挑几篇的选包上限）；
+      与 `files` **不能同时给**（同时给 = 意图不明，直接 400，绝不猜）；
+    - 未给 `all` 时 = 既有 A3 语义（必须给 files，50 篇封顶），一字未变；
+    - export_dir 已设 → zip 直接落盘（`笔记导出_日期.zip` / `LectureLens备份_日期.zip`，
+      写盘走 exportdir.write_export = 原子抢占 + os.replace，同名自动 `-2`：与单篇导出
+      同一条并发安全口径）；未设 → 内存 zip 经下载返回（同一个 export_disposition）。
     两种模式**都不套课程子目录**（B1 只针对单篇落盘）：一个 zip 里常常是好几门课，
     按课分文件夹无处安放；包里条目名本身已经是 `{课程}_{日期}.ext`，解压即按需归类。
     校验整单做（见 zip_targets）——要么整包、要么明确报错，绝不给"少几篇"的包。
@@ -2134,10 +2288,10 @@ async def notes_export_batch(req: Request):
     body, bad = await course_body(req)
     if bad:
         return bad
-    unknown = [k for k in body if k not in ("files", "fmt")]
+    unknown = [k for k in body if k not in ("files", "fmt", "all")]
     if unknown:
         return JSONResponse(
-            {"ok": False, "error": f"未知字段: {unknown[0]}（允许: ['files', 'fmt']）"},
+            {"ok": False, "error": f"未知字段: {unknown[0]}（允许: ['files', 'fmt', 'all']）"},
             status_code=400)
     key = str(body.get("fmt") or "md").strip().lower()
     if key not in ZIP_FORMATS:
@@ -2145,9 +2299,31 @@ async def notes_export_batch(req: Request):
             {"ok": False,
              "error": f"批量导出只支持 md / srt（收到 fmt={body.get('fmt')!r}）"},
             status_code=400)
-    paths, err = zip_targets(body.get("files"))
-    if err:
-        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    # B10：all 是**显式**开关（布尔）。缺省 / false → 走既有 files 路径，
+    # 「缺 files」的 400 语义原样保留（客户端忘了带 all 不会静默变成全库备份）。
+    want_all = body.get("all", False)
+    if not isinstance(want_all, bool):
+        return JSONResponse(
+            {"ok": False, "error": f"非法 all: {want_all!r}（须为布尔 true/false）"},
+            status_code=400)
+    if want_all and body.get("files"):
+        return JSONResponse(
+            {"ok": False, "error": "all 与 files 不能同时给（all=true 即导出库里全部笔记）"},
+            status_code=400)
+    if want_all:
+        paths = all_note_paths()
+        if not paths:
+            return JSONResponse(
+                {"ok": False, "error": "库里还没有笔记（transcripts/ 下没有 lecture_*.md）"},
+                status_code=400)
+        zip_name = backup_zip_name()
+        label = "备份全部"
+    else:
+        paths, err = zip_targets(body.get("files"))
+        if err:
+            return JSONResponse({"ok": False, "error": err}, status_code=400)
+        zip_name = zip_export_name()
+        label = "批量导出"
     ext = ZIP_FORMATS[key]
 
     def _build() -> bytes:
@@ -2178,11 +2354,12 @@ async def notes_export_batch(req: Request):
     try:
         blob = await asyncio.to_thread(_build)
     except Exception as e:
-        log.warning(f"[export] ⚠ 批量打包失败（{len(paths)} 篇）: {e}")
+        log.warning(f"[export] ⚠ {label}打包失败（{len(paths)} 篇）: {e}")
         return JSONResponse(
             {"ok": False, "error": f"批量导出失败: {type(e).__name__}: {e}"},
             status_code=500)
-    zip_name = zip_export_name()
+    # zip_name 已在上面的分支里定好（all 模式 = LectureLens备份_日期.zip；否则 = 笔记导出_日期.zip），
+    # 这里**不要**再赋一次：早期版本的 `zip_name = zip_export_name()` 会把备份名盖掉。
     dest = export_target_dir()
     if dest is not None:
         too_long = exportdir_mod.path_length_problem(dest, zip_name)
@@ -2197,16 +2374,19 @@ async def notes_export_batch(req: Request):
                  "error": f"导出到 {dest} 失败: {type(e).__name__}: {e}"
                           f"（可在设置页重新选择导出位置）"},
                 status_code=500)
-        log.info(f"[export] 批量导出 {len(paths)} 篇 → {out}（{len(blob)} 字节，直接落盘）")
-        return JSONResponse({"ok": True, "fmt": key, "path": str(out), "name": out.name,
-                             "dir": str(dest), "count": len(paths), "bytes": len(blob)})
+        log.info(f"[export] {label} {len(paths)} 篇 → {out}"
+                 f"（{len(blob)} 字节，直接落盘）")
+        return JSONResponse({"ok": True, "fmt": key, "all": want_all, "path": str(out),
+                             "name": out.name, "dir": str(dest),
+                             "count": len(paths), "bytes": len(blob)})
     # 未设导出目录 → 直接回内存里的 zip 字节（附件下载，文件名同单篇导出口径）。
     # 评审2 ② 实测后**刻意不用临时文件 + FileResponse**：starlette 的 FileResponse
     # 把 background 回调放在各个 send 分支之后、没有 try/finally——客户端中途断开
     # （手机切换网络、浏览器取消下载、ASGI 的 send 抛 ClientDisconnected）时清理被跳过，
     # %TEMP% 里会留下一整包 zip；而 blob 本来就在内存里（十几 MB 级别的上限也有 50 篇
-    # 封顶兜着），少一个临时文件就少一类垃圾，也不再有"谁负责删"的问题。
-    log.info(f"[export] 批量导出 {len(paths)} 篇 → {zip_name}"
+    # 封顶兜着；B10 的全库备份没有封顶，但"全部笔记的 Markdown"本就是这个量级），
+    # 少一个临时文件就少一类垃圾，也不再有"谁负责删"的问题。
+    log.info(f"[export] {label} {len(paths)} 篇 → {zip_name}"
              f"（{len(blob)} 字节，浏览器下载）")
     return Response(content=blob, media_type="application/zip",
                     headers={"Content-Disposition": export_disposition(zip_name)})
@@ -3101,7 +3281,7 @@ async def notes_raw(name: str = ""):
         return JSONResponse(
             {"ok": False, "error": f"读取失败: {type(e).__name__}: {e}"}, status_code=500)
     return {"ok": True, "name": p.name, "text": text, "sha": text_sha(text),
-            "tags": notes_mod.note_tags(text), "presets": list(TAG_PRESETS),
+            "tags": notes_mod.note_tags(text), "presets": tag_presets(),
             "mtime_us": st.st_mtime_ns // 1000, "size": st.st_size}
 
 
@@ -3409,8 +3589,30 @@ async def notes_trash_empty():
 # 一次 GET 的现状做增删，再整表提交。
 
 
-#: UI 预设标签（服务端当唯一来源回给各入口，前后端不各写一份）
-TAG_PRESETS = ("重点", "考试", "没听懂", "待复习")
+#: B3：常用标签的**出厂值**（= config.tags_presets 的默认；老用户零变化）。
+#: 这不再是「唯一来源」——用户可在设置页 📝笔记 里自定义，运行时口径见 tag_presets()。
+DEFAULT_TAG_PRESETS = ("重点", "考试", "没听懂", "待复习")
+
+
+def tag_presets() -> list[str]:
+    """B3：当前常用标签（预设 chips）= config.tags_presets，坏值回落出厂四标签。
+
+    **取值函数而不是模块常量**：四个下发点（/api/notes/list、/api/notes/raw、
+    tags_view、批量打标签）都现调它读 runtime['config']，所以设置页一保存，下一次
+    响应就带新 chips——不需要任何「重启/重载」，也不会出现两份清单各说各话
+    （前端那份 TAG_PRESETS 只保存服务端最近一次响应，见 index.html）。
+
+    config.json 是**用户可手改的文件**：不是非空 list、或里面混着非法标签（含空白、
+    超长、`#`）时**整体**回落出厂四值——下发的是 chips 数据，半截坏值流到前端只会
+    渲染出一排看不出问题的怪 chip；这里宁可回到已知可用的一套。合法值走
+    notes.normalize_tag 逐个规范化（与写路径同一口径，读侧不再有第二套规则）。"""
+    raw = (runtime.get("config") or {}).get("tags_presets")
+    if isinstance(raw, list) and 1 <= len(raw) <= TAG_PRESETS_MAX:
+        out = [t for t in (notes_mod.normalize_tag(one) for one in raw) if t]
+        if len(out) == len(raw):        # 有条目被规范化掉 = 文件里有坏值 → 整体回落
+            return list(dict.fromkeys(out))
+    return list(DEFAULT_TAG_PRESETS)
+
 
 #: A2 批量打标签的两个方向：add = 补上这些标签；remove = 从这些笔记去掉这些标签
 TAG_BATCH_MODES = ("add", "remove")
@@ -3491,13 +3693,60 @@ def note_tags_write(p: Path, tags: list[str]) -> str:
     return action
 
 
+def tag_manage_targets() -> list[Path]:
+    """B9：标签管理的扫描范围 = transcripts/ **直属**的 `lecture_*.md`（全库）。
+
+    为什么由**服务端自己枚举**（而不是复用 tags/batch 收前端给的文件名）：
+    ① 「全库重命名/删除标签」的用户意图就是「凡用了这个标签的都改」，让前端先列一遍再
+    提交既多一次往返、又会在两次请求之间漏掉刚好写下的笔记；
+    ② tags/batch 有 **200 篇上限**（那是「用户在列表里勾选」的批量语义），全库操作会
+    直接撞墙——所以这一支刻意不复用它。
+    范围纪律（与 courses.rename_in_notes / notes.index 同款）：
+    - **非递归** glob → `.trash/` 里的笔记天然不在名单里（回收站只走回收站接口）；
+    - `is_note_file` 排除 `.summary.md` / `.bak.md` 等派生物（同前缀同目录）；
+    - 父目录必须**就是** transcripts（防御纵深：glob 结果被符号链接之类指歪时兜住）。"""
+    d = Path(TRANSCRIPTS)
+    out: list[Path] = []
+    if not d.is_dir():
+        return out
+    for p in d.glob(notes_mod.NOTE_GLOB):
+        if p.parent != d or not notes_mod.is_note_file(p):
+            continue
+        out.append(p)
+    return sorted(out)
+
+
+def tag_manage_merge(current: list[str], op: str, old: str, new: str | None
+                     ) -> list[str] | None:
+    """B9：一篇笔记的标签表 → 施加 rename/delete 后的新表；**没这篇的份 → None**。
+
+    - `rename`（改名 = 合并语义）：命中的旧名换成新名，并**去重保序**——该篇若本来
+      就带着新名（把 `#考试` 改叫 `#重点`，而它已经是 `#重点`），逐项替换会写出
+      `> 标签：#重点 #重点`：文件里重复、解析侧却去重，POST 回显与随后的 GET 自相
+      矛盾（M3 那条口径的翻版）；
+    - `delete`：复用 merge_tags 的 remove 语义（与批量端点**同一个函数**，不另写一套）；
+    - 没命中旧名 → None：调用方据此跳过该篇（不写盘、不计入 changed，幂等且零无谓 IO）。
+
+    纯函数（不吃 IO），便于直接单测；读写由端点按既有 note_tags_write 走。"""
+    if old not in current:
+        return None
+    if op == "rename":
+        out: list[str] = []
+        for t in current:
+            t2 = new if t == old else t
+            if t2 not in out:
+                out.append(t2)
+        return out
+    return merge_tags(current, [old], "remove")
+
+
 def tags_view(p: Path) -> dict:
     """一篇笔记的标签视图（GET/POST 共用同一形状，前端两个入口都吃它）。"""
     text = p.read_text(encoding="utf-8")
     st = p.stat()
     return {"ok": True, "file": p.name, "tags": notes_mod.note_tags(text),
             "sha": text_sha(text), "mtime_us": st.st_mtime_ns // 1000,
-            "size": st.st_size, "presets": list(TAG_PRESETS)}
+            "size": st.st_size, "presets": tag_presets()}
 
 
 @app.get("/api/notes/tags")
@@ -3605,7 +3854,86 @@ async def notes_tags_batch(req: Request):
     if results:
         await broadcast_notes([r["file"] for r in results])
     return {"ok": True, "tags": tags, "mode": mode, "changed": len(results),
-            "presets": list(TAG_PRESETS), "results": results, "failed": failed}
+            "presets": tag_presets(), "results": results, "failed": failed}
+
+
+# —— B9（标签管理页）：全库重命名（含合并）/ 删除一个标签 ——
+# 与 tags/batch 的分工：那支是「用户勾选的这 N 篇」（收文件名、上限 200）；这一支是
+# **全库**（服务端自己枚举 transcripts/ 直属 lecture_*.md，见 tag_manage_targets）。
+# 为什么值得单开一个端点：标签变多以后，「把 #考试 并成 #重点」要改的是"所有用过它的
+# 笔记"——前端先列一遍再提交会漏掉这期间写下的笔记，而且会撞 batch 的 200 篇上限。
+
+
+@app.post("/api/notes/tags/manage")
+async def notes_tags_manage(req: Request):
+    """B9：全库重命名（合并）/ 删除一个标签。
+
+    请求体：`{"op": "rename"|"delete", "old": "#考试", "new": "重点"}`（rename 必填 new）。
+    - `old`/`new` 都过 notes.normalize_tag（≤16 字、禁空白/控制字符/#；宽松接受开头的
+      `#`）——**整单先校验后动手**：任一非法 → 400，一篇笔记都不动；
+    - `rename` 即**合并**语义：笔记里同时有新旧名时去重（不会写出 `#重点 #重点`）；
+    - 只扫 transcripts/ 直属的 lecture_*.md（`.trash/` 与非笔记派生物天然不在范围）；
+    - 逐篇失败不中断（与批量端点同款：返回 200 + failed 明细，界面如实说 N 篇成功、
+      M 篇失败），但**写完只广播一帧** notes 消息（全库操作逐篇广播会把别的窗口打爆）。"""
+    body, bad = await course_body(req)
+    if bad:
+        return bad
+    unknown = [k for k in body if k not in ("op", "old", "new")]
+    if unknown:
+        return JSONResponse(
+            {"ok": False, "error": f"未知字段: {unknown[0]}（允许: ['op', 'old', 'new']）"},
+            status_code=400)
+    op = body.get("op")
+    if op not in ("rename", "delete"):
+        return JSONResponse(
+            {"ok": False, "error": f"未知操作 op={op!r}（可选: rename/delete）"},
+            status_code=400)
+    old = notes_mod.normalize_tag(body.get("old"))
+    if old is None:
+        return JSONResponse(
+            {"ok": False, "error": f"非法标签: {body.get('old')!r}"
+                                   f"（≤{notes_mod.TAG_MAX_LEN} 字符；"
+                                   f"禁一切空白/控制字符与 #）"},
+            status_code=400)
+    new = None
+    if op == "rename":
+        new = notes_mod.normalize_tag(body.get("new"))
+        if new is None:
+            return JSONResponse(
+                {"ok": False, "error": f"非法新标签: {body.get('new')!r}"
+                                       f"（≤{notes_mod.TAG_MAX_LEN} 字符；"
+                                       f"禁一切空白/控制字符与 #）"},
+                status_code=400)
+
+    paths = tag_manage_targets()
+    if op == "rename" and new == old:
+        # 改叫同一个名字：不是错误，但也没必要逐篇读盘（前端已禁用该按钮，脚本调用给个明确回执）
+        log.info(f"[notes] 标签管理 rename #{old} → #{new}：新旧同名，未改动任何笔记")
+        return {"ok": True, "op": op, "old": old, "new": new, "scanned": len(paths),
+                "changed": 0, "files": [], "failed": [],
+                "note": "新旧标签名相同，未改动任何笔记"}
+    results: list[dict] = []
+    failed: list[dict] = []
+    for p in paths:
+        try:
+            current = notes_mod.note_tags(read_note_text(p))
+            merged = tag_manage_merge(current, op, old, new)
+            if merged is None:
+                continue                     # 这篇没用过该标签：跳过（不写盘、不计 changed）
+            action = note_tags_write(p, merged)
+            if action != "none":
+                results.append({"file": p.name, "tags": merged, "action": action})
+        except Exception as e:
+            log.warning(f"[notes] ⚠ 标签管理失败（{p.name}）: {e}")
+            failed.append({"file": p.name, "error": f"{type(e).__name__}: {e}"})
+    verb = f"rename #{old} → #{new}" if op == "rename" else f"delete #{old}"
+    log.info(f"[notes] 标签管理 {verb}：扫 {len(paths)} 篇、改 {len(results)} 篇、"
+             f"失败 {len(failed)} 篇")
+    if results:
+        await broadcast_notes([r["file"] for r in results])   # 全库操作只广播一帧
+    return {"ok": True, "op": op, "old": old, "new": new, "scanned": len(paths),
+            "changed": len(results), "files": [r["file"] for r in results],
+            "failed": failed}
 
 
 # —— p2-4：模型管理器（缓存状态 / 下载 / 删除）——
@@ -3623,15 +3951,21 @@ def bundled_model_present(name: str) -> bool:
 
 
 def models_snapshot() -> dict:
-    """模型管理器视图：缓存状态 + 当前模型 + 下载中 + 离线开关 + 镜像生效态。"""
+    """模型管理器视图：缓存状态 + 当前模型 + 下载中 + 离线开关 + 镜像生效态。
+
+    Mac 适配：后端由 device 解析规则决定（Mac arm64 + mlx-whisper → mlx）——
+    展示/下载/删除的仓库与「完整性」判据都跟着它走（ct2 的 model.bin vs MLX 的
+    weights.safetensors）。随包目录只有 ctranslate2 权重，故 mlx 下 bundled 恒 false。"""
     cache = models_mod.cache_dir()
     active = runtime["config"].get("model")
-    data = models_mod.list_models(cache, active)
+    backend = asr_mod.active_backend(runtime["config"].get("device"))
+    data = models_mod.list_models(cache, active, backend)
     for m in data["models"]:
-        m["bundled"] = bundled_model_present(m["name"])
+        m["bundled"] = bundled_model_present(m["name"]) if backend != "mlx" else False
         m["size_h"] = models_mod.human_size(m["size"])
     data["total_size_h"] = models_mod.human_size(data["total_size"])
     data["active"] = active
+    data["backend"] = backend          # UI/排障用：本机实际会走哪个引擎
     data["downloading"] = runtime.get("downloading")
     # D2：offline = **显式离线开关**（env HF_HUB_OFFLINE=1，不再由 frozen 置位）；
     # mirror = 进程内**实际生效**的镜像态（点 hf_mirror 要重启才变）——两个都是
@@ -3701,7 +4035,8 @@ async def api_models_download(req: Request):
     status['load'] 这条进度条，并发会互相覆盖）。"""
     body = await optional_json(req)
     name = body.get("name")
-    if not isinstance(name, str) or name not in models_mod.MODEL_REPOS:
+    backend = asr_mod.active_backend(runtime["config"].get("device"))
+    if not isinstance(name, str) or name not in models_mod.repos_for(backend):
         return JSONResponse(
             {"ok": False,
              "error": f"未知模型: {name!r}（可选: {list(models_mod.PLANNED_MODELS)}）"},
@@ -3715,8 +4050,8 @@ async def api_models_download(req: Request):
         return JSONResponse({"ok": False, "error": "模型切换进行中，稍后再试"},
                             status_code=409)
     cache = models_mod.cache_dir()
-    info = models_mod.model_info(cache, name, runtime["config"].get("model"))
-    info["bundled"] = bundled_model_present(name)
+    info = models_mod.model_info(cache, name, runtime["config"].get("model"), backend)
+    info["bundled"] = bundled_model_present(name) if backend != "mlx" else False
     info["size_h"] = models_mod.human_size(info["size"])
     if info["cached"]:
         return {"ok": True, "already": True, "model": info}
@@ -3734,8 +4069,10 @@ async def api_models_download(req: Request):
     async def _run() -> None:
         try:
             await asyncio.to_thread(models_mod.download_model, name, cache,
-                                    _progress, local_files_only=offline)
-            got = models_mod.model_info(cache, name, runtime["config"].get("model"))
+                                    _progress, local_files_only=offline,
+                                    backend=backend)
+            got = models_mod.model_info(cache, name,
+                                        runtime["config"].get("model"), backend)
             status["model_dl"].update(state="done", error=None)
             log.info(f"[models] ✅ {name} 下载完成"
                      f"（{models_mod.human_size(got['size'])}）")
@@ -3752,10 +4089,10 @@ async def api_models_download(req: Request):
             await broadcast_models()
 
     runtime["download_task"] = asyncio.create_task(_run())
-    log.info(f"[models] 开始下载 {name}（{models_mod.MODEL_REPOS[name]}）"
+    log.info(f"[models] 开始下载 {name}（{models_mod.repos_for(backend)[name]}）"
              + ("（离线模式：仅查本地缓存）" if offline else ""))
     return {"ok": True, "started": True, "name": name,
-            "repo": models_mod.MODEL_REPOS[name]}
+            "repo": models_mod.repos_for(backend)[name]}
 
 
 @app.delete("/api/models/{name}")
@@ -3770,7 +4107,8 @@ async def api_models_delete(name: str):
        （实测 reloading=True 切到 tiny 时 DELETE /api/models/tiny → 200 freed=4096，
        而同一状态下的 POST download 却正确 409）；前端删除按钮只按 m.active 禁用，
        正好在切换完成前显示目标可删，兜不住。故切换中一律禁删。"""
-    if name not in models_mod.MODEL_REPOS:
+    backend = asr_mod.active_backend(runtime["config"].get("device"))
+    if name not in models_mod.repos_for(backend):
         return JSONResponse(
             {"ok": False,
              "error": f"未知模型: {name!r}（可选: {list(models_mod.PLANNED_MODELS)}）"},
@@ -3795,7 +4133,7 @@ async def api_models_delete(name: str):
     # 评审2 修：rmtree 可能上万文件/上 GB，同步跑会堵住事件循环（/api/status 与 WS
     # 广播一起停）；与其它重活一致走线程。
     freed, err = await asyncio.to_thread(
-        models_mod.remove_model, models_mod.cache_dir(), name)
+        models_mod.remove_model, models_mod.cache_dir(), name, backend)
     if err:
         return JSONResponse({"ok": False, "error": err}, status_code=409)
     log.info(f"[models] 删除 {name} 缓存，释放 {models_mod.human_size(freed)}")
@@ -3982,6 +4320,262 @@ async def api_glossary_write(req: Request):
             "reloaded": reloaded}
 
 
+# —— B13：术语库包（glossary_packs/*.md → 课程术语表）——
+# 包目录 = main.PACKS_DIR（dev = ROOT/glossary_packs；frozen = _MEIPASS/glossary_packs，
+# 与 WEB 同款双路径）。装/卸都是**行级整块操作**（packs.install_block / uninstall_block）：
+# 块用**双标记**框起、EOF 追加、卸载按标记切片——用户自加的词条既不被动也不被吞。
+# 路由放在既有 /api/glossary 族之后（静态路径，不影响上面 /api/glossary/terms 的
+# 「参数化路由必须排在后面」那条纪律——这里一个新参数路由都没有）。
+
+
+def packs_view() -> dict:
+    """术语库包列表：每包元信息 + 条目实数 + 已装到哪些术语表（按标记扫**真文件**）。
+
+    「已装」以文件里的标记为准（单一事实来源 = 术语表文件本身），不另记索引——
+    与课程统计（course_terms）、笔记数（count_notes）同一条纪律。
+    **单包坏掉只坏自己那张卡**：packs.parse_pack 逐文件容错（坏包带 `error` 文案、
+    条目数 0、不可安装），这里再兜一层——包目录本身出意外（权限/被占用）也只回空表 +
+    一句明确原因，绝不让整页 500（与下面 glossary/ 文件的逐文件容错同一口径）。"""
+    try:
+        packs = packs_mod.list_packs(PACKS_DIR)
+        list_error = None
+    except Exception as e:              # 兜底：不把「读不出来」伪装成「一个包都没有」
+        log.warning(f"[packs] ⚠ 包目录读取失败 {PACKS_DIR}: {type(e).__name__}: {e}")
+        packs, list_error = [], f"包目录读取失败: {type(e).__name__}: {e}"
+    installed: dict = {}
+    for p in glossary_mod.list_files(ROOT):
+        try:
+            names = packs_mod.installed_names(glossary_mod.read_file(p)["lines"])
+        except Exception as e:              # 展示信息，单个文件坏不该让端点 500
+            log.debug(f"[packs] {p.name} 标记扫描失败（忽略）: {e}")
+            continue
+        for nm in names:
+            installed.setdefault(nm, []).append(p.name)
+    items = [{k: v for k, v in pk.items() if k != "entries"}
+             for pk in packs]
+    for it in items:
+        it["installed_in"] = installed.get(it["name"], [])
+    courses_data = courses_mod.load(COURSES_PATH)
+    active = courses_data.get("active")
+    cur = courses_mod.find(courses_data, active) if active else None
+    return {"ok": True, "dir": f"{packs_mod.PACKS_DIR}/", "packs": items,
+            "active": active,
+            "active_name": cur["name"] if cur else courses_mod.UNCATEGORIZED,
+            "limits": {"max_entries": glossary_mod.MAX_ENTRIES},
+            "error": list_error,
+            "translate_ready": runtime.get("translator") is not None}
+
+
+@app.get("/api/glossary/packs")
+async def api_packs():
+    """内置术语库包列表（名称/简介/条目数/已装状态）。"""
+    return packs_view()
+
+
+def _pack_target_course(body: dict, data: dict) -> tuple[dict | None, JSONResponse | None]:
+    """安装目标课程：请求里给了 course 用它，否则用**当前课程**（active）。
+
+    没有课程可装 → 400 + 明确文案（不猜、不静默落到「未分类」——术语库包必须装进
+    某门课的术语表，装进虚空是件没发生的事）。"""
+    cid = body.get("course")
+    if cid is None:
+        cid = data.get("active")
+    elif not isinstance(cid, str) or not cid.strip():
+        return None, JSONResponse(
+            {"ok": False, "error": "course 须为课程 id 字符串（省略 = 用当前课程）"},
+            status_code=400)
+    if not cid:
+        return None, JSONResponse(
+            {"ok": False,
+             "error": "没有指定课程，且当前是「未分类」——术语库包要装进某门课的术语表："
+                      "先在上课处选一门课，或在本请求里给 course"},
+            status_code=400)
+    course = courses_mod.find(data, cid.strip())
+    if course is None:
+        return None, JSONResponse({"ok": False, "error": f"课程不存在: {cid}"},
+                                  status_code=404)
+    return course, None
+
+
+def _plan_course_glossary(course: dict) -> tuple[Path | None, str | None, bool, JSONResponse | None]:
+    """算好「这个包要写进哪个术语表、要不要新建、要不要写回绑定」→ (路径, 待写绑定, 是否新建, 错误响应)。
+
+    **纯计划，不碰文件系统、不改 course**（评审修复）：旧版在**校验之前**就把表建出来、
+    把 `course["glossary"]` 改掉并落盘课程表——于是「包太大装不下」返回 400 之后，
+    glossary/ 下却多出一份空表、课程绑定也被改成了它（请求失败却留下副作用）。
+    现在由调用方在校验通过之后才落地：先 write_file（新表 = 表头 + 安装块，一次写成），
+    再写回绑定 + 广播。
+
+    - **未绑定**：待建/待用 `glossary/<课程名>.md`（NEW_FILE_HEADER 表头，撞名追加 -2/-3…
+      ——绝不覆盖别人的文件）；
+    - **已绑定**：沿用原路径（文件不在 → 也算「待建」，由安装那一步写出来）；
+    - 绑定路径不在 `glossary/` 直属下（courses.json 手改过）→ 400 明确文案：
+      glossary.write_file 的包含性校验会拒绝它，此处先给出**能看懂的原因**。"""
+    rel = course.get("glossary")
+    if not rel:
+        existing = {p.name for p in glossary_mod.list_files(ROOT)}
+        fname = packs_mod.course_glossary_name(course["name"], existing)
+        path = glossary_mod.safe_glossary_path(ROOT, fname)
+        if path is None:                    # 派生逻辑理论上不可能产出非法名，兜底而已
+            return None, None, False, JSONResponse(
+                {"ok": False, "error": f"无法为课程「{course['name']}」派生术语表文件名"},
+                status_code=400)
+        return path, f"{glossary_mod.GLOSSARY_DIR}/{fname}", not path.is_file(), None
+    problem = courses_mod.glossary_problem(ROOT, rel)
+    if problem:
+        return None, None, False, JSONResponse({"ok": False, "error": problem},
+                                               status_code=400)
+    path = Path(courses_mod.resolve_glossary(ROOT, rel) or "")
+    if path.parent.name != glossary_mod.GLOSSARY_DIR:
+        return None, None, False, JSONResponse(
+            {"ok": False,
+             "error": f"该课绑定的术语表不在 {glossary_mod.GLOSSARY_DIR}/ 下：{rel}"
+                      f"——术语库包只能装进 {glossary_mod.GLOSSARY_DIR}/ 里的 .md"
+                      f"（可在设置页把课程术语表指向 glossary/… 或清空该字段）"},
+            status_code=400)
+    return path, None, not path.is_file(), None
+
+
+@app.post("/api/glossary/packs/install")
+async def api_packs_install(req: Request):
+    """把术语库包整块装进某门课的术语表（B13）。
+
+    请求体：`{"pack": "数学", "course": "<课程 id>" | null}`（course 省略/null = 当前课程）。
+    行为：课程未绑定术语表 → 自动建 `glossary/<课程名>.md` 并写回绑定；同包重复安装 =
+    先卸后装（块内条目**以包的译名为准**重写，被改译/被移除的条目在 overwritten /
+    dropped 里如实回报，见 packs.install_block）；去重以用户已有为准（大小写不敏感，
+    **块外**的同名条目不动）；`已有 + 新增 > MAX_ENTRIES` → 400 且**零副作用**；
+    写盘成功后显式热重载（reload_glossary_now）。
+
+    **顺序纪律（评审修复）**：先算路径（不建文件）→ 读现有内容 → 整块校验 → **全过之后**
+    才落地（写表 → 写回绑定 → 广播）。旧版在校验前就把表和绑定落下了，于是「装不下」
+    返回 400 之后，glossary/ 里却多出一份空表、课程绑定也被改写——请求失败却改了状态。"""
+    body = await optional_json(req)
+    unknown = [k for k in body if k not in ("pack", "course")]
+    if unknown:
+        return JSONResponse(
+            {"ok": False, "error": f"未知字段: {unknown[0]}（允许: ['pack', 'course']）"},
+            status_code=400)
+    name = body.get("pack")
+    problem = packs_mod.name_problem(name)
+    if problem:
+        return JSONResponse({"ok": False, "error": problem}, status_code=400)
+    name = name.strip()
+    pack = packs_mod.find_pack(PACKS_DIR, name)
+    if pack is None:
+        return JSONResponse(
+            {"ok": False, "error": f"没有这个术语库包: {name}"
+                                   f"（可用包见 GET /api/glossary/packs）"},
+            status_code=404)
+    if pack.get("error"):
+        # 坏包（非 UTF-8 / 读不出来）：明确 400 而不是 500，也不当成「没有这个包」
+        return JSONResponse({"ok": False, "error": f"装不了「{name}」：{pack['error']}"},
+                            status_code=400)
+    data, derr = courses_mod.load_checked(COURSES_PATH)
+    bad = courses_corrupt(derr)
+    if bad:
+        return bad
+    course, bad_resp = _pack_target_course(body, data)
+    if bad_resp:
+        return bad_resp
+    path, bind_rel, created, bad_resp = _plan_course_glossary(course)
+    if bad_resp:
+        return bad_resp
+    # 新表 = 表头 + 安装块（一次写成，不先留一份空表）；已有表按盘上内容校验
+    base_lines_data = glossary_mod.read_file(path)
+    if created:
+        base_lines = glossary_mod.parse_lines(glossary_mod.NEW_FILE_HEADER)
+        base_eol = "\n"
+    else:
+        base_lines, base_eol = base_lines_data["lines"], base_lines_data["eol"]
+    lines, info, err = packs_mod.install_block(base_lines, name, pack["entries"])
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    try:
+        glossary_mod.write_file(path, lines, base_eol)
+    except Exception as e:
+        log.warning(f"[packs] ⚠ 安装写入失败 {path.name}: {e}")
+        return JSONResponse({"ok": False, "error": f"写入失败: {e}"}, status_code=500)
+    if bind_rel:
+        # 表写成了才写回绑定（顺序反过来的话，写失败会留下悬空绑定）；与 POST/PUT
+        # /api/courses 同一条收尾口径：落盘 + （当前课程则热重载）+ 广播
+        course["glossary"] = bind_rel
+        courses_mod.save(COURSES_PATH, data)
+        if data.get("active") == course["id"]:
+            apply_course_glossary(course)
+        await broadcast_courses()
+    reloaded = reload_glossary_now(path)
+    after = glossary_mod.read_file(path)
+    log.info(f"[packs] 安装「{name}」→ {path.name}（课程「{course['name']}」· "
+             f"新增 {info['added']} 条、跳过 {len(info['skipped'])} 条重复、"
+             f"覆盖译名 {len(info['overwritten'])} 条、移除旧词条 {len(info['dropped'])} 条、"
+             f"共 {len(after['entries'])} 条、新建表={'是' if created else '否'}、"
+             f"重载={'是' if reloaded else '否'}）")
+    return {"ok": True, "pack": name, "file": path.name, "rel": course.get("glossary"),
+            "course": course["id"], "course_name": course["name"],
+            "created_file": created, "added": info["added"], "skipped": info["skipped"],
+            "skipped_count": len(info["skipped"]),
+            "overwritten": info["overwritten"], "overwritten_count": len(info["overwritten"]),
+            "dropped": info["dropped"], "dropped_count": len(info["dropped"]),
+            "count": len(after["entries"]), "reloaded": reloaded}
+
+
+@app.post("/api/glossary/packs/uninstall")
+async def api_packs_uninstall(req: Request):
+    """按双标记把某个包整块卸出术语表（B13）。
+
+    请求体：`{"pack": "数学", "file": "数学.md"}`。**只认 glossary/ 直属 .md 的裸文件名**
+    （与 POST /api/glossary 同一把安全闸）。标记缺失/不完整 → 409 且**不动文件**。"""
+    body = await optional_json(req)
+    unknown = [k for k in body if k not in ("pack", "file")]
+    if unknown:
+        return JSONResponse(
+            {"ok": False, "error": f"未知字段: {unknown[0]}（允许: ['pack', 'file']）"},
+            status_code=400)
+    name = body.get("pack")
+    problem = packs_mod.name_problem(name)
+    if problem:
+        return JSONResponse({"ok": False, "error": problem}, status_code=400)
+    name = name.strip()
+    path = glossary_mod.safe_glossary_path(ROOT, body.get("file"))
+    if path is None:
+        return JSONResponse(
+            {"ok": False,
+             "error": f"非法术语表文件名: {body.get('file')!r}"
+                      f"（只接受 {glossary_mod.GLOSSARY_DIR}/ 下的 .md 文件名）"},
+            status_code=400)
+    if not path.is_file():
+        return JSONResponse({"ok": False, "error": f"术语表不存在: {path.name}"},
+                            status_code=404)
+    data = glossary_mod.read_file(path)
+    lines, removed, err = packs_mod.uninstall_block(data["lines"], name)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=409)
+    # 并集去重的副作用如实回报：被移除的词条里，有哪些同时还由**别的已装包**提供
+    # （它们当初被跳过、挂在被卸的这个块里）。不自动补写——卸载只做卸载。
+    others = {}
+    for nm in packs_mod.installed_names(data["lines"]):
+        if nm == name:
+            continue
+        rec = packs_mod.find_pack(PACKS_DIR, nm)
+        if rec:
+            others[nm] = [en for en, _ in rec["entries"]]
+    shared = packs_mod.shared_entries(data["lines"], name, others)
+    try:
+        glossary_mod.write_file(path, lines, data["eol"])
+    except Exception as e:
+        log.warning(f"[packs] ⚠ 卸载写入失败 {path.name}: {e}")
+        return JSONResponse({"ok": False, "error": f"写入失败: {e}"}, status_code=500)
+    reloaded = reload_glossary_now(path)
+    after = glossary_mod.read_file(path)
+    log.info(f"[packs] 卸载「{name}」← {path.name}（移除 {removed} 行、"
+             f"余 {len(after['entries'])} 条、与其它已装包重合 {len(shared)} 条、"
+             f"重载={'是' if reloaded else '否'}）")
+    return {"ok": True, "pack": name, "file": path.name, "removed_lines": removed,
+            "count": len(after["entries"]), "shared": shared,
+            "shared_count": len(shared), "reloaded": reloaded}
+
+
 def final_payload(ts_clock: str, en: str, seg: int, audio_ts: float | None) -> dict:
     """final 广播 payload（条目12①：audio_ts = 本段音频的**窗口起点**墙钟秒，
     贯穿采集→广播全程，前端据此显示「延迟 ≈ N s」）。键集合兼容 v0.2 整句
@@ -4032,6 +4626,17 @@ async def ws_endpoint(ws: WebSocket):
     lan_peer = not is_loopback_peer(ws.client.host if ws.client else None)
     if lan_peer:
         hub.lan_clients.add(ws)
+    # B11 手机同屏防误触：递手一帧 announce，把**服务端判定的** lan 真假告诉页面。
+    # 为什么由服务端说：页面自己无法可靠判断"我是不是这台电脑上的窗口"，而这条决定
+    # 关系到"谁能按下暂停/下课"——必须用对端地址（与 ws_clients 同源判据），
+    # 客户端自报的 lan 一律不采信。本机窗口（桌面壳/浏览器标签/悬浮条都是环回）
+    # 收到 lan=false → 界面零变化。
+    # 递手帧发失败（对端刚断开/管道坏）不该把这条连接变成异常：记一条 debug 就继续
+    # 走既有收循环（它的 try/finally 负责清理登记）。
+    try:
+        await ws.send_json({"type": "hello", "lan": lan_peer})
+    except Exception:
+        log.debug("[ws] 递手帧（hello）发送失败", exc_info=True)
     try:
         while True:
             msg = await ws.receive_text()  # 保活 + ui_metrics 上行（条目9④）

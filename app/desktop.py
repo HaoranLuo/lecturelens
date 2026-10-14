@@ -13,8 +13,10 @@
   python app/desktop.py --check                        # headless 自检（门禁）: 退出码 0/1
 
 桌面模式结构:
-  后台 daemon 线程跑 uvicorn（复用 main.py 的 app）：默认仅监听 127.0.0.1 随机空闲端口；
-  开了手机同屏（config `lan_enabled`，§7）则监听 0.0.0.0（优先 8787，被占换端口），
+  后台 daemon 线程跑 uvicorn（复用 main.py 的 app）：默认仅监听 127.0.0.1 的 **8787**
+  （被占才回落空闲端口——B15 评审修复①，理由见 DESKTOP_PREFERRED_PORT；原先用内核随机
+  端口，导致窗口 origin 每次都变、前端 localStorage 偏好每次失忆）；
+  开了手机同屏（config `lan_enabled`，§7）则监听 0.0.0.0（同号 8787，被占换端口），
   手机连同一 WiFi 扫码即可看字幕——桌面窗口自己始终走 127.0.0.1:<port>，不受影响。
   主进程 webview.create_window + webview.start
   （Windows 默认 Edge WebView2 后端，Win11 自带）。
@@ -88,6 +90,51 @@ LOCK_PATH = (service.ROOT / "desktop.lock").resolve()
 _OWNED_LOCK: dict = {}  # 本进程持有的锁内容；释放前校验所有权，防误删新实例的锁
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
+# —— B15 评审修复①：桌面窗口的 origin 必须跨启动稳定，否则前端偏好「每次开都失忆」 ——
+# 症状（评审实读 + 实跑）：用户选了浅色主题，下次开应用又回深色。两条独立原因：
+#   ① 端口随机：start_server() 原先用 port=0 → 内核随机分配（lan.lan_bind(false,0) =
+#      ('127.0.0.1', 0)、lan.pick_port(...,0) = 0，本机实跑），窗口按端口载入
+#      http://127.0.0.1:<port>/，而 localStorage **按 origin（含端口）隔离** → 每次启动
+#      都是新 origin，ll_theme / ll_font（字号）/ ll_settings_tab（设置分区）/ LL_TOKEN
+#      （LAN 配对记忆）全部读不到。评审给的四次桌面运行日志端口各异（65241/58804/
+#      51724/50304）即此事。
+#   ② 存储不持久：webview.start() 默认 private_mode=True（site-packages/webview/
+#      __init__.py:198「cookies and local storage are not preserved」；winforms 后端把
+#      cache_dir 指到临时目录、关窗即 rmtree）→ 就算 origin 不变也留不下东西。
+# 本常量 + WEBVIEW_PROFILE_DIR（见下）分别治这两条。
+# 取 8787（与 --server-only / 手机同屏同一个号）：① 与用户手敲/文档里的地址一致；
+# ② 开关「手机同屏」时不换 origin（lan_enabled 开关前后窗口都是 127.0.0.1:8787），
+# 偏好不会因为换个监听地址而丢。被占则 lan.pick_port 回落空闲端口（窗口照常起得来，
+# 只是那一次偏好会另存一份——「宁可降级也不让窗口起不来」同 §7 口径）。
+DESKTOP_PREFERRED_PORT: int = lan_mod.LAN_PREFERRED_PORT
+
+#: pywebview 的**持久化** profile 目录（cookies/localStorage/IndexedDB 等站点数据）。
+#: 锚在 ROOT：与 config.json/transcripts/logs 同款「程序目录即用户数据目录」。
+#: ⚠️ 它含 localStorage（用扫码配对过的机器会带着 LAN token），因此名字必须进
+#: scripts/build_exe.py 的 FORBIDDEN_DIST_ENTRIES，绝不能进分发包（同 config.json 口径）。
+#: 名字刻意**不叫** webview —— 那会和 PyInstaller 收进包的 pywebview 包目录同名，
+#: 让 D3 的「用户数据/密钥不得进包」扫描把合法产物也报出来。
+WEBVIEW_PROFILE_DIR = (service.ROOT / "webview_profile")
+
+
+def persistent_storage_kwargs() -> dict:
+    """webview.start 的持久化 profile 参数；不可用就回落默认（私有模式）。
+
+    为什么必须显式关掉 private_mode：见 WEBVIEW_PROFILE_DIR 的注释（默认 True 会让
+    localStorage 每次关窗即蒸发，B15 主题 + 既有字号/分区/配对记忆全跟着失效）。
+    为什么先探测可写：pywebview 的 __set_storage_path 在目录建不出来/不可写时**直接抛
+    WebViewException**（webview/__init__.py:487-498）——那会让整个窗口起不来。
+    「界面偏好记不住」可以降级，「应用打不开」不行（同 §7「8787 被占也要能起窗口」）。"""
+    try:
+        WEBVIEW_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        if not os.access(WEBVIEW_PROFILE_DIR, os.W_OK):
+            raise OSError("目录不可写")
+    except Exception as e:
+        log.warning(f"[desktop] ⚠ 无法准备持久化 WebView2 profile（{e}）"
+                    "→ 本次不记忆界面偏好（主题/字号/分区）")
+        return {}
+    return {"private_mode": False, "storage_path": str(WEBVIEW_PROFILE_DIR)}
+
 
 def _pid_alive(pid: int) -> bool:
     """进程是否存活。Windows: OpenProcess(查询受限信息)，拿到句柄=活；非 Windows
@@ -129,8 +176,13 @@ def _acquire_instance_lock(port: int) -> bool:
     resolve 规范化的常量路径，无用户输入成分）。内容 JSON {"pid", "port"}。
     判定：已有锁且 (pid 存活 且 (无端口记录 或 127.0.0.1:port 可连通)) → 已有
     实例，返回 False；否则陈旧锁（崩溃残留/同 PID 复用）→ 覆盖。端口连通性是
-    PID 复用的兜底：复用者几乎不可能恰好监听我们的随机端口。锁文件不可创建
-    （只读目录等）→ fail-open：告警并放行，锁问题不拦用户启动。
+    PID 复用的兜底：复用者**还要**恰好监听那个端口才算冲突。
+    ⚠️ B15 评审修复① 之后端口默认固定 8787，这条兜底比「随机端口」时弱一点
+    （评审口径的诚实交代）：残留锁 + pid 被复用 + 有别的进程占着 8787（例如用户同时
+    跑着 --server-only）三者同时成立时，会把「无实例」误判为「已运行」，补救手段是
+    `--force-unlock`（README 已写明）。取舍理由：origin 稳定性是**每次启动**都在生效的
+    真实收益，而这是三个独立小概率事件同时发生的误判，且有一键挽回。
+    锁文件不可创建（只读目录等）→ fail-open：告警并放行，锁问题不拦用户启动。
     p1-review 加固（并发竞争收敛）：
     - 读侧短重试：O_EXCL 创建与写入非原子，竞争方可能读到空/半截内容——重试
       数次再判，避免把「对方正在写」误判为陈旧锁；
@@ -202,7 +254,15 @@ def _release_instance_lock() -> None:
 
 
 def _warn_already_running() -> None:
-    """双开时给 GUI 用户一个看得见的提示；无桌面会话/调用失败则静默。"""
+    """双开时给 GUI 用户一个看得见的提示；无桌面会话/调用失败则静默。
+
+    非 Windows（macOS/Linux）：没有 user32.MessageBoxW，**降级为日志一行**（择简：
+    不为一句提示引入新依赖；调用点已经 log.error 写明了锁文件位置。托盘通知
+    （icon.notify）要等 pystray icon 建好，而本函数在它之前调用，取不到）。"""
+    if os.name != "nt":
+        log.warning("[desktop] 另有实例在运行（非 Windows 无 MessageBox，"
+                    "见上一条 log.error 的锁文件位置）")
+        return
     try:
         ctypes.windll.user32.MessageBoxW(
             0, "LectureLens 已在运行（请查看系统托盘）。", WINDOW_TITLE, 0x40)
@@ -212,14 +272,17 @@ def _warn_already_running() -> None:
 
 # —— 服务线程（main.app + uvicorn；默认仅 127.0.0.1，§7 手机同屏开启时监听 0.0.0.0）——
 
-def start_server(port: int = 0):
+def start_server(port: int = DESKTOP_PREFERRED_PORT):
     """后台 daemon 线程起 uvicorn，返回 (线程, server, 实际端口)。
 
     绑定地址跟随 config.lan_enabled（§7，只在启动时读一次）：
-    - false（默认）→ host=127.0.0.1, port 参数（0 = 随机空闲端口）；
+    - false（默认）→ host=127.0.0.1, port 参数（默认 DESKTOP_PREFERRED_PORT=8787）；
     - true（手机同屏）→ host=0.0.0.0，优先 8787（被占则换一个空闲端口：桌面上往往
       同时跑着别的实例/别的服务，**不能因为 8787 被占就让窗口起不来**）。
     桌面窗口自己始终走 http://127.0.0.1:<port>——0.0.0.0 同样接环回连接，窗口不受影响。
+    **端口默认值不再是 0（随机）**：那会让窗口 origin 每次启动都变、前端的 localStorage
+    偏好（B15 主题等）每次失忆——理由与「被占也要起得来」的取舍见 DESKTOP_PREFERRED_PORT
+    的注释；传 0 仍表示「交给内核挑」。
     实际端口仍以 server.servers[0].sockets 为准（uvicorn/server.py 先填 servers
     :155/:164 再置 started :205，等 started 再读，无竞态），并记进
     service.set_bind——/api/lan-qr 的配对 URL 要用它（换成别的端口时不能说 8787）。
@@ -270,7 +333,14 @@ def set_click_through(window, on: bool) -> bool:
     成功 True；任何失败（native 未就绪/句柄无效/API 调用失败）返回 False，由调用方
     降级（窗口保持可点击可关闭，设置页已注明降级路径）。纯函数化（传 window 对象）
     便于单测用假对象验证降级路径——不用真窗口。
-    window.native 由 winforms 后端在窗口创建后赋值（BrowserForm，winforms.py:195）。"""
+    window.native 由 winforms 后端在窗口创建后赋值（BrowserForm，winforms.py:195）。
+
+    **非 Windows（macOS/Linux）恒返回 False**：WS_EX_* 是 Win32 扩展窗口样式，
+    macOS 没有对应物（要么改 NSWindow 层级、要么在事件层吞鼠标，都要另做一套）。
+    走既有降级路径，前端文案已说明「仅 Windows 可用、其余平台保持可关闭窗口」。"""
+    if os.name != "nt":
+        log.info("[float] 点击穿透仅 Windows 可用——已降级（浮窗保持可点击可关闭）")
+        return False
     try:
         hwnd = int(window.native.Handle.ToInt32())
         u32 = ctypes.windll.user32
@@ -291,10 +361,17 @@ def set_click_through(window, on: bool) -> bool:
 def _float_position(cfg: dict | None = None) -> dict:
     """悬浮条位置：优用**记忆值**（p3-5），否则屏幕底部居中偏上（课堂第二块屏常见位）。
     记忆值同样要过可交叠校验——拔掉第二块屏后旧坐标可能落在屏外，那时窗口是「存在
-    但看不见」，比回到默认位更糟。取屏幕尺寸失败就不传坐标（pywebview 默认位）。"""
+    但看不见」，比回到默认位更糟。取屏幕尺寸失败就不传坐标（pywebview 默认位）。
+
+    非 Windows（macOS/Linux）：不传坐标（返回 {}）——没有 GetSystemMetrics，而
+    pywebview 的 screen API 要等 start() 之后才有值（本函数在窗口创建之前调用，
+    时机上取不到）；**不猜坐标**，交给窗口管理器的默认摆放。记忆值仍优先（见上，
+    非 Windows 下 _virtual_screen 为 None，交叠校验按「不设防」放行）。"""
     saved = _saved_point(cfg or {}, "float_x", "float_y")
     if saved:
         return {"x": saved[0], "y": saved[1]}
+    if os.name != "nt":
+        return {}
     try:
         u32 = ctypes.windll.user32
         sw, sh = u32.GetSystemMetrics(0), u32.GetSystemMetrics(1)
@@ -313,7 +390,16 @@ _MIN_VISIBLE = 120
 
 
 def _virtual_screen() -> tuple | None:
-    """(x, y, w, h) 虚拟屏包围盒；取不到（无桌面会话/API 失败）→ None。"""
+    """(x, y, w, h) 虚拟屏包围盒；取不到（无桌面会话/API 失败）→ None。
+
+    **仅 Windows 实现**（GetSystemMetrics 的 SM_*VIRTUALSCREEN）。非 Windows
+    （macOS/Linux）**一律 None** = 走既有「不设防」路径：_geometry_visible /
+    _point_on_screen 在 None 下一律判真，记忆版式与记忆点原样采信（越界交给窗口
+    管理器自己收敛，宁可位置差一点也不能让窗口藏在屏外看不见）。不做伪包围盒：
+    pywebview 的 screens 列表要等 start() 之后才有值，而本函数在窗口创建之前就被
+    调用——时机上取不到，硬编一个只会制造假坐标。"""
+    if os.name != "nt":
+        return None
     try:
         u32 = ctypes.windll.user32
         return (u32.GetSystemMetrics(_SM_XVIRTUALSCREEN),
@@ -479,10 +565,32 @@ def _save_geometry(main_win, float_win) -> None:
         log.warning(f"[desktop] ⚠ 版式记忆写入失败: {e}")
 
 
-def _float_alive(window) -> bool:
-    """窗口是否真实存活（p1-review 修复⑨的判据增强）：native 是构造时赋值、窗口
-    销毁不清（winforms 只删 BrowserView.instances[uid]），单靠 `native is not None`
-    判断会永远为真——必须查 user32.IsWindow(句柄)。"""
+def _native_present(window) -> bool:
+    """pywebview 窗口的 native 句柄/对象是否已创建。**只证明「创建过」**：native 是
+    窗口创建后赋值、销毁时不清的（winforms.py:195 赋值；cocoa.py:595 赋值，关窗只在
+    windowWillClose_ 里删 BrowserView.instances + webview.windows，不清 native）——
+    所以它不能单独当存活判据（见 _float_alive）。"""
+    return getattr(window, "native", None) is not None
+
+
+def _float_alive(window, shown_ok: bool | None = None) -> bool:
+    """窗口是否真实存活（p1-review 修复⑨的判据增强）。
+
+    **Windows**：native 是构造时赋值、窗口销毁不清（winforms 只删
+    BrowserView.instances[uid]），单靠 `native is not None` 判断会永远为真——
+    必须查 user32.IsWindow(句柄)。
+
+    **非 Windows（macOS/Linux）**：没有 IsWindow，判据取两个事实 ——
+    native 已创建（未销毁）**且** 本会话至少成功 show/hide 过一次（shown_ok，
+    由 _poll_tray_state 的 float_ready 记录）。为什么必须有后半句：native 在窗口
+    销毁后不清，单靠它会把「已被销毁/从未真正可控」的窗口判成活。为什么
+    shown_ok=None 要单独放行：**「要 show 成功才算活、要活才去 show」是互锁的**
+    ——首次尝试必须放行（由调用方的宽限窗 _float_wait_until 兜底），否则悬浮条
+    在 Mac 上永远起不来（本项点名的「必须修」）。"""
+    if os.name != "nt":
+        if not _native_present(window):
+            return False
+        return True if shown_ok is None else bool(shown_ok)
     try:
         return bool(ctypes.windll.user32.IsWindow(int(window.native.Handle.ToInt32())))
     except Exception:
@@ -741,7 +849,14 @@ def run_desktop(glossary: list[str] | None = None,
             try:
                 # B1 浮窗同步（p1-7）：配置驱动 + 句柄真实存活（p1-review 修复⑨：
                 # native 非 None 不等于活着；窗口被销毁/创建失败时不能静默 no-op）
-                if _float_alive(window2):
+                # first_try = 非 Windows 的首次尝试放行：那里的判据要求「曾成功
+                # show/hide 过一次」，而第一次尝试前这个事实还不存在（互锁）——
+                # 宽限窗内先放行 native 已创建的窗口去试一次，成功即转正。
+                # Windows 分支 first_try 恒 False（IsWindow 是唯一真相源）。
+                first_try = (os.name != "nt" and not float_ready
+                             and time.time() < float_wait_until
+                             and _native_present(window2))
+                if _float_alive(window2, float_ready) or first_try:
                     want_float = bool(service.runtime["config"].get("floating_bar"))
                     if not float_ready or want_float != _floating_on.is_set():
                         if want_float:
@@ -893,7 +1008,8 @@ def run_desktop(glossary: list[str] | None = None,
     try:
         webview.start(
             debug=os.environ.get("LECTURELENS_DEVTOOLS") == "1",
-            func=_start_poller)
+            func=_start_poller,
+            **persistent_storage_kwargs())   # B15 评审修复①：关掉默认的私有模式（见该函数）
     finally:
         # p3-5：兜底再记一次版式——托盘「退出」不是唯一退出路径（异常退出 / 窗口被
         # 非常规销毁 / webview.start 自己返回）。窗口已销毁时 _read_geometry 返回空

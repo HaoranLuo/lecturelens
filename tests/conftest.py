@@ -55,7 +55,11 @@ def isolate_global_hotkeys(monkeypatch):
         calls.append(cfg)
         st = {"enabled": True, "active": False, "reason": "starting",
               "bindings": dict(main.hotkeys_mod.DEFAULT_BINDINGS),
-              "labels": dict(main.hotkeys_mod.BINDING_LABELS)}
+              "labels": dict(main.hotkeys_mod.BINDING_LABELS),
+              # Mac 适配：state 形状多了「平台授权说明」（非 darwin 恒空串）。桩必须与
+              # hotkeys.state() 同形状——test_hotkeys.test_status_shape_matches_manager_state
+              # 钉的就是这件事。
+              "hint": main.hotkeys_mod.accessibility_hint()}
         main.status["hotkeys"] = st
         return st
 

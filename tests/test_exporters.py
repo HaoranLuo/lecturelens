@@ -295,6 +295,7 @@ def _make_asr(segments):
     w = object.__new__(WhisperASR)            # 绕过 __init__：不加载真模型
     w.language = "en"
     w.detected_lang = None
+    w.backend = "ctranslate2"                 # Mac 适配：transcribe 按 backend 分发
 
     class M:
         def transcribe(self, audio, **kw):

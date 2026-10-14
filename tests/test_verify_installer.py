@@ -225,26 +225,34 @@ def test_checked_install_dir_still_blocks_non_temp(monkeypatch, tmp_path):
 
 
 def test_probes_intact_detects_missing_and_modified(tmp_path):
-    """卸载后「探针仍在」的判据必须能真的报出丢失/被改，不能恒真。"""
+    """卸载后「探针仍在」的判据必须能真的报出丢失/被改，不能恒真。
+
+    多探针口径（评审②）：write_probes 返回 {相对路径: 内容}，probes_intact 收这一份。
+    """
     d = tmp_path / "app"
     (d / "transcripts").mkdir(parents=True)
-    vi.write_probes(d)
-    note = (d / vi.PROBE_NOTE).read_text(encoding="utf-8")
-    cfg = (d / vi.PROBE_CONFIG).read_text(encoding="utf-8")
+    want = vi.write_probes(d)
 
-    ok, why = vi.probes_intact(d, note, cfg)
+    ok, why = vi.probes_intact(d, want)
     assert ok and why == ""
 
     # 内容被改动（例如重装把 config.json 覆盖成默认值）→ 必须判失败
     (d / vi.PROBE_CONFIG).write_text("{}", encoding="utf-8")
-    ok, why = vi.probes_intact(d, note, cfg)
+    ok, why = vi.probes_intact(d, want)
     assert not ok and vi.PROBE_CONFIG in why
 
     # 文件被删（数据没保住）→ 必须判失败
     vi.write_probes(d)
     (d / vi.PROBE_NOTE).unlink()
-    ok, why = vi.probes_intact(d, note, cfg)
+    ok, why = vi.probes_intact(d, want)
     assert not ok and vi.PROBE_NOTE in why
+
+    # 逐类探针单独也能判红：glossary（术语表）与 logs（日志）原先**无人验**（评审②）
+    for rel in (vi.PROBE_GLOSSARY, vi.PROBE_LOG, vi.PROBE_NOTE, vi.PROBE_CONFIG):
+        vi.write_probes(d)
+        (d / rel).unlink()
+        ok, why = vi.probes_intact(d, want)
+        assert not ok and rel in why, f"{rel} 缺失必须判失败"
 
 
 def test_probe_payload_carries_a_marker():
@@ -252,13 +260,103 @@ def test_probe_payload_carries_a_marker():
     d = Path(tempfile.mkdtemp(prefix="vi-probe-"))
     try:
         vi.write_probes(d)
-        assert vi.PROBE_MARKER in (d / vi.PROBE_CONFIG).read_text(encoding="utf-8")
-        assert vi.PROBE_MARKER in (d / vi.PROBE_NOTE).read_text(encoding="utf-8")
+        for rel in vi.PROBES:
+            assert vi.PROBE_MARKER in (d / rel).read_text(encoding="utf-8"), rel
         # 笔记探针要落在 transcripts/ 下（与运行期笔记同目录，才验得有意义）
         assert vi.PROBE_NOTE.startswith("transcripts/")
     finally:
         import shutil
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_probe_set_covers_all_four_promises_and_uses_real_note_naming():
+    """评审②：探针面必须**等于** .iss 对用户承诺保留的那四类，不得更窄。
+
+    .iss 的 ConfirmUninstall 原话是「笔记（transcripts）、术语表（glossary）、
+    日志（logs）与设置（config.json）都会被保留」——旧探针只验了其中两项，
+    glossary 与 logs 无人验，而 glossary 是用户自己攒的、不可再生。
+    """
+    promised = ("transcripts", "glossary", "logs", "config.json")
+    covered = " ".join(vi.PROBES)
+    for kind in promised:
+        assert kind in covered, f"探针未覆盖 .iss 承诺保留的 {kind}"
+    # .iss 的承诺不能是空口：文案本身也要真的写着这四项
+    code = _iss_code()
+    m = re.search(r"^ConfirmUninstall=(.*)$", code, re.M)
+    assert m, "ConfirmUninstall 覆盖文案不见了"
+    for kind in ("transcripts", "glossary", "logs", "config.json"):
+        assert kind in m.group(1), f"ConfirmUninstall 未写明保留 {kind}"
+
+
+def test_probe_note_uses_the_real_note_naming_scheme():
+    """评审②：探针名必须落在**真实笔记的命名空间**里，否则没有判别力。
+
+    真实运行期笔记是 `transcripts/lecture_<stamp>.md`（见 app/main.py 的笔记落盘处）。
+    若探针叫「探针笔记.md」这种真实命名法里不存在的名字，一条
+    `[UninstallDelete] transcripts\\lecture_*.md` 式通配就能删光真实笔记而探针完好
+    ——这正是本探针要挡的失效模式，所以它必须匹配 `lecture_*.md`。
+    """
+    note = vi.PROBE_NOTE
+    assert note.startswith("transcripts/"), note
+    assert re.fullmatch(r"transcripts/lecture_[0-9]{8}_probe\.md", note), \
+        f"笔记探针必须形如 transcripts/lecture_<stamp>.md（收到 {note}）"
+
+
+def test_required_installed_is_derived_from_build_exe():
+    """评审②：装机清单**不许另抄一份**——两份清单迟早漂移。
+
+    旧实现是本文件同级的一段 4 项字面量（且只含 index.html），弱于构建侧的 7 项：
+    float.html / privacy.html / B13 术语库包都漏在装机断言之外——而这几个新文件
+    恰恰是「新版真装上了没有」的判据。
+    """
+    import build_exe
+    derived = build_exe.required_dist_files(build_exe.BUNDLE_MODEL)
+    assert vi.REQUIRED_INSTALLED[:len(derived)] == derived, \
+        "REQUIRED_INSTALLED 必须以 build_exe.required_dist_files 为前缀（同源）"
+    # 构建侧 7 项之外，装机侧还多一项：新手指引.txt（由 .iss 从 installer/ 挂上去，
+    # 不在 dist/ 里，故构建清单不含它）
+    assert vi.REQUIRED_INSTALLED[len(derived):] == (vi.GUIDE_NAME,)
+    for rel in ("_internal/web/float.html", "_internal/web/privacy.html",
+                "_internal/glossary_packs/数学.md"):
+        assert rel in vi.REQUIRED_INSTALLED, f"{rel} 必须进装机断言"
+
+
+def test_version_matches_compares_via_build_exe_quad():
+    """评审②：跨版本升级必须能断言「新版真装上了」——比较走 build_exe.version_quad。
+
+    Windows 的 exe FileVersion 是四段（'1.1.0.0'），安装包名是三段（'1.1.0'），
+    两边都经同一个解析器补零后比较；解析不了的一律判不等（不猜、不放过）。
+    """
+    assert vi.version_matches("1.1.0.0", "1.1.0")
+    assert vi.version_matches("1.1.0", "1.1.0.0")
+    assert not vi.version_matches("1.0.0.0", "1.1.0")
+    assert not vi.version_matches("", "1.1.0")
+    assert not vi.version_matches("banana", "1.1.0")
+
+
+def test_missing_installed_reports_each_new_file(tmp_path):
+    """覆盖后「关键产物齐全」必须能逐项报缺（含 1.1.0 的随包新文件）。"""
+    d = tmp_path / "app"
+    d.mkdir()
+    missing = vi.missing_installed(d)
+    assert set(missing) == set(vi.REQUIRED_INSTALLED)
+    (d / "_internal" / "web").mkdir(parents=True)
+    (d / "_internal" / "web" / "float.html").write_text("x", encoding="utf-8")
+    assert "_internal/web/float.html" not in vi.missing_installed(d)
+
+
+def test_upgrade_step_asserts_new_version_landed():
+    """源码级（评审②）：⑦ 跨版本那一步**必须**留下「新版落地」的断言。
+
+    只断言「exe 在位 + 探针还在 + --check 退 0」的话，新文件没覆盖上去也照样全绿
+    ——这正是评审抓到的假绿通道。故这里钉住三条源码事实：读装好的版本、
+    比对版本号、覆盖后重跑 REQUIRED_INSTALLED。
+    """
+    src = Path(vi.__file__).read_text(encoding="utf-8")
+    assert "installed_exe_version(" in src, "必须读安装目录里 exe 的版本资源"
+    assert "覆盖后 exe 版本 ==" in src, "必须断言覆盖后版本 == 新版号"
+    assert "覆盖后关键产物齐全" in src, "覆盖后必须重跑 REQUIRED_INSTALLED"
+    assert "missing_installed(" in src
 
 
 def test_launch_uses_literal_exe_name_and_no_shell():

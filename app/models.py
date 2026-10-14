@@ -7,6 +7,12 @@ URL —— 服务端绝不按用户输入去请求任意地址，snapshot_downlo
 始终走 huggingface.co 默认值。新增模型 = 在 MODEL_REPOS 里加一条白名单，不存在
 「传个 repo 就下」的旁路。
 
+**后端（Mac 适配·第二批）**：同一批短名有两张仓库表——ctranslate2（Windows/Linux/
+Intel Mac，Systran 系）与 MLX（Apple Silicon，mlx-community 系，见 MLX_MODEL_REPOS）。
+所有函数都收 `backend`（默认 "ctranslate2"，既有调用零变化），仓库 id、缓存条目目录、
+「完整性」判据（model.bin vs weights.safetensors）三者一起按后端切换。**下载通道完全
+共用**（同一 HF 缓存、同一 hfenv 镜像/离线开关）——不存在两套下载逻辑。
+
 **缓存布局**：huggingface_hub 的 `models--<org>--<name>/`，
 其中 `snapshots/<rev>/` 是模型文件。HF 在支持符号链接的机器上把 snapshots 做成
 指向 `blobs/` 的链接，在 Windows（未开开发者模式）则是**真实副本**（本机实测
@@ -33,11 +39,47 @@ MODEL_REPOS: dict = {
     "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
 }
 
+#: MLX（Apple Silicon）后端的同一批档位 → mlx-community 权重仓。**写死白名单**，
+#: 与 MODEL_REPOS 同款纪律：对外只认短名，客户端无法传入任意 repo。
+#: 2026-10-14 用 HF API（author=mlx-community&search=whisper）逐个核实过存在性；
+#: ⚠ large-v3-turbo 那个仓名**不带** -mlx 后缀（上游命名不一致，不是笔误），
+#: 别顺手"修"成 ...-turbo-mlx（那会 404）。
+MLX_MODEL_REPOS: dict = {
+    "tiny": "mlx-community/whisper-tiny-mlx",
+    "base": "mlx-community/whisper-base-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+}
+
+#: 后端 → 仓库表。未知后端一律按 ctranslate2（默认后端）处理。
+REPOS_BY_BACKEND: dict = {"ctranslate2": MODEL_REPOS, "mlx": MLX_MODEL_REPOS}
+
+
+def repos_for(backend: str | None = "ctranslate2") -> dict:
+    """后端对应的「短名 → 仓库」白名单表（未知/缺省 → ctranslate2 表）。"""
+    return REPOS_BY_BACKEND.get(str(backend or "ctranslate2"), MODEL_REPOS)
+
+
 #: 计划内模型顺序（与 main.MODEL_CHOICES / UI 下拉一致）
 PLANNED_MODELS: tuple = tuple(MODEL_REPOS)
 
-#: 判定「模型可用」的关键文件（缺它 WhisperModel 起不来）
-REQUIRED_FILE = "model.bin"
+#: 判定「模型可用」的关键文件（缺它后端起不来）——**按后端分**：
+#: - ctranslate2（faster-whisper）要 model.bin；
+#: - MLX 要 mlx_whisper.load_models.load_model 读的 weights.safetensors
+#:   （旧转换仓可能只有 weights.npz，两个都认——实源见 mlx_whisper/load_models.py）。
+REQUIRED_FILES: dict = {"ctranslate2": ("model.bin",),
+                        "mlx": ("weights.safetensors", "weights.npz")}
+
+#: 判定「模型可用」的关键文件（ctranslate2 口径；既有调用与测试继续用它）
+REQUIRED_FILE = REQUIRED_FILES["ctranslate2"][0]
+
+
+def required_files(backend: str | None = "ctranslate2") -> tuple:
+    """该后端「模型可用」的关键文件集合（未知后端 → ctranslate2 口径）。"""
+    return REQUIRED_FILES.get(str(backend or "ctranslate2"),
+                              REQUIRED_FILES["ctranslate2"])
 
 #: 展示用体积单位
 _UNITS = ((1024 ** 3, "GB"), (1024 ** 2, "MB"), (1024, "KB"))
@@ -64,9 +106,10 @@ def cache_dir() -> Path:
     return Path(constants.HF_HUB_CACHE)
 
 
-def entry_dir(cache: Path, name: str) -> Path:
-    """模型短名 → HF 缓存条目目录（models--org--name）。未知短名 → 抛 KeyError。"""
-    return Path(cache) / ("models--" + MODEL_REPOS[name].replace("/", "--"))
+def entry_dir(cache: Path, name: str, backend: str = "ctranslate2") -> Path:
+    """模型短名 → HF 缓存条目目录（models--org--name）。未知短名 → 抛 KeyError。
+    backend="mlx" 时读 MLX 表（同名短名对应 mlx-community 的仓）。"""
+    return Path(cache) / ("models--" + repos_for(backend)[name].replace("/", "--"))
 
 
 def dir_size(d: Path) -> int:
@@ -93,57 +136,62 @@ def dir_size(d: Path) -> int:
     return total
 
 
-def snapshot_dir(entry: Path) -> Path | None:
-    """取一个已完成的 snapshot **目录**（含 model.bin）；无 → None。
+def snapshot_dir(entry: Path, backend: str = "ctranslate2") -> Path | None:
+    """取一个已完成的 snapshot **目录**（含该后端的关键权重文件）；无 → None。
 
-    D2：本地路径解析要用目录本身（faster-whisper 的 WhisperModel 接受本地目录），
-    故与 snapshot_revision 拆开——后者只要名字。多个 snapshot 时取名字序最小的
-    那个（与旧实现同款确定性；HF 缓存按需保留多条时不会随机换）。"""
+    D2：本地路径解析要用目录本身（faster-whisper 的 WhisperModel 接受本地目录，
+    mlx_whisper 的 load_model 同样接受本地目录），故与 snapshot_revision 拆开——
+    后者只要名字。多个 snapshot 时取名字序最小的那个（与旧实现同款确定性；
+    HF 缓存按需保留多条时不会随机换）。
+    backend="mlx" 时判据是 weights.safetensors / weights.npz（见 REQUIRED_FILES）。"""
+    want = required_files(backend)
     snaps = Path(entry) / "snapshots"
     try:
         if not snaps.is_dir():
             return None
         for s in sorted(snaps.iterdir()):
-            if (s / REQUIRED_FILE).is_file():
+            if any((s / f).is_file() for f in want):
                 return s
     except OSError:
         return None
     return None
 
 
-def snapshot_revision(entry: Path) -> str | None:
+def snapshot_revision(entry: Path, backend: str = "ctranslate2") -> str | None:
     """取一个已完成的 snapshot 的 revision（无 → None）。"""
-    snap = snapshot_dir(entry)
+    snap = snapshot_dir(entry, backend)
     return snap.name if snap else None
 
 
-def is_cached(entry: Path) -> bool:
-    """是否已有可用的完整模型（某个 snapshot 含 model.bin）。"""
-    return snapshot_revision(entry) is not None
+def is_cached(entry: Path, backend: str = "ctranslate2") -> bool:
+    """是否已有可用的完整模型（某个 snapshot 含该后端的关键权重文件）。"""
+    return snapshot_revision(entry, backend) is not None
 
 
-def model_info(cache: Path, name: str, active: str | None = None) -> dict:
+def model_info(cache: Path, name: str, active: str | None = None,
+               backend: str = "ctranslate2") -> dict:
     """单个模型的缓存状态（纯读，不联网）。
 
     size 为整个条目目录占用（含半成品），cached 才是「可用」的判据——两者分开
     报，UI 才能区分「没下过」与「下了一半」。"""
-    entry = entry_dir(cache, name)
+    entry = entry_dir(cache, name, backend)
     exists = entry.is_dir()
     return {
         "name": name,
-        "repo": MODEL_REPOS[name],
-        "cached": is_cached(entry),
+        "repo": repos_for(backend)[name],
+        "cached": is_cached(entry, backend),
         "present": exists,                     # 目录存在（可能只是半成品）
-        "partial": exists and not is_cached(entry),
+        "partial": exists and not is_cached(entry, backend),
         "size": dir_size(entry) if exists else 0,
-        "revision": snapshot_revision(entry),
+        "revision": snapshot_revision(entry, backend),
         "active": (active == name),
     }
 
 
-def list_models(cache: Path, active: str | None = None) -> dict:
+def list_models(cache: Path, active: str | None = None,
+                backend: str = "ctranslate2") -> dict:
     """全部计划内模型的状态 + 汇总（缓存根路径一并回给 UI 展示）。"""
-    models = [model_info(cache, n, active) for n in PLANNED_MODELS]
+    models = [model_info(cache, n, active, backend) for n in PLANNED_MODELS]
     return {
         "models": models,
         "cache_dir": str(cache),
@@ -152,13 +200,13 @@ def list_models(cache: Path, active: str | None = None) -> dict:
     }
 
 
-def remove_model(cache: Path, name: str) -> tuple[int, str | None]:
+def remove_model(cache: Path, name: str, backend: str = "ctranslate2") -> tuple[int, str | None]:
     """删除某模型的缓存条目目录。返回 (释放字节数, 错误)。
 
     只删 `models--<org>--<name>/` 这一个条目（不动 blobs 根、不动别的仓库）；
     「使用中禁删」由调用方判定（本模块不知道谁在跑）。
     删一半失败 → 报错并返回已释放的部分，不假装成功。"""
-    entry = entry_dir(cache, name)
+    entry = entry_dir(cache, name, backend)
     if not entry.is_dir():
         return 0, f"模型未下载，无需删除: {name}"
     freed = dir_size(entry)
@@ -229,15 +277,19 @@ class _Progress:
 
 
 def download_model(name: str, cache: Path, on_progress, *,
-                   local_files_only: bool = False) -> Path:
+                   local_files_only: bool = False,
+                   backend: str = "ctranslate2") -> Path:
     """下载某模型到缓存；阻塞调用（务必放 to_thread）。返回 snapshot 目录路径。
 
     on_progress(pct:int, stage:str) 会被高频调用（每个 tqdm 增量一次），
     实现里必须廉价、且**永不抛**。
 
     `local_files_only=True`（**显式离线开关**：环境里 HF_HUB_OFFLINE=1；D2 起 frozen
-    不再自动置位）时不联网：命中缓存则秒回，否则抛 —— 由调用方转成用户可见错误。"""
-    repo = MODEL_REPOS[name]           # KeyError = 调用方没做白名单校验（不该发生）
+    不再自动置位）时不联网：命中缓存则秒回，否则抛 —— 由调用方转成用户可见错误。
+
+    backend="mlx"：仓库 id 换 MLX 表（mlx-community），其余（缓存目录、进度、镜像
+    开关）**完全共用**——HF endpoint 走 hfenv 落定的那个环境变量。"""
+    repo = repos_for(backend)[name]    # KeyError = 调用方没做白名单校验（不该发生）
     emit = safe_emit(on_progress)
     if local_files_only:
         emit(50, f"离线模式：仅查本地缓存 {name}")

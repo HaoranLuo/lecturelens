@@ -30,6 +30,7 @@ test_real_transcripts_pair_by_seg 的口径说明）。
 此时 zh=None —— 预览端显示为空栏而非报错。
 """
 import re
+from datetime import date
 from pathlib import Path
 
 from courses import COURSE_HEADER_PREFIX, UNCATEGORIZED, note_course
@@ -91,6 +92,7 @@ TAG_BAD_CHARS = "#" + TAG_INVISIBLE
 HEAD_SCAN = 12
 
 MAX_QUERY = 200        # 检索词长度上限（超长直接截断，避免无意义的超长匹配）
+RECENT_DAYS = 2        # B6 提醒口径：「近 2 天」= 今天 + 昨天（含前天就要写 3）
 FIRST_SENT_MAX = 120   # 首句摘要截断长度
 
 
@@ -428,7 +430,7 @@ def tag_counts(notes: list[dict]) -> list[dict]:
 
 
 def parse(text: str) -> dict:
-    """解析笔记正文 → {stamp, course, tags, pairs, segments, paired, has_zh}。
+    """解析笔记正文 → {stamp, course, tags, pairs, segments, paired, words, has_zh}。
 
     pairs 为按 seg 升序的 [{"seg","ts","en","zh"}]；zh 可能为 None（该段未译
     或整篇纯英文）。解析是纯函数、不吃 IO，便于对任意文本单测。"""
@@ -460,6 +462,12 @@ def parse(text: str) -> dict:
                 zhs[i] = loose_zh.pop(0)
     pairs = [{"seg": i, "ts": ts, "en": en, "zh": zhs.get(i)}
              for i, (ts, en) in enumerate(ens, start=1)]
+    # B4 体量（列表徽章「N 段 · 约 M 字」的 M）：只累计**真正进 pairs 的** EN/ZH 字符数
+    # （len(en) + len(zh)，中文按字、英文按字符 → 前端一律说"约"）。为什么在 pairs 建好
+    # 之后汇总、而不是在解析循环里边读边加：老格式的宽松 ZH 行多于"缺口"时会有剩余项
+    # （上面的补给循环不消费完），它们不会出现在任何 pair 里——边读边加会把没进正文的
+    # 行算进体量，徽章数字与预览里看到的内容对不上。
+    words = sum(len(p["en"]) + len(p["zh"] or "") for p in pairs)
     return {
         "stamp": stamp,
         "course": note_course(text) if text else None,
@@ -467,6 +475,7 @@ def parse(text: str) -> dict:
         "pairs": pairs,
         "segments": len(pairs),
         "paired": sum(1 for p in pairs if p["zh"]),
+        "words": words,
         "has_zh": bool(zhs),
     }
 
@@ -508,25 +517,86 @@ def _matches(query: str, blob: str) -> bool:
     return query in blob
 
 
+def _stamp_date(stamp) -> "date | None":
+    """笔记头部时间戳的**日期前缀** → date；不是 8 位数字日期（或日历非法）→ None。
+
+    与 display_date 同源口径（stamp 形如 `20261013_0146`，前 8 位是 YYYYMMDD）。
+    只认这一处：文件名/mtime 都不看——文件被复制、同步盘、改名都会让它们说谎，
+    宁可漏报也不误报（误报的提醒比没有提醒更烦）。"""
+    if not isinstance(stamp, str) or len(stamp) < 8 or not stamp[:8].isdigit():
+        return None
+    try:
+        return date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8]))
+    except ValueError:
+        return None            # 20261340 这类假戳：当"没有日期"，不猜
+
+
+def recent_unarchived(notes: list[dict], today: "date | None" = None,
+                      days: int = RECENT_DAYS) -> list[dict]:
+    """B6：近 days 天（= 今天与前 days-1 天）内**有正文、且还没有摘要**的笔记 → 新→旧。
+
+    三条判据（缺一不可）：
+    ① 日期（笔记 stamp 的日期前缀）落在 [today-days+1, today] 内——**未来戳不算**
+       （时钟回拨/手改戳产生的"明天的笔记"不该被提醒成"没归档"）；
+    ② `has_summary` 为假（"未归档"在本项里只承诺摘要这一个维度——导出记录本仓没有，
+       故不做"未导出"口径，文案也不提）；
+    ③ `segments > 0`：没有正文就没有可归档的东西（"归档"= 生成摘要）。空壳笔记
+       通常是"开了软件没上课"，算进来只会变成噪音——本机实测：开发期每次起服务
+       都会在 transcripts/ 留一个空壳，全算上会常年顶着一句"N 篇未归档"。
+
+    纯函数：`today` 可注入（跨日期边界单测），不读系统时间、不吃 IO。"""
+    ref = today or date.today()
+    out: list[dict] = []
+    for n in notes:
+        if n.get("has_summary") or not (n.get("segments") or 0):
+            continue
+        d = _stamp_date(n.get("stamp"))
+        if d is None:
+            continue
+        delta = (ref - d).days
+        if 0 <= delta < days:
+            out.append(n)
+    out.sort(key=lambda n: (n.get("stamp") or "", n.get("name") or ""), reverse=True)
+    return out
+
+
+def pending_payload(notes: list[dict], today: "date | None" = None) -> dict:
+    """B6 提醒的载荷（列表端点下发 / 前端顶栏 chips 直接吃）：
+    `{"count", "days", "notes": [{"name", "date"}]}` —— 与 recent_unarchived 同源，
+    只是裁成前端要的最小形态（名字给点击后的 toast，日期给"哪几篇"）。"""
+    items = recent_unarchived(notes, today=today)
+    return {
+        "count": len(items),
+        "days": RECENT_DAYS,
+        "notes": [{"name": x.get("name"), "date": x.get("date")} for x in items],
+    }
+
+
 def index(dir_path: Path, query: str | None = None,
           course: str | None = None, tag: str | None = None,
           limit: int | None = None) -> dict:
     """列出笔记索引（时间倒序）→ {"notes": [...], "tags": [...], "total", "matched"}。
+
+    每条含 segments（段数）与 words（EN+ZH 字符数，B4 体量徽章用，同 parse 口径）。
 
     query：全文检索（课程名 + 标签名 + 文件名 + 全部 EN/ZH 正文，含中文子串）。
     course：按课程名精确过滤（侧栏课程列表下钻用）。
     tag：§8 按标签精确过滤（与 course/query **叠加**；空 = 不筛）。
     返回口径：total = 过 course/query 的篇数（**未**按标签筛）；matched = course/
     query/tag 全过、limit 之前的篇数；tags = 全局标签清单 + 计数（facet 口径见
-    tag_counts，只受 course/query 影响——"选它能看到几篇"才和筛选结果自洽）。
+    tag_counts，只受 course/query 影响——"选它能看到几篇"才和筛选结果自洽）；
+    pending = B6 未归档提醒（见 pending_payload）——**与当前筛选无关**：它说的是
+    "库里有几篇近两天的新笔记还没摘要"，换个筛选词不该让提醒数跟着变。
     单文件解析失败只跳过该篇——索引是展示信息，不该因一篇坏文件整体 500。"""
     d = Path(dir_path)
     notes: list[dict] = []
     if not d.is_dir():
-        return {"notes": [], "total": 0, "matched": 0, "tags": []}
+        return {"notes": [], "total": 0, "matched": 0, "tags": [],
+                "pending": pending_payload([])}
     q = (query or "").strip().casefold()[:MAX_QUERY]
     want_course = (course or "").strip()
     want_tag = normalize_tag(tag) if tag else None
+    every: list[dict] = []                  # 全量（未过滤）——只喂 pending 统计
     for p in d.glob(NOTE_GLOB):
         if not is_note_file(p):
             continue
@@ -538,16 +608,9 @@ def index(dir_path: Path, query: str | None = None,
         parsed = parse(text)
         name = p.name
         coursename = parsed["course"] or UNCATEGORIZED
-        if want_course and coursename != want_course:
-            continue
-        if q:
-            blob = "\n".join([name, coursename] + (parsed["tags"] or []) + [
-                f"{x['en']}\n{x['zh'] or ''}" for x in parsed["pairs"]]).casefold()
-            if not _matches(q, blob):
-                continue
         en, zh = first_sentence(parsed["pairs"])
         stem = p.stem
-        notes.append({
+        item = {
             "name": name,
             "date": display_date(parsed["stamp"], name),
             "stamp": parsed["stamp"],
@@ -557,11 +620,21 @@ def index(dir_path: Path, query: str | None = None,
             "first_zh": zh,
             "segments": parsed["segments"],
             "translated": parsed["paired"],
+            "words": parsed["words"],       # B4 体量徽章：EN+ZH 字符数（见 parse）
             "has_summary": (d / f"{stem}{SUMMARY_SUFFIX}").is_file(),
             "has_deck": (d / f"{stem}.apkg").is_file(),
             "size": st.st_size,
             "mtime": st.st_mtime,
-        })
+        }
+        every.append(item)
+        if want_course and coursename != want_course:
+            continue
+        if q:
+            blob = "\n".join([name, coursename] + (parsed["tags"] or []) + [
+                f"{x['en']}\n{x['zh'] or ''}" for x in parsed["pairs"]]).casefold()
+            if not _matches(q, blob):
+                continue
+        notes.append(item)
     total = len(notes)
     counts = tag_counts(notes)              # 计数在按 tag 过滤**之前**算（facet 口径）
     if want_tag:
@@ -573,4 +646,5 @@ def index(dir_path: Path, query: str | None = None,
     if limit and limit > 0:
         notes = notes[:limit]
     return {"notes": notes, "total": total, "matched": len(notes),
-            "tag": want_tag or "", "tag_counts": counts}
+            "tag": want_tag or "", "tag_counts": counts,
+            "pending": pending_payload(every)}

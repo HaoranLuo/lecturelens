@@ -47,6 +47,13 @@ def test_config_example_matches_allowed_keys():
             assert main._hotkey_problem(k, v) is None, \
                 f"example 的 {k}={v!r} 不满足热键键名白名单校验"
             continue
+        if k == "tags_presets":
+            # B3：常用标签是**列表**键，同样不在 CONFIG_VALUE_CHOICES（枚举表放不下列表，
+            # 下面那行 `v in CONFIG_VALUE_CHOICES[k]` 会对它 KeyError）——查专项校验，
+            # 与 POST /api/config 同一个函数，示例值必须过同一道闸。
+            assert main._tags_presets_problem(v) is None, \
+                f"example 的 {k}={v!r} 不满足常用标签校验"
+            continue
         assert v in main.CONFIG_VALUE_CHOICES[k], f"example 的 {k}={v!r} 不在白名单内"
 
 

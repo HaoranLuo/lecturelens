@@ -108,7 +108,7 @@
 - C1 问笔记（对单节课提问）；C2 课表提醒；C3 术语候选自动抽取。
 
 ### D 组：分发工程——安装包（用户 2026-10-13 提出；目标=朋友装机，免费，不公开分发）
-- D1 打包脚本重写（scripts/build_exe.py）：入口从旧 main.py 改为 **desktop.py**（桌面壳）；收集桌面壳全部新依赖（pywebview/pystray/pillow/qrcode/pyaudiowpatch/keyboard/genanki 等）+ `--collect-all ctranslate2/faster_whisper/huggingface_hub`；assets 图标写入；版本号用 branding.APP_VERSION（顺手定真版本 1.0.0）。
+- D1 打包脚本重写（scripts/build_exe.py）：入口从旧 main.py 改为 **desktop.py**（桌面壳）；收集桌面壳全部新依赖（pywebview/pystray/pillow/qrcode/pyaudiowpatch/keyboard/genanki 等）+ `--collect-all ctranslate2/faster_whisper/huggingface_hub`；assets 图标写入；版本号用 branding.APP_VERSION（顺手定真版本 1.0.0）。**（"1.0.0" 是 D1 当轮的落定值，不是当前版本；版本号唯一来源仍是 `app/branding.py` 的 `APP_VERSION`——波次二重打包已升到 1.1.0。）**
 - D2 程序与数据布局（**评审重点**）：推荐 Inno **每用户安装**（默认装到 %LocalAppData%\LectureLens，免管理员权限）——现有"数据随程序目录"的简单模型原样成立；卸载器**默认保留** transcripts/config/logs/glossary（[UninstallDelete] 精细控制），并在卸载页说明"你的笔记已保留"。不支持 Program Files 全机安装（权限坑）。
 - D3 模型与 CUDA 策略（两档构建 profile）：**轻量版**（内置 small≈460MB，任何机器装完开箱可用、离线可用；更高档位走既有档位下载）+ **完整版**（含 large-v3-turbo 与 CUDA 运行库 ~2GB，供有 N 卡的机器）；国内网络提供 **hf-mirror 预设开关**（只允许预设镜像地址，拒绝任意 URL）。打包版**照常显示真实检测+推荐徽章**：frozen 不自动改选随包模型，但用户可一键下载升级（可选：首启软提示"你的机器支持「高」档，要下载吗？"）。
 - D4 安装包本体：Inno Setup（免费）单文件 setup.exe；开始菜单 + 可选桌面快捷方式；自带卸载器；覆盖安装不丢数据。不签名 → 首次运行会有 SmartScreen 提示（需"更多信息→仍要运行"），随包附一页"新手指引/常见问题"（含防火墙首次弹窗说明）。

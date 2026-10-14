@@ -16,6 +16,9 @@ courses.json
 courses.json.tmp
 desktop.lock
 nul
+# B15 评审修复①：桌面壳的持久化 WebView2 profile（cookies/localStorage：主题/字号/
+# 设置分区记忆 + 扫码配对缓存的 LAN token）。用户数据，绝不入仓（同 config.json 口径）。
+webview_profile/
 dist/
 build/
 *.spec

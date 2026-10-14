@@ -234,6 +234,9 @@ INVALID_VALUE_BY_KEY = {
     "lan_enabled": "true",
     # D2：模型下载镜像开关——同样用字符串 "true"（钉「像布尔的字符串不算开关」）。
     "hf_mirror": "true",
+    # B3：常用标签——用**字符串**而不是数组：字符串会被 Python 拆成一串单字，
+    # 「看着像存进去了、其实 chips 全成了单个汉字」是这一支最典型的坏值（类型闸就是为它设的）。
+    "tags_presets": "重点",
 }
 
 

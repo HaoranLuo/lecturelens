@@ -157,7 +157,8 @@ async def test_allowed_keys_constant(app_state):
     §3：+export_dir（导出位置自选：绝对路径字符串或 null，走 exportdir.dir_problem）；
     §5：+class_end_confirm（下课归档的二次确认开关，布尔枚举）；
     §7：+lan_enabled（手机同屏开关，布尔枚举；写盘即存，换绑监听地址要重启）；
-    D2：+hf_mirror（模型下载镜像开关，布尔枚举；写盘即存，HF endpoint 要重启才换）。"""
+    D2：+hf_mirror（模型下载镜像开关，布尔枚举；写盘即存，HF endpoint 要重启才换）；
+    B3：+tags_presets（常用标签数组，走 tags_presets_norm 专项校验——列表塞不进枚举表）。"""
     assert set(ALLOWED_CONFIG_KEYS) == {"model", "device", "compute_type", "vad",
                                         "lang", "streaming", "source", "input_device",
                                         "translate_model", "auth_enabled",
@@ -183,7 +184,10 @@ async def test_allowed_keys_constant(app_state):
                                         "lan_enabled",
                                         # D2：模型下载镜像（布尔枚举；非即时键——
                                         # HF_ENDPOINT 在库导入时读入，重启应用才生效）
-                                        "hf_mirror"}
+                                        "hf_mirror",
+                                        # B3：常用标签（list[str]，走
+                                        # tags_presets_norm 专项校验；即时键）
+                                        "tags_presets"}
 
 
 # ---------------- streaming 预留键（条目11 灰度，重启服务后生效） ----------------
@@ -267,7 +271,9 @@ def test_build_asr_reads_config_lang(app_state, monkeypatch):
             pass
 
     monkeypatch.setattr(main, "WhisperASR", FakeASR)
-    monkeypatch.setattr(main, "resolve_model_ref", lambda name: (None, "hub"))
+    # Mac 适配：resolve_model_ref 多了 backend 参数（默认 ctranslate2 —— 本机 Windows）
+    monkeypatch.setattr(main, "resolve_model_ref",
+                        lambda name, backend="ctranslate2": (None, "hub"))
     main.runtime["config"]["lang"] = "zh"
     REAL_BUILD_ASR()
     assert captured["language"] == "zh"
@@ -712,7 +718,9 @@ def test_resolve_build_cfg_does_not_mutate_runtime(app_state):
                       "class_end_confirm": True,   # §5 新增键：下课归档二次确认
                       "lan_enabled": False,  # §7 新增键：手机同屏（默认关＝只听 127.0.0.1）
                       # D2 新增键：模型下载镜像（默认关 = 走官方 huggingface.co）
-                      "hf_mirror": False}
+                      "hf_mirror": False,
+                      # B3 新增键：常用标签（默认 = 出厂四标签）
+                      "tags_presets": ["重点", "考试", "没听懂", "待复习"]}
     assert main.runtime["config"]["model"] == "large-v3-turbo"  # 原配置不动
     assert main.runtime["config"]["streaming"] is True
     assert main._resolve_build_cfg() == dict(main.runtime["config"])  # 无 overrides = 原样

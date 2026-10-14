@@ -213,8 +213,12 @@ def test_state_read_error_is_visible(monkeypatch):
 
 
 def test_winreg_unavailable_is_visible(monkeypatch, no_real_registry):
+    # Mac 适配：macOS 走 launchd 分支（见 test_mac_adapt），所以这条只会出现在
+    # 「两个支持的平台都不是」的机器上——文案如实写成 Windows / macOS。
+    # （platform_ok 的取值是**宿主平台**的事实，本机 Windows 上为 true，故不在这里断言；
+    # 「其它平台 → false」由 tests/test_mac_adapt.py 用替身平台覆盖。）
     st = a.state(Path("D:/proj"))
-    assert st["ok"] is False and "仅 Windows 支持" in st["error"]
+    assert st["ok"] is False and "仅 Windows / macOS 支持" in st["error"]
 
 
 @pytest.fixture

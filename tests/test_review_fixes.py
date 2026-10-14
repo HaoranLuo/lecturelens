@@ -598,6 +598,9 @@ def test_c2_token_rotate_disconnects_live_ws(lan_state):
         assert rot.status_code == 200
         assert rot.json()["disconnected"] >= 1, "轮换没有断开在线连接"
         new_token = rot.json()["token"]
+        # B11 起服务端在 accept 后**补发一帧递手**（{"type":"hello","lan":<对端是否 LAN>}）：
+        # 先把它读掉，再等轮换带来的断开——否则这一帧会被当成"连接还活着"的证据。
+        assert json.loads(ws.receive_text())["type"] == "hello"
         with pytest.raises(WebSocketDisconnect):
             ws.receive_text()          # 服务端已 close → 旧连接读到断开
         # 设备数回落；旧 token 再也建不了连接，新 token 可以
