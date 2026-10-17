@@ -37,7 +37,7 @@
 - **直传（微信/QQ/移动硬盘）当兜底**：只有一两个朋友、或网盘也卡时用。
   注意微信对超大文件不友好，**优先用 U 盘或直接让朋友从你电脑上拷**。
 
-> **本项目当前体积的实测结论**（v1.1.0）：安装包 **1.408 GiB（1,511,742,229 字节）**，
+> **本项目当前体积的实测结论**（v1.1.1）：安装包 **1.408 GiB（1,511,679,418 字节）**，
 > 距 GitHub 的 2 GiB 单附件上限还有约 **0.59 GiB** 余量，所以**现在可以
 > 直接挂 Release**，不必分卷。
 > （v1.0.0 那轮是 1,511,627,489 字节——同一量级；下面是 turbo 的估算，不是实测。）
@@ -68,7 +68,7 @@ exe 属性、安装包名、关于页显示全部跟着走。
 
 ```bat
 :: ① 改版本号（唯一改动点）
-::    app\branding.py  →  APP_VERSION = "1.1.0"
+::    app\branding.py  →  APP_VERSION = "1.1.1"
 
 :: ② 打包（GPU 版：含 CUDA 运行库；约 3 GB 产物 / 十几分钟）
 .venv\Scripts\python.exe scripts\build_exe.py
@@ -90,11 +90,11 @@ exe 属性、安装包名、关于页显示全部跟着走。
 ```powershell
 # ⑤ 生成校验文件（与安装包同目录、同前缀名 + .sha256）
 #    用 PowerShell：这条命令已实测，产出格式与仓库里现有的 .sha256 逐字节一致。
-$p    = "dist\installer\LectureLens-1.1.0-setup.exe"          # ← 改成实际版本
+$p    = "dist\installer\LectureLens-1.1.1-setup.exe"          # ← 改成实际版本
 $h    = (Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash.ToLower()
 $name = Split-Path $p -Leaf
 Set-Content -LiteralPath "$p.sha256" -Value "$h  $name" -Encoding ascii
-Get-Content "$p.sha256"      # 应打印：<64位小写哈希>  LectureLens-1.1.0-setup.exe
+Get-Content "$p.sha256"      # 应打印：<64位小写哈希>  LectureLens-1.1.1-setup.exe
 ```
 
 ```bat
@@ -125,24 +125,24 @@ N 会变，认「全部通过 + exit 0」这个结论，别认数字）。它会
 > 取自 exe 版本资源（`tests/test_verify_installer.py` 有断言钉住这一点）。
 >
 > 🔒 **旧版安装包是发版资产，打新包时不许删**：`dist\installer\LectureLens-1.0.0-setup.exe`
-> 要**一直留着**——它是 v1.1.0 及以后每一轮跨版本升级实测的输入。ISCC 按
-> `LectureLens-<版本>-setup.exe` 命名，打 1.1.0 不会覆盖 1.0.0；但仍请打完后
-> `dir dist\installer` 确认两个包都在（v1.1.0 那轮的实测：1.0.0 的 SHA256 在重打后
-> 逐字节未变 = `b3c9fada…`）。
+> 与 `LectureLens-1.1.0-setup.exe` 都**要一直留着**——它们是后续每一轮跨版本升级
+> 实测的输入。ISCC 按 `LectureLens-<版本>-setup.exe` 命名，打新包不会覆盖旧包；
+> 打完后 `dir dist\installer` 确认旧包都在（1.0.0 的 SHA256 在各轮重打后逐字节未变
+> = `b3c9fada…`）。
 
 ### 2.3 打标签 + 建 Release
 
 ```bat
 :: ⑦ 提交（写中文提交信息，见仓库惯例）+ 打标签
 git add -A
-git commit -m "release: v1.1.0"
-git tag v1.1.0
+git commit -m "release: v1.1.1"
+git tag v1.1.1
 git push origin main --tags
 
 :: ⑧ 建 Release 并同时挂上两个附件
 ::    --verify-tag：标签没真的推到远端就中止（防手滑发了个空版本）
 ::    命令写成一行，避免 cmd 的 ^ 换行踩坑
-gh release create v1.1.0 --verify-tag "dist\installer\LectureLens-1.1.0-setup.exe" "dist\installer\LectureLens-1.1.0-setup.exe.sha256" --title "LectureLens v1.1.0" --notes-file docs\release-notes-v1.1.0.md
+gh release create v1.1.1 --verify-tag "dist\installer\LectureLens-1.1.1-setup.exe" "dist\installer\LectureLens-1.1.1-setup.exe.sha256" --title "LectureLens v1.1.1" --notes-file docs\release-notes-v1.1.1.md
 ```
 
 （`--title` / `--notes-file` / `--verify-tag` 三个旗标均已用
@@ -297,8 +297,10 @@ certutil -hashfile "%USERPROFILE%\Downloads\LectureLens-1.1.0-setup.exe" SHA256
 ```
 
 把输出与 `.sha256` 文件里的第一串（64 位十六进制）逐字比对，**一致即完好**。
-> 当前 v1.1.0 的值：`0b41d0a04b7f4fd93b25a96f8315f3ead00d4124a6d613cb792b6b192b2b3f14`
-> （v1.0.0 那版是 `b3c9fada9e4791d15a15609ed6a632037f03ddc11bc0488dad33fbdc786cd881`，那个包仍留在 dist\installer 里当跨版本升级实测的输入。）
+> 当前 v1.1.1 的值：`6d81f8e40498b51909bff9ae553e6910f3479c74e5f1df5c00e5b618b5c2d662`
+> （v1.1.0 那版是 `0b41d0a04b7f4fd93b25a96f8315f3ead00d4124a6d613cb792b6b192b2b3f14`；
+> v1.0.0 那版是 `b3c9fada9e4791d15a15609ed6a632037f03ddc11bc0488dad33fbdc786cd881`——
+> 旧包都留在 dist\installer 里当跨版本升级实测的输入。）
 > 注意 PowerShell 默认输出大写、`certutil` 输出小写，比对时别看粗细——大小写
 > 不影响一致性，但字母得对得上。
 > 这个值随每次重打安装包都会变，**以同目录 `.sha256` 文件为准**（本文件这里只是

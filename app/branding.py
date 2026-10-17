@@ -23,7 +23,7 @@ from pathlib import Path
 # （1.1.0 → 1,1,0,0；带 -dev/+build 后缀会被 version_quad 剥离后取数字段）。
 # 安装包版本**不另立一份**：installer/lecturelens.iss 从 dist 内 exe 的版本资源读
 # （GetVersionNumbersString），故改这一处即同时驱动 exe 属性与安装包文件名。
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)  # Windows .ico 惯例尺寸族
 #: PNG 尺寸族（p3-4）：16/24 供托盘与小控件、32/48 供列表与任务栏、64/128 供

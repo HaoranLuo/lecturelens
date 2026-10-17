@@ -64,6 +64,12 @@ jobs:
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME}"
+            # tag 触发时 Release 可能还没建好（发版流程是先 push tag 再 gh release
+            # create）——最多等 5 分钟，避免竞态把上传这一步打红
+            for _ in $(seq 1 30); do
+              gh release view "$TAG" >/dev/null 2>&1 && break
+              sleep 10
+            done
           else
             TAG=$(gh release view --json tagName -q .tagName)
           fi

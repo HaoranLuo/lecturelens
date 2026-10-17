@@ -26,12 +26,10 @@ import build_exe
 
 # ---------------------------------------------------------------- ② 版本注入
 
-def test_app_version_is_release_1_1_0():
-    """D1②：定真版本 1.1.0（波次二以**覆盖升级**方式交付的正式版本口径）。
-    打包脚本不另立版本——它必须读 branding.APP_VERSION（单一事实源）。
-    **这条断言是故意的"人工闸"**：发版升版本时它必红，逼一次有意识的版本决定
-    （下游 test_version_file_reads_back_* 已改成从 branding 派生，不再各抄一份字面量）。"""
-    assert branding.APP_VERSION == "1.1.0"
+def test_app_version_is_release_1_1_1():
+    """D1②：定真版本（人工闸：发版升版本时这条必红，逼一次有意识的版本决定）。
+    1.1.1 = 首期反馈修复版（分句 8/10s、⚡断句、字号 14–56、SRT BOM、退出兜底）。"""
+    assert branding.APP_VERSION == "1.1.1"
     assert build_exe.app_version() == branding.APP_VERSION
 
 
