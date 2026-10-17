@@ -147,10 +147,12 @@ class AudioSegmenter:
         sample_rate: int = SR,
         silence_ms: int = 700,
         min_speech_ms: int = 500,
-        max_seg_s: float = 15.0,
+        # 2026-10 首期反馈②：连续说话时 15/18s 才定稿 → 中文字幕要等 20s+。
+        # 默认下调到 8/10s（有静音仍优先按静音对齐切；只有一直不停嘴才用硬上限）。
+        max_seg_s: float = 8.0,
         preroll_s: float = 0.4,
         vad: str = "silero",
-        hard_cut_s: float = 18.0,
+        hard_cut_s: float = 10.0,
         stream_q: queue.Queue | None = None,
     ):
         self.q_out = out_queue
@@ -166,6 +168,9 @@ class AudioSegmenter:
         self.preroll: deque = deque(maxlen=int(preroll_s * SR / BLOCK))
         self._q_in: queue.Queue = queue.Queue()
         self._stop = threading.Event()
+        # 「立即断句」请求（首期反馈②）：只由服务线程置位、采集线程消费——
+        # 缓冲的读写仍全部在采集线程，无跨线程写。
+        self._flush = threading.Event()
         self.thread: threading.Thread | None = None
         self.error: str | None = None   # 采集线程致命异常（watchdog / UI 用）
         self.last_feed_ts: float = 0.0  # 最近一块音频到达的时刻（watchdog 用）
@@ -188,6 +193,13 @@ class AudioSegmenter:
         return (time.time() - self.last_feed_ts) < self.FEED_STALE_S
 
     # —— 分句状态机（与硬件解耦，smoke_test 直接喂块即可测） ——
+    def request_flush(self) -> None:
+        """请求「立即断句」：下一块音频到达时把当前缓冲立刻成段（不等静音/上限）。
+
+        只置一个 Event，真正的切段在采集线程的 handle_block 里做（无跨线程写）。
+        缓冲不足 min_speech 时按噪声丢弃（与正常切段同一条 _close 路径）。"""
+        self._flush.set()
+
     def handle_block(self, x: np.ndarray) -> None:
         self.last_feed_ts = time.time()  # watchdog 心跳：有块进来 = 采集还活着
         enter, quiet = self.vad.feed(x)
@@ -215,6 +227,14 @@ class AudioSegmenter:
         else:
             self.preroll.append(x)
             return
+
+        # 「立即断句」（首期反馈②）：用户点 ⚡断句 后，不等静音也不等上限，
+        # 当前缓冲立即结算（_close 负责「太短按噪声丢弃」与成段）。
+        if self._flush.is_set():
+            self._flush.clear()
+            if self.speaking:
+                self._close()
+                return
 
         # 软上限：缓冲达 max_seg_s 不立即硬切，标记溢出改等静音对齐；
         # 硬上限兜底：说话人始终不停（如整段朗读），超 hard_cut_s 仍无静音
@@ -282,11 +302,11 @@ class MicSegmenter(AudioSegmenter):
         sample_rate: int = SR,
         silence_ms: int = 700,
         min_speech_ms: int = 500,
-        max_seg_s: float = 15.0,
+        max_seg_s: float = 8.0,
         preroll_s: float = 0.4,
         device: int | str | None = None,
         vad: str = "silero",
-        hard_cut_s: float = 18.0,
+        hard_cut_s: float = 10.0,
         stream_q: queue.Queue | None = None,
     ):
         super().__init__(out_queue, sample_rate=sample_rate, silence_ms=silence_ms,

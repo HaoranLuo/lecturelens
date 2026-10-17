@@ -759,6 +759,7 @@ def run_desktop(glossary: list[str] | None = None,
     import webview
 
     quit_requested = threading.Event()  # 「退出」标志：closing 事件据此放行销毁
+    _exit_deadline = threading.Event()  # 正常收尾完成标志（finally 置位）——退出看门狗用
     window_visible = threading.Event()  # 主窗可见性事实源（互斥闭环，唯一写入口改）
     if not minimized:
         window_visible.set()            # create_window 默认显示（--minimized 则保持清空）
@@ -822,15 +823,35 @@ def run_desktop(glossary: list[str] | None = None,
         Close() 会走 FormClosing，由 _on_closing 的 quit_requested 守卫放行。
 
         p3-5：**销毁之前**先记忆版式——destroy 之后 window.x/y 就读不到了（对象仍
-        在但已无原生窗口），那是「每次退出都记不住」的静默失效。"""
+        在但已无原生窗口），那是「每次退出都记不住」的静默失效。
+
+        首期反馈⑤（Mac）：cocoa 的 destroy 是 AppHelper.callAfter（异步投递），
+        且退出可能被非守护线程（keyboard 的 darwin 监听等）拖住 → webview.start()
+        不返回、进程变成"窗口没了但退不掉"的僵尸。这里每个动作独立兜底，并起一个
+        5s 看门狗：仍未退出就释放锁、冲刷日志、硬退出。"""
         _save_geometry(window, window2)   # 必须在 destroy 之前
         quit_requested.set()
         server.should_exit = True
         with contextlib.suppress(Exception):
             icon.stop()
-        window.destroy()
+        # 每个销毁动作独立兜底：任一平台后端的 destroy 抛异常都不能把退出卡在半路
+        with contextlib.suppress(Exception):
+            window.destroy()
         with contextlib.suppress(Exception):
             window2.destroy()
+
+        def _force_exit_if_stuck() -> None:
+            if _exit_deadline.wait(5.0):
+                return  # 主线程已正常收尾，进程会自己退出
+            with contextlib.suppress(Exception):
+                log.warning("[desktop] ⚠ 退出超时（主循环未返回/非守护线程拖住）"
+                            "——强制退出")
+                logging.shutdown()
+            _release_instance_lock()
+            os._exit(0)
+
+        threading.Thread(target=_force_exit_if_stuck, name="quit-watchdog",
+                         daemon=True).start()
 
     def _poll_tray_state(icon, stop: threading.Event) -> None:
         """托盘状态轮询（1s daemon，p1-7 起由 webview.start(func=) 回调启动——
@@ -1020,6 +1041,18 @@ def run_desktop(glossary: list[str] | None = None,
         stop_server(server, th)
         with contextlib.suppress(Exception):
             icon.stop()
+        _exit_deadline.set()          # 收尾完成：退出看门狗不再强制
+
+    # 首期反馈⑤（Mac）：非守护线程（如 keyboard 的 darwin 监听）会让进程在
+    # main 返回后继续挂着（窗口已关、托盘已停 = 用户眼里的"退不掉"）。如实记
+    # 日志后强制退出，绝不留僵尸进程。
+    leftover = [t.name for t in threading.enumerate()
+                if t is not threading.main_thread() and not t.daemon and t.is_alive()]
+    if leftover:
+        log.warning(f"[desktop] ⚠ 退出时仍有非守护线程 {leftover}——强制退出")
+        with contextlib.suppress(Exception):
+            logging.shutdown()
+        os._exit(0)
     return 0
 
 

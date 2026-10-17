@@ -209,7 +209,7 @@ def test_mobile_rule_beats_the_touch_hover_none_rule():
     assert "#tagQuickWrap.on { display:flex; }" in HTML
     assert "#courseNewWrap.on { display:flex; }" in HTML
     # body.mobile #tagQuickWrap（1,1,1）> #tagQuickWrap.on（1,1,0）：CSS 特异性写在这里
-    assert "body.mobile #btnPause, body.mobile #btnEndClass, body.mobile #btnTag," in HTML
+    assert "body.mobile #btnPause, body.mobile #btnEndClass, body.mobile #btnFlush, body.mobile #btnTag," in HTML
 
 
 # ---------------- 3) 评审1① / ④ 修复 ----------------

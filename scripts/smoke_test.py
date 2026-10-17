@@ -116,7 +116,8 @@ def synth_long_speech(total_s: float = 22.0) -> np.ndarray:
     """连续长语音流：开头 2s 纯静音（energy VAD 校准），随后 ~20s 语音中间
     无任何 >700ms 静音——每 3s 嵌一个 0.4s 深 dip（低于滞回退出线，触发
     quiet 但短于 silence_blocks，不足以正常关段）。旧逻辑会在这里切出恒定
-    15s 硬切碎片；新逻辑应溢出后对齐 dip（静音点）关段或 18s 硬切兜底。"""
+    15s 硬切碎片；现默认软/硬上限 = 8s/10s：溢出后应对齐 dip（静音点）关段
+    或 10s 硬切兜底。"""
     rng = np.random.default_rng(7)
     n = int(SR * total_s)
     t = np.arange(n) / SR
@@ -136,12 +137,12 @@ def test_overflow_cut() -> None:
         stream = synth_long_speech()
         durs = run_vad_case("energy", stream)
         print(f"  切出 {len(durs)} 段: {durs}s")
-        # 溢出后不再立即硬切：所有段都应长于软上限（对齐静音或 18s 硬切兜底）
-        record("超长段存在（≥15s 溢出后切出）", len(durs) >= 1 and max(durs) >= 15.0,
+        # 溢出后不再立即硬切：所有段都应长于软上限（对齐静音或硬切兜底）
+        record("超长段存在（≥8s 溢出后切出）", len(durs) >= 1 and max(durs) >= 8.5,
                f"最长 {max(durs) if durs else 0}s")
-        # 旧逻辑特征：在 15.0s 附近的块边界硬切碎片（15s 软上限恰好触发）
-        shards = [d for d in durs if 14.8 <= d <= 15.1]
-        record("无恒定 15s 硬切碎片", not shards, f"特征碎片: {shards or '无'}")
+        # 旧逻辑特征：在软上限（8s）附近的块边界硬切碎片
+        shards = [d for d in durs if 7.8 <= d <= 8.1]
+        record("无恒定 8s 硬切碎片", not shards, f"特征碎片: {shards or '无'}")
     except Exception as e:
         record("超长切段对齐静音点", False, f"异常: {e}")
 

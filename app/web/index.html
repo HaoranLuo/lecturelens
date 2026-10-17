@@ -149,7 +149,7 @@
        故**不需要** !important（本文件也不用 !important 兜底）。
      · #chipMobile 只在手机形态出现：它是"为什么按钮少了"的可见答复——
        悄悄把按钮变没而不解释，用户只会以为坏了。桌面/本机窗口零变化。 */
-  body.mobile #btnPause, body.mobile #btnEndClass, body.mobile #btnTag,
+  body.mobile #btnPause, body.mobile #btnEndClass, body.mobile #btnFlush, body.mobile #btnTag,
   body.mobile #tagQuickWrap, body.mobile #selCourse, body.mobile #courseNewWrap,
   body.mobile #selModel, body.mobile #selLang, body.mobile #selDevice { display:none; }
   /* 评审1① 修复：**同一批控件在 ⚙设置 → 🎙上课 里还有一套等效入口**——工具条藏了
@@ -991,14 +991,16 @@
   .card a:hover { text-decoration:underline; }
 
   #log { flex:1; overflow-y:auto; padding:24px; scroll-behavior:smooth; }  /* §4 安全边距 ≥24px */
-  .entry { margin-bottom:24px; max-width:900px; margin-inline:auto;   /* §7.1 居中 900px */
+  .entry { margin-bottom:calc(var(--cap-en) * 1); max-width:900px; margin-inline:auto;   /* 条目间距随字号自动放大（首期反馈③） */
            animation:fadein .25s ease-out; }   /* §5-1 淡入：纯 opacity 250ms */
   @keyframes fadein { from { opacity:0; } to { opacity:1; } }
   .ts { font-size:var(--ui-small); color:var(--text-2); font-family:Consolas,monospace; }
-  .en { font-size:var(--cap-en); line-height:1.45; margin:4px 0;
+  .en { font-size:var(--cap-en); line-height:var(--cap-lh-en, 1.45);
+        margin:calc(var(--cap-en) * .17) 0;      /* 行距/间距随字号自动适配（首期反馈③） */
         transition:color .2s; }                 /* §5-2 落定 */
-  .zh { font-size:var(--cap-zh); line-height:1.5; color:var(--zh); font-weight:600;
-        margin:2px 0 4px; transition:color .2s; }   /* §3：zh 34/1.5 600 —— 色走 --zh：
+  .zh { font-size:var(--cap-zh); line-height:var(--cap-lh-zh, 1.5); color:var(--zh); font-weight:600;
+        margin:calc(var(--cap-en) * .08) 0 calc(var(--cap-en) * .17);
+        transition:color .2s; }   /* §3：zh 34/1.5 600 —— 色走 --zh：
         深色下 = --gold（#FFD97A 原样），浅色下 = 深蓝 #2563EB（白底 5.17:1，金色在白底上会糊） */
   .zh.err { color:var(--text-2); font-weight:400; }  /* 翻译失败提示：灰色弱化 */
   .placeholder { color:var(--text-3); font-size:16px; padding:48px 0; text-align:center; }
@@ -1126,6 +1128,8 @@ footer span { white-space:nowrap; }
 
 <div id="toolbar">
   <button id="btnPause">⏸ 暂停</button>
+  <!-- 首期反馈②：连续说话时不必等停顿/上限——一键把当前这句结算并翻译 -->
+  <button id="btnFlush" title="立即断句：把老师正说的这句马上结算并翻译（不用等停顿）">⚡ 断句</button>
   <!-- §5 下课一键归档：暂停收音 → 生成摘要（已有则跳过）→ 导出笔记（§3 落盘/下载），
        逐步结果进汇总面板（单步失败不中断后续）。位置紧跟暂停 = 会话级动作放一起，
        金色主按钮（§六 主要按钮，每视图一个）——「下课」是这一段流程里唯一的
@@ -2057,14 +2061,18 @@ footer span { white-space:nowrap; }
 <script>
 const $ = (id) => document.getElementById(id);
 const log = $('log'), dot = $('dot');
-const FONT_MIN = 18, FONT_MAX = 44;
+const FONT_MIN = 14, FONT_MAX = 56;   // 首期反馈③：范围加宽（小窗/大屏/投影都能用）
 let lastSeg = null;
 let fontSize = parseInt(localStorage.getItem('ll_font') || '24', 10);  // p1-4：默认对齐 §3 --cap-en 24px
 
 function applyFont() {
   fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, fontSize));
+  // 首期反馈③：行距随字号自动适配（小号紧凑、大号放松），避免大字号挤在一起
+  const t = (fontSize - FONT_MIN) / (FONT_MAX - FONT_MIN);   // 0..1
   log.style.setProperty('--cap-en', fontSize + 'px');               // p1-4：字阶变量名对齐 §3
   log.style.setProperty('--cap-zh', Math.round(fontSize * 1.4) + 'px');  // spec 比例 zh34/en24≈1.4
+  log.style.setProperty('--cap-lh-en', (1.40 + t * 0.22).toFixed(3));  // 14px→1.40 … 56px→1.62
+  log.style.setProperty('--cap-lh-zh', (1.48 + t * 0.24).toFixed(3));  // 14px→1.48 … 56px→1.72
   localStorage.setItem('ll_font', fontSize);
 }
 applyFont();
@@ -2490,6 +2498,12 @@ $('btnRetrySmall').onclick = async () => {
 };
 
 $('btnPause').onclick = () => post(status_.paused ? '/api/resume' : '/api/pause');
+// 首期反馈②：立即断句（把当前积累的这句提前出字幕+翻译）
+$('btnFlush').onclick = async () => {
+  const r = await post('/api/flush');
+  if (r && r.ok) showToast('已断句，这句马上出字幕', 'ok');
+  else showToast((r && r.error) || '断句失败：采集未就绪', 'err');
+};
 $('btnExport').onclick = async () => {
   // §3：设了导出位置 → 走导出中心（落盘 + toast「已导出到 …」+ 打开按钮）；
   // 未设置 → **逐字保留原行为**（直接下载当前笔记 md）。现读 /api/config 而不是
@@ -2514,8 +2528,9 @@ $('btnCollapse').onclick = () => {
   localStorage.setItem('ll_collapsed', document.body.classList.contains('collapsed') ? '1' : '');
 };
 if (localStorage.getItem('ll_collapsed') === '1') document.body.classList.add('collapsed');
-$('btnFontPlus').onclick = () => { fontSize += 2; applyFont(); };
-$('btnFontMinus').onclick = () => { fontSize -= 2; applyFont(); };
+// 大字号区加速步进（范围加宽到 14–56 后，2px 一步步太慢）
+$('btnFontPlus').onclick = () => { fontSize += (fontSize >= 32 ? 4 : 2); applyFont(); };
+$('btnFontMinus').onclick = () => { fontSize -= (fontSize > 32 ? 4 : 2); applyFont(); };
 
 const selModel = $('selModel');
 let modelBusy = false;

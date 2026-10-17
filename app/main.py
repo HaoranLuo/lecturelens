@@ -209,8 +209,8 @@ DEFAULT_CONFIG = {"model": "large-v3-turbo", "device": "auto",
                   # capture.py 构造签名里的默认值逐字一致**（test_seg_params 有断言钉住），
                   # 否则「恢复默认」会把采集器调到一个面板上看不出来的状态。
                   "silence_ms": 700,      # 连续静音多久算一句结束（capture.MicSegmenter）
-                  "max_seg_s": 15.0,      # 软上限：超长段不再硬切，改等静音对齐切点
-                  "hard_cut_s": 18.0,     # 硬上限兜底：一直不停嘴时的强制切点
+                  "max_seg_s": 8.0,       # 软上限：超长段不再硬切，改等静音对齐切点
+                  "hard_cut_s": 10.0,     # 硬上限兜底：一直不停嘴时的强制切点
                   "backlog_drop": 5,      # 积压超此段数触发追赶丢弃（asr_loop 每轮读）
                   "backlog_keep": 2,      # 追赶丢弃后保留的最新段数
                   # p2-7（B2 历史行渐隐）：当前句上方做「半透明 + 缩小」的条数（0/1/2）。
@@ -371,6 +371,18 @@ def load_config() -> dict:
             cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
         except Exception as e:
             log.warning(f"[config] ⚠ 读取失败({e})，用默认配置")
+    # 2026-10 首期反馈②：旧默认三元组（700/15/18）会让连续说话的中文字幕等近 20 秒，
+    # 默认已下调为 700/8/10。**只有恰好等于旧默认**的配置才迁移——用户明确调过的
+    # 任何其它组合一律不动；迁移写盘一次后不再命中（幂等）。
+    if (cfg.get("silence_ms") == 700 and cfg.get("max_seg_s") == 15.0
+            and cfg.get("hard_cut_s") == 18.0):
+        cfg["max_seg_s"], cfg["hard_cut_s"] = 8.0, 10.0
+        try:
+            save_config(cfg)
+            log.info("[config] 分句参数迁移：max_seg_s 15→8s，hard_cut_s 18→10s"
+                     "（首期反馈：连续说话时字幕等太久；可随时在设置页调回）")
+        except Exception as e:
+            log.warning(f"[config] ⚠ 分句参数迁移未能写盘（本次运行内生效）: {e}")
     return cfg
 
 
@@ -1950,6 +1962,21 @@ async def resume():
     return {"ok": True, "paused": False}
 
 
+@app.post("/api/flush")
+async def flush():
+    """立即断句（首期反馈②）：把当前正在积累的这句提前结算并翻译，
+    不用等静音停顿或分段上限。暂停中/采集未就绪时如实拒绝。"""
+    if status.get("paused"):
+        return JSONResponse({"ok": False, "error": "已暂停——先点「继续」再说"},
+                            status_code=409)
+    seg = runtime.get("segmenter")
+    if seg is None or not hasattr(seg, "request_flush"):
+        return JSONResponse({"ok": False, "error": "采集器未就绪"},
+                            status_code=503)
+    seg.request_flush()
+    return {"ok": True}
+
+
 @app.get("/api/notes")
 async def notes():
     if hub.transcript_path and hub.transcript_path.is_file():
@@ -2121,7 +2148,7 @@ async def notes_export(fmt: str = "md", name: str = ""):
             return parsed, p.read_bytes()
         sidecar = exporters.read_times(p)
         if key == "srt":
-            return parsed, exporters.build_srt(pairs, sidecar)[0].encode("utf-8")
+            return parsed, exporters.srt_bytes(pairs, sidecar)
         meta = export_meta(p, parsed)
         return parsed, (exporters.build_pdf(pairs, meta, sidecar) if key == "pdf"
                         else exporters.build_docx(pairs, meta, sidecar))
@@ -2341,8 +2368,8 @@ async def notes_export_batch(req: Request):
                 if key == "md":
                     data = raw
                 else:
-                    data = exporters.build_srt(parsed["pairs"],
-                                               exporters.read_times(p))[0].encode("utf-8")
+                    data = exporters.srt_bytes(parsed["pairs"],
+                                               exporters.read_times(p))
                 # 条目名 = 单篇导出的同名文件（`{课程}_{日期}.ext`；无课程归属则原名）。
                 # 结构上不可能 zip-slip：clean_component 已把路径分隔符替换成 `-`，
                 # 无课程时回落的是笔记自己的 stem（同为白名单内的名字）。

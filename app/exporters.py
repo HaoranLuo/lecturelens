@@ -212,6 +212,19 @@ def build_srt(pairs: list, sidecar: dict | None = None,
     return "\n\n".join(blocks) + ("\n" if blocks else ""), source
 
 
+#: SRT 的 UTF-8 BOM：很多播放器/字幕工具按系统默认编码猜文件编码——无 BOM 的
+#: 中文 SRT 在 Windows 上常被当作 GBK 打开成乱码（2026-10 首期反馈④ 实证）。
+#: BOM 是 SRT 的事实标准，现代播放器均兼容；单篇导出与批量 zip 共用这一处。
+SRT_BOM = b"\xef\xbb\xbf"
+
+
+def srt_bytes(pairs: list, sidecar: dict | None = None,
+              bilingual: bool = True) -> bytes:
+    """SRT 文本 → UTF-8（带 BOM）字节。所有落盘/下载/打包路径的唯一编码出口。"""
+    text, _ = build_srt(pairs, sidecar, bilingual)
+    return SRT_BOM + text.encode("utf-8")
+
+
 # —— PDF（fpdf2 + 系统字体） ——
 
 def _mac_font_scan() -> str | None:
@@ -370,20 +383,24 @@ def build_pdf(pairs: list, meta: dict, sidecar: dict | None = None) -> bytes:
 DOCX_EA_FONT = "Microsoft YaHei" if os.name == "nt" else "PingFang SC"
 
 
-def _docx_run(paragraph, text: str, *, size=None, color=None, bold=False):
-    """加一个 run 并**显式设定东亚字体**。
+def _set_east_asian(run) -> None:
+    """给 run 显式写东亚字体（w:eastAsia）。
 
     python-docx 只设 font.name 时写的是 w:ascii/w:hAnsi，Word 对中日韩文字会回退
-    到默认宋体（在部分环境甚至回退成非中文字体）——必须同时写 w:eastAsia。
-    （p2-deps 结论里我把这条列为「未核实」，本项落地时按此实现。）"""
+    到默认宋体（在部分环境甚至回退成非中文字体）；标题的 Heading 样式同理，
+    故标题 run 也要走这一条（首期反馈④ 的中文适配检查项）。"""
     from docx.oxml.ns import qn
+    run.font.name = DOCX_EA_FONT
+    rfonts = run._element.get_or_add_rPr().get_or_add_rFonts()
+    rfonts.set(qn("w:eastAsia"), DOCX_EA_FONT)
+
+
+def _docx_run(paragraph, text: str, *, size=None, color=None, bold=False):
+    """加一个 run 并显式设定东亚字体（见 _set_east_asian）。"""
     from docx.shared import Pt, RGBColor
 
     run = paragraph.add_run(text)
-    run.font.name = DOCX_EA_FONT
-    rpr = run._element.get_or_add_rPr()
-    rfonts = rpr.get_or_add_rFonts()
-    rfonts.set(qn("w:eastAsia"), DOCX_EA_FONT)
+    _set_east_asian(run)
     if size is not None:
         run.font.size = Pt(size)
     if bold:
@@ -399,7 +416,9 @@ def build_docx(pairs: list, meta: dict, sidecar: dict | None = None) -> bytes:
     from docx.shared import Cm
 
     doc = Document()
-    doc.add_heading(meta.get("title") or "双语课堂笔记", level=1)
+    heading = doc.add_heading(meta.get("title") or "双语课堂笔记", level=1)
+    for run in heading.runs:   # 标题同样要显式东亚字体（否则 Word 回退默认字体）
+        _set_east_asian(run)
     sub = doc.add_paragraph()
     _docx_run(sub, meta.get("subtitle") or "", size=9, color=MUTED)
 

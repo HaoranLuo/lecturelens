@@ -143,8 +143,11 @@ $('btnHide').onclick = async () => {
   if (r.status === 200 && r.data && r.data.ok) {
     setHint('已关闭——托盘菜单 / 设置页可重新开启', 3000);
   } else {
+    // 首期反馈⑤：HTTP 通道失败（服务瞬断/网关异常）时的兜底——走窗口自身的关闭
+    // 事件：desktop 的 closing 处理器同样会把 config 写回 false 并隐藏窗口。
+    try { window.close(); } catch (e) {}
     const why = (r.data && r.data.error) || '服务无响应';
-    setHint('关闭失败：' + why + '（可稍后重试，或从托盘菜单关闭）', 7000);
+    setHint('关闭失败：' + why + '（已尝试备用关闭方式）', 7000);
   }
 };
 </script>

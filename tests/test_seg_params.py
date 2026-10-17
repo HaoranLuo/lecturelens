@@ -172,8 +172,9 @@ async def test_set_config_rejects_keep_ge_drop(seg_env):
 
 def test_segment_kwargs_only_carries_present_keys():
     cfg = dict(main.DEFAULT_CONFIG)
-    assert main.segment_kwargs(cfg) == {"silence_ms": 700, "max_seg_s": 15.0,
-                                        "hard_cut_s": 18.0}
+    # 2026-10 首期反馈②：默认软/硬上限 15/18 → 8/10（连续说话时字幕等太久）
+    assert main.segment_kwargs(cfg) == {"silence_ms": 700, "max_seg_s": 8.0,
+                                        "hard_cut_s": 10.0}
     bare = {k: v for k, v in cfg.items() if k not in main.SEGMENT_REBUILD_KEYS}
     assert main.segment_kwargs(bare) == {}      # 缺键 → 交给 capture 自己的默认值
 
@@ -252,3 +253,26 @@ async def test_reset_conflicts_while_reloading(seg_env):
     async with asgi_client() as c:
         r = await c.post("/api/config/segmentation/reset")
     assert r.status_code == 409
+
+
+# —— 首期反馈②：旧默认值迁移（15/18 → 8/10，仅当恰好等于旧默认时） ——
+
+def test_legacy_segmentation_defaults_migrate_once(tmp_path, monkeypatch):
+    """旧版装好的 config.json 里是 700/15.0/18.0（默认值从未被调过）——
+    load_config 应一次性迁移到 8/10 并写盘；用户明确改过的组合一律不动。"""
+    import json
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"silence_ms": 700, "max_seg_s": 15.0,
+                             "hard_cut_s": 18.0}), encoding="utf-8")
+    monkeypatch.setattr(main, "CONFIG_PATH", p)
+    cfg = main.load_config()
+    assert cfg["max_seg_s"] == 8.0 and cfg["hard_cut_s"] == 10.0
+    saved = json.loads(p.read_text(encoding="utf-8"))
+    assert saved["max_seg_s"] == 8.0 and saved["hard_cut_s"] == 10.0, "迁移未写盘"
+
+    # 用户自己调过的组合（哪怕接近）不迁移
+    p.write_text(json.dumps({"silence_ms": 500, "max_seg_s": 12.0,
+                             "hard_cut_s": 20.0}), encoding="utf-8")
+    cfg2 = main.load_config()
+    assert cfg2["silence_ms"] == 500 and cfg2["max_seg_s"] == 12.0
+    assert cfg2["hard_cut_s"] == 20.0

@@ -704,7 +704,8 @@ def test_resolve_build_cfg_does_not_mutate_runtime(app_state):
                       "first_run_done": False,   # p1-5 新增键
                       "floating_bar": False,     # p1-7 新增键
                       # p2-5（B4）新增键：断句参数与积压阈值
-                      "silence_ms": 700, "max_seg_s": 15.0, "hard_cut_s": 18.0,
+                      # 2026-10 首期反馈②：默认 15/18 → 8/10（连续说话时字幕等太久）
+                      "silence_ms": 700, "max_seg_s": 8.0, "hard_cut_s": 10.0,
                       "backlog_drop": 5, "backlog_keep": 2,
                       "fade_lines": 1,   # p2-7（B2）新增键
                       # p3-1（B12）新增键：全局快捷键开关与两个键位

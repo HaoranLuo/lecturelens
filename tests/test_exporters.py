@@ -203,6 +203,15 @@ def test_build_srt_empty_is_empty_string():
     assert srt == ""
 
 
+def test_srt_bytes_starts_with_utf8_bom():
+    """首期反馈④：无 BOM 的中文 SRT 在 Windows 上常被播放器当 GBK 打开成乱码——
+    导出字节必须以 UTF-8 BOM 开头（单篇导出与批量 zip 共用 srt_bytes）。"""
+    pairs = [{"ts": "10:00:00", "en": "Hello", "zh": "你好"}]
+    data = exporters.srt_bytes(pairs)
+    assert data.startswith(b"\xef\xbb\xbf"), "SRT 缺少 UTF-8 BOM"
+    assert "你好" in data.decode("utf-8-sig")
+
+
 # —— PDF ——
 
 def _pdf_ok(data: bytes) -> bool:
@@ -333,7 +342,8 @@ def test_transcribe_with_times_skips_blank_segments():
 async def test_export_md_srt_pdf_docx_end_to_end():
     write_note()
     async with asgi_client() as c:
-        for fmt, magic in (("md", b"#"), ("srt", b"1"), ("pdf", b"%PDF-"), ("docx", b"PK")):
+        # srt 以 UTF-8 BOM 开头（首期反馈④：无 BOM 的中文 SRT 常被播放器当 GBK 读成乱码）
+        for fmt, magic in (("md", b"#"), ("srt", b"\xef\xbb\xbf"), ("pdf", b"%PDF-"), ("docx", b"PK")):
             r = await c.get("/api/notes/export",
                             params={"name": NOTE, "fmt": fmt})
             assert r.status_code == 200, f"{fmt}: {r.text[:200]}"
